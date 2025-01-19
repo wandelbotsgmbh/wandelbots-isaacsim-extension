@@ -1,4 +1,4 @@
-# Wandelbots NOVA Extension
+# Wandelbots NOVA x NVIDIA Isaac Sim Extension
 
 This extension lets you connect your NVIDIA Isaac Sim simulation environment with Wandelbots Nova.
 
