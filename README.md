@@ -1,6 +1,6 @@
 # Wandelbots NOVA x NVIDIA Isaac Sim Extension
 
-This extension enables seamless connect between NVIDIA Isaac Sim and Wandelbots NOVA.
+This extension enables seamless connection between NVIDIA Isaac Sim and Wandelbots NOVA.
 
 Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands. Users can easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via our APIs.
 
