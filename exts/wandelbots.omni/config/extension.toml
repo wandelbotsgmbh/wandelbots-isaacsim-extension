@@ -1,0 +1,66 @@
+[core]
+reloadable = true
+order = 0
+
+[package]
+version = "1.43.5"
+category = "Simulation"
+title = "Wandelbots NOVA"
+description = "Simulate your robotics cell running on Wandelbots NOVA."
+authors = ["Wandelbots GmbH"]
+repository = ""
+keywords = ["Wandelbots", "WandelbotsNOVA", "NOVA", "Robotics", "Simulation", "Articulation", "Manufacturing", "UR", "Fanuc", "Yaskawa", "Kuka", "ABB", "UniversalRobots"]
+changelog = "docs/CHANGELOG.md"
+readme = "docs/README.md"
+preview_image = "data/preview.png"
+icon = "data/icon.png"
+
+
+[dependencies]
+"omni.isaac.core" = {}
+"omni.isaac.conveyor" = {}
+'omni.services.core' = {}
+"omni.isaac.cloner" = {}
+'omni.services.client' = {}
+'omni.services.usd' = {}
+"omni.services.transport.server.base" = {}
+"omni.services.transport.server.http" = {}
+"omni.services.transport.client.http_async" = {}
+"omni.kit.test" = {}
+"omni.graph" = {}
+
+[python.pipapi]
+requirements = [
+    "httpx==0.28.1",
+    "scikit-learn==1.6.1",
+    "wandelbots-nova==0.35.0",
+    "python-decouple==3.8"
+]
+
+modules = [
+    "httpx",
+    "sklearn",
+    "nova",
+    "decouple"
+]
+use_online_index = true
+
+[settings]
+exts."omni.services.transport.server.http".https.enabled=false
+exts."omni.services.transport.server.http".ssl.ssl_cert_reqs=1  #CERT_OPTIONAL
+exts."omni.services.transport.server.http".ssl.ssl_ciphers="TLSv1"
+exts."omni.services.transport.server.http".ssl.ssl_keyfile=""
+exts."omni.services.transport.server.http".ssl.ssl_certfile=""
+
+# Uncomment this line to define the port for the APIs
+# - HTTP has default port 8211 but can be 8011 when 8211 is not available
+# - HTTPS is always accessible through 8433
+# exts."omni.services.transport.server.http".port=8211
+
+# Watch the .ogn files for hot reloading (only works for Python files)
+[fswatcher.patterns]
+include = ["*.ogn", "*.py"]
+exclude = ["Ogn*Database.py"]
+
+[[python.module]]
+name = "wandelbots.omni"

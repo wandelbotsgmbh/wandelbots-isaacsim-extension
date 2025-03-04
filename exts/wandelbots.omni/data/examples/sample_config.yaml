@@ -1,0 +1,156 @@
+robots:
+  ur:
+    configuration:
+      host: 172.30.1.136
+      cell: cell
+      controller_id: ur10e
+      motion_group_id: 0
+      prim_path: /World/UR10eWorkspace/universalrobots_ur10e/universalrobots_UR10e
+      is_secured: false
+  abb:
+    configuration:
+      host: 172.30.1.136
+      cell: cell
+      controller_id: abb
+      motion_group_id: 0
+      prim_path: /World/ABB_IR1200Workspace/abb_IRB1200_700/abb_IRB1200_700_1
+      is_secured: false
+tools:
+  conveyor:
+    configuration:
+      type: Conveyor
+      prim_path: /World/ABB_IR1200Workspace/conveyor_test/conveyor
+      robot: ur
+      signals:
+      - digital_out[0]
+      curved: false
+      states:
+      - mode: stop
+        signals_mapping:
+          digital_out[0]: false
+        velocity: 0.0
+        direction:
+        - 1.0
+        - 0.0
+        - 0.0
+      - mode: left
+        signals_mapping:
+          digital_out[0]: true
+        velocity: 0.3
+        direction:
+        - -1.0
+        - 0.0
+        - 0.0
+      - mode: right
+        signals_mapping:
+          digital_out[0]: true
+        velocity: 0.3
+        direction:
+        - 1.0
+        - 0.0
+        - 0.0
+  urgripper:
+    configuration:
+      type: SurfaceGripper
+      prim_path: /World/UR10eWorkspace/Schmalz_GripperElement/Schmalz_GripperElement
+      robot: ur
+      signals:
+      - tool_out[0]
+      - tool_out[1]
+      translate: 0.0
+      direction: z
+      grip_threshold: 0.01
+      force_limit: 1000000.0
+      torque_limit: 1000000.0
+      bend_angle: 0.1308996938995747
+      kp: 100000.0
+      kd: 10000.0
+      disable_gravity: false
+      states:
+      - mode: open
+        signals_mapping:
+          tool_out[0]: true
+          tool_out[1]: false
+      - mode: close
+        signals_mapping:
+          tool_out[0]: false
+          tool_out[1]: true
+  abbgripper:
+    configuration:
+      type: ArticulationChain
+      prim_path: /World/ABB_IR1200Workspace/Schunk_CoAct/Gripper_Body
+      robot: ur
+      signals:
+      - digital_out[0]
+      - digital_out[1]
+      lower_limit:
+      - 0.0
+      - 0.0
+      upper_limit:
+      - -0.006
+      - 0.006
+      states:
+      - mode: full_open
+        signals_mapping:
+          digital_out[0]: true
+          digital_out[1]: false
+        joint_positions:
+        - 0.0
+        - 0.0
+        joint_velocities:
+        - 0.001
+        - 0.001
+      - mode: full_close
+        signals_mapping:
+          digital_out[0]: false
+          digital_out[1]: true
+        joint_positions:
+        - -0.006
+        - 0.006
+        joint_velocities:
+        - 0.001
+        - 0.001
+  abbanaloggripper:
+    configuration:
+      type: AnalogArticulationChain
+      prim_path: /World/ABB_IR1200Workspace/Schunk_CoAct/Gripper_Body
+      robot: ur
+      signals:
+      - id: analog_out[0]
+        range:
+        - 0.004
+        - 0.4
+      - id: analog_out[1]
+        range:
+        - 0.004
+        - 0.4
+      lower_limit:
+      - 0.0
+      - 0.0
+      upper_limit:
+      - -0.006
+      - 0.006
+      joint_velocities:
+      - 0.001
+      - 0.001
+streams:
+  urstream:
+    configuration:
+      type: RobotStateConnector
+      robot: ur
+      robot_state: 50
+  abbstream:
+    configuration:
+      type: RobotStateConnector
+      robot: abb
+      robot_state: 50
+  uriostream:
+    configuration:
+      type: IOStateConnector
+      robot: ur
+  abbiostream:
+    configuration:
+      type: IOStateConnector
+      robot: abb
+scene:
+  uri: ""
