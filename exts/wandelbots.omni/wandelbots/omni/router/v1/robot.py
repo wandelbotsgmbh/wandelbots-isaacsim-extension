@@ -14,6 +14,7 @@ from wandelbots.omni.utils.ghost_teaching import (
     get_possible_ghost_object_sources,
     add_source_ghost_object,
 )
+from wandelbots.omni.utils.auth import get_auth_token
 
 robot_router = APIRouter(prefix="/robot", tags=["robot"])
 
@@ -46,7 +47,8 @@ async def create_robot(configuration: ConfigurableRobot.Configuration) -> None:
         raise HTTPException(404, f"Invalid configuration: {str(e)}") from e
 
     try:
-        await robot_instance.check_connection()
+        token = get_auth_token()
+        await robot_instance.check_connection(token)
     except Exception as e:
         raise HTTPException(
             404,

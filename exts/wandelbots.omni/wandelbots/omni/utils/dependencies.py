@@ -45,7 +45,7 @@ def _install_package(dependency):
     
     omni.kit.pipapi.install(package=package,
                             version=version, 
-                            ignore_import_check=True,
+                            ignore_import_check=False,
                             ignore_cache=True,
                             use_online_index=True,
                             surpress_output=False,

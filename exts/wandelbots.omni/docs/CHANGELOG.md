@@ -1,5 +1,36 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.45.1 (2025-03-14)
+
+### Bug Fixes
+
+* Allow physical robots to be connected
+* Check for joints in motion group state.
+
+## 1.45.0 (2025-03-13)
+
+### Features
+
+* Add X-Wandelbots-Client to API requests.
+
+## 1.44.1 (2025-03-12)
+
+### Bug Fixes
+
+* Authentication inside of Isaac Sim was not possible
+
+## 1.44.0 (2025-03-07)
+
+### Features
+
+* Remove singleton for authentication
+* Update authorization process.
+* Use default values if .env is not available
+
+### Bug Fixes
+
+* Add missing auth token to calls
+
 ## 1.43.5 (2025-02-20)
 
 ### Bug Fixes

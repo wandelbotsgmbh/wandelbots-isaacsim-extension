@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 from omni.isaac.core.articulations import Articulation
 import omni.isaac.core.utils.stage as stage_utils
-from wandelbots.omni.utils.auth import Auth0Model
+from wandelbots.omni.utils.auth import validate_request
 
 
 @dataclass
@@ -31,11 +31,10 @@ class ConfigurableRobot:
             ) from e
         self._connected_tools = []
 
-    async def check_connection(self):
-        token = Auth0Model.get_token()
+    async def check_connection(self, token: str | None):
         protocol = "https" if self._configuration.is_secured else "http"
         self.base_url = f"{protocol}://{self._configuration.host}/api/v1/cells/{self._configuration.cell}/controllers/{self._configuration.controller_id}/state"
-        await Auth0Model.validate_request(token, self.base_url)
+        await validate_request(token, self.base_url)
 
     @property
     def articulation(self):

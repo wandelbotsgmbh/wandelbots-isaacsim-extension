@@ -10,6 +10,7 @@ from omni.isaac.core.utils.types import ArticulationAction
 from .base import StreamingConnector
 from wandelbots.omni.environment import host_database
 from wandelbots.omni.utils.api import get_api_client
+from wandelbots.omni.utils.auth import get_auth_token
 
 
 class RobotStateConnector(StreamingConnector):
@@ -53,23 +54,24 @@ class RobotStateConnector(StreamingConnector):
             return f"{base_url}/controllers/{self.controller_id}/teach-pendant/motion-groups/external-joints-stream"
         return f"{base_url}/motion-groups/{self.motion_group}/state-stream?response_rate={self.configuration.robot_state}"
 
-    async def check_connection(self):
+    async def check_connection(self, token: str | None):
         """
         Tests if a connection can be established. Will throw an error if check failed
         """
-        await self.get_motion_group_state()
+        await self.get_motion_group_state(token)
 
-    async def get_motion_group_state(self):
-        api_client = get_api_client(self.host, self._robot_configuration["is_secured"])
-        state = await wb.VirtualRobotApi(api_client=api_client).get_motion_group_state(
-            self.cell, self.controller_id, self.motion_group_id
+    async def get_motion_group_state(self, token: str | None):
+        api_client = get_api_client(self.host, self._robot_configuration["is_secured"], token)
+        state = await wb.MotionGroupInfosApi(api_client=api_client).get_current_motion_group_state(
+            self.cell, self.motion_group
         )
         await api_client.close()
         return state
 
     async def open(self):
         self.websocket_uri = self._generate_websocket_uri()
-        await self._open_websocket_connection(uri=self.websocket_uri)
+        token = get_auth_token()
+        await self._open_websocket_connection(uri=self.websocket_uri, token=token)
 
     async def close(self):
         await self._close_websocket_connection()
@@ -82,7 +84,10 @@ class RobotStateConnector(StreamingConnector):
         raise NotImplementedError
 
     async def start_stream(self, **kwargs):        
-        joint_count = len((await self.get_motion_group_state()).positions)
+        token = get_auth_token()
+        result = await self.get_motion_group_state(token=token)
+
+        joint_count = len(result.state.joint_position.joints)
         if joint_count != self.default_DOFS:
             carb.log_error("MotionState joint count does not match configuration DOF")
         robot = kwargs.get("robot")

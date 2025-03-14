@@ -1,5 +1,5 @@
-from wandelbots.omni.datatypes import OAuthCredentials
-from wandelbots.omni.utils.auth import Auth0Model
+from wandelbots.omni.datatypes import Auth0Credentials
+from wandelbots.omni.utils.auth import get_auth_token, store_auth_token, validate_request
 from wandelbots.omni.utils.base import get_versions_of_enabled_extensions
 from fastapi import Body, FastAPI, Request
 from fastapi import status as st
@@ -22,7 +22,7 @@ from .router.v1 import (
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="1.43.5",
+    version="1.45.1",
     redoc_url=None,
 )
 omniservice_app.add_middleware(
@@ -56,7 +56,7 @@ async def get_versions():
     operation_id="authenticate",
     response_model=None,
 )
-async def authenticate(credentials: OAuthCredentials = Body()) -> None:
+async def authenticate(credentials: Auth0Credentials = Body()) -> None:
     """
     Starting with 24.8: This endpoint allows you to authenticate via the provided access token of your NOVA instance.
 
@@ -75,11 +75,12 @@ async def authenticate(credentials: OAuthCredentials = Body()) -> None:
         if credentials.access_token:
             token_to_validate = credentials.access_token
         else:
-            token_to_validate = Auth0Model.get_token()
+            token_to_validate = get_auth_token()
 
-        await Auth0Model.validate_request(token_to_validate, base_url)
+        await validate_request(token_to_validate, base_url)
 
-        Auth0Model.store_token(token_to_validate)
+        if token_to_validate is not None:
+            store_auth_token(token_to_validate)
     except Exception as e:
         raise ValueError(f"Can not authenticate with Wandelbots NOVA. {e}")
 

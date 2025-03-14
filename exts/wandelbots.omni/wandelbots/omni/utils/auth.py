@@ -3,27 +3,54 @@ import httpx
 
 from fastapi import HTTPException
 from wandelbots.omni.environment import credential_store, load_env
+from nova.auth.auth_config import Auth0Config
+from nova.auth.authorization import Auth0DeviceAuthorization
+
+def get_auth_token():
+    config = get_auth_config()
+    storage_key = config.get_validated_config()[0]
+    if storage_key in credential_store:
+        carb.log_verbose(f"Retrieved stored token for {storage_key}.")
+        return credential_store[storage_key]
+    return None 
+
+async def poll_token_endpoint(controller:Auth0DeviceAuthorization):
+    carb.log_verbose("Waiting for successful authentication.")
+    token = await controller.poll_token_endpoint()
+    return token
 
 
-class Auth0Model:
-    
-    @staticmethod
-    def get_token():
-        config = load_env()
-        domain = config("AUTH0_DOMAIN")
-        if domain in credential_store:
-            return credential_store[domain]
-        return None
+def get_device_code_info(controller: Auth0DeviceAuthorization):
+    try:
+        device_code_info = controller.request_device_code()
+        carb.log_verbose(f"Device code info: {device_code_info}")
+        return device_code_info
+    except Exception as e:
+        carb.log_error(f"Failed to request device code: {e}")
 
-    @staticmethod
-    def store_token(token: str):
-        config = load_env()
-        domain = config("AUTH0_DOMAIN")
-        credential_store[domain] = token
-        carb.log_info("Stored token.")
+def store_auth_token(token: str):
+    try:
+        config = get_auth_config()
+        storage_key = config.get_validated_config()[0]
+        if storage_key in credential_store:
+            return credential_store[storage_key]
+        credential_store[storage_key] = token
+    except Exception as e:
+        carb.log_error(f"Failed to store token: {e}")
 
-    @staticmethod
-    async def validate_request(token: str | None, base_url: str):
+def get_auth_config():
+    config = load_env()
+
+    if config is None:
+        carb.log_verbose("Use default authentication information.")
+        return Auth0Config.from_env()
+    auth0_domain = config("AUTH0_DOMAIN")
+    auth0_client_id = config("AUTH0_CLIENT_ID")
+    auth0_audience = config("AUTH0_AUDIENCE")
+    carb.log_verbose("Use authentication information form .env.")
+    return Auth0Config(domain=auth0_domain, client_id=auth0_client_id, audience=auth0_audience)
+
+async def validate_request(token: str | None, base_url: str):
         if token is not None:
             try:
                 async with httpx.AsyncClient() as client:
@@ -67,4 +94,3 @@ class Auth0Model:
                         401,
                         "Unable to reach server. Check if authentication details are required",
                     ) from e
-

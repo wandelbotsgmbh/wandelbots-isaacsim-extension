@@ -27,7 +27,7 @@ class QuatPose(BaseModel):
         return value
 
 
-class OAuthCredentials(BaseModel):
+class Auth0Credentials(BaseModel):
     host: str
     is_secured: bool = True
     access_token: Optional[str]

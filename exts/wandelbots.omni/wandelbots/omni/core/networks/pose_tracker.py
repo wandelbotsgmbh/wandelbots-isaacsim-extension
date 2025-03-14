@@ -9,7 +9,7 @@ from .base import StreamingConnector
 import omni.isaac.core.utils.stage as stage_utils
 
 from wandelbots.omni.utils.prim_utils import PrimUtils
-
+from wandelbots.omni.utils.auth import get_auth_token
 
 class PoseTracker(StreamingConnector):
     @final
@@ -47,7 +47,8 @@ class PoseTracker(StreamingConnector):
             ) from e
 
     async def open(self):
-        await self._open_websocket_connection(uri=self.websocket_uri)
+        token = get_auth_token()
+        await self._open_websocket_connection(uri=self.websocket_uri, token=token)
 
     async def close(self):
         await self._close_websocket_connection()

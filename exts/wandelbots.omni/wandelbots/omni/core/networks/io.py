@@ -2,9 +2,10 @@ import json
 import carb
 import urllib.parse
 from typing import Literal, List, final
-from wandelbots.omni.utils.auth import Auth0Model
+from wandelbots.omni.utils.auth import validate_request
 from .base import StreamingConnector
 from wandelbots.omni.environment import host_database
+from wandelbots.omni.utils.auth import get_auth_token
 
 
 class IOStateConnector(StreamingConnector):
@@ -28,18 +29,18 @@ class IOStateConnector(StreamingConnector):
         websocket_protocol = "wss" if self._robot_configuration["is_secured"] else "ws"
         self.base_websocket_uri = f"{websocket_protocol}://{self.host}/api/v1/cells/{self.cell}/controllers/{self.controller_id}/ios/stream"
 
-    async def check_connection(self):
-        token = Auth0Model.get_token()
+    async def check_connection(self, token: str | None):
         protocol = "https" if self._robot_configuration["is_secured"] else "http"
         base_url = f"{protocol}://{self.host}/api/v1/cells/{self.cell}/controllers/{self.controller_id}/ios/values"
-        await Auth0Model.validate_request(token, base_url)
+        await validate_request(token, base_url)
 
     async def open(self, io_ids: List[str]):
         query = "ios=" + "&ios=".join(
             [urllib.parse.quote(io, safe="") for io in io_ids]
         )
         self.websocket_uri = f"{self.base_websocket_uri}?{query}"
-        await self._open_websocket_connection(uri=self.websocket_uri)
+        token = get_auth_token()
+        await self._open_websocket_connection(uri=self.websocket_uri, token=token)
 
     async def close(self):
         await self._close_websocket_connection()

@@ -1,6 +1,7 @@
 from wandelbots.omni.utils.database import InMemoryDatabase, CredentialStore
 from decouple import Config, RepositoryEnv
 import os
+import carb
 
 host_database = InMemoryDatabase()
 credential_store = CredentialStore()
@@ -16,7 +17,8 @@ def load_env() -> Config:
     env_path = find_env_file(start_path)
     
     if env_path is None:
-        raise FileNotFoundError(f"No .env file found in the directory tree. {start_path}")
+        return None
     
     config = Config(RepositoryEnv(env_path))
+    carb.log_info(f"Loaded environment variables from {env_path}")
     return config

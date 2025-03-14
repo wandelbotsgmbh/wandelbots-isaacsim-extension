@@ -7,7 +7,7 @@ import omni
 import omni.timeline
 import pydantic
 import websockets
-from wandelbots.omni.utils.auth import Auth0Model
+from wandelbots.omni.utils.auth import get_auth_token
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
 class DecayingTimeout:
@@ -133,7 +133,8 @@ class StreamingConnector:
                     carb.log_error(
                         f"Reconnecting attempt {self.connection_timeout.wait_count}"
                     )
-                    await self._open_websocket_connection(self.websocket_uri)
+                    token = get_auth_token()
+                    await self._open_websocket_connection(self.websocket_uri, token=token)
         except ConnectionClosedOK as connection_closed:
             carb.log_info(f'Connection closed "{connection_closed}"')
         except ConnectionClosedError as connection_error:
@@ -177,11 +178,10 @@ class StreamingConnector:
     async def _parse(self, **kwargs):
         pass
 
-    async def _open_websocket_connection(self, uri):
+    async def _open_websocket_connection(self, uri, token: str | None):
         async with self._stream_lifecycle_lock:
             carb.log_info(f"Opening websocket connection to {uri}")
             self.connection_timeout.reset()
-            token = Auth0Model.get_token()
             if token: 
                 headers = {"Authorization": f"Bearer {token}"}
                 self.websocket = await websockets.connect(uri, extra_headers=headers)

@@ -12,6 +12,8 @@ from wandelbots.omni.router.v1.utils import (
     fetch_all_streaming_configurations,
     fetch_streamers,
 )
+from wandelbots.omni.utils.auth import get_auth_token
+
 from fastapi import APIRouter, Body, HTTPException, WebSocket, status, Depends
 
 stream_router = APIRouter(prefix="/streams", tags=["streams"], dependencies=[Depends(get_stream_manager)])
@@ -87,7 +89,8 @@ async def create_streams(
             stream = StreamingConnector.streams_registry[stream_config.type](
                 stream_config
             )
-            await stream.check_connection()
+            token = get_auth_token()
+            await stream.check_connection(token)
         except Exception as e:
             raise HTTPException(404, f"Unable to create stream: {str(e)}")
 
