@@ -1,5 +1,11 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.45.2 (2025-03-17)
+
+### Bug Fixes
+
+* Lazy loading of nova.auth dependency
+
 ## 1.45.1 (2025-03-14)
 
 ### Bug Fixes

@@ -18,8 +18,7 @@ from omni.kit.menu.utils import add_menu_items, remove_menu_items
 from omni.services.core import main
 import carb
 from wandelbots.omni.utils.base import get_current_version
-from wandelbots.omni.gui.auth import Auth0UIBuilder
-from wandelbots.omni.utils import dependencies
+from wandelbots.omni.utils.dependencies import check_dependencies
 from wandelbots.omni.router.v1.utils import StreamManager, get_stream_manager
 import omni.timeline
 
@@ -30,18 +29,18 @@ class OmniService(omni.ext.IExt):
     def on_startup(self, ext_id) -> None:
         carb.log_info("Mounting /omniservice")
         self.stream_manager = StreamManager()
+        check_dependencies()
 
         omniservice_app.dependency_overrides[get_stream_manager] = lambda: self.stream_manager
         main.register_mount("/omniservice", omniservice_app)
         self.menu_item_name = "Wandelbots NOVA"
-
 
         self._sub_stage_event = (
             omni.usd.get_context()
             .get_stage_event_stream()
             .create_subscription_to_pop(self._on_stage_event)
         )
-        dependencies.check_dependencies()
+        
         self._load_carb_settings()
         self._generate_schema()
         self._create_menu(ext_id=ext_id)
@@ -112,6 +111,8 @@ class OmniService(omni.ext.IExt):
 
     @staticmethod
     def _authorize():
+        # Lazy loading of dependency to prevent imports missing while nova-sdk is being installed
+        from wandelbots.omni.gui.auth import Auth0UIBuilder
         ui_builder = Auth0UIBuilder()
         ui_builder.display_auth_window()
 

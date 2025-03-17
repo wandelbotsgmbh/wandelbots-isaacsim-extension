@@ -3,7 +3,7 @@ reloadable = true
 order = 0
 
 [package]
-version = "1.45.1"
+version = "1.45.2"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."

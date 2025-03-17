@@ -22,7 +22,7 @@ from .router.v1 import (
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="1.45.1",
+    version="1.45.2",
     redoc_url=None,
 )
 omniservice_app.add_middleware(
