@@ -1,5 +1,56 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.47.1 (2025-03-20)
+
+### Bug Fixes
+
+* point cloud output datatype
+
+## 1.47.0 (2025-03-20)
+
+### Features
+
+* Added OGN IO nodes (read/write/onchange)
+
+## 1.46.0 (2025-03-20)
+
+### Features
+
+* add base template for configurable camera
+* add camera parameters models
+* add datatypes for configurable camera
+* add dependeny injection for fetching configurable camera
+* add endpoints to delete cameras
+* add fetching and deleting configured camera endpoints
+* capture bounding box data in structured format
+* capture segmentation data in structured format
+* change endpoints for camera router
+
+### Bug Fixes
+
+* bounding box data formats for issac sim 4.5
+* capturing depth, normals data
+* capturing pc data
+* change query paramters to body for labels
+* code to capture segemntaiton data
+* endpoints to capture segmentation data
+* endpoints to capture synethetic data
+* fetching cam params and setting cam params
+* fetching camera paramters in structured format
+* formatting errors
+* formatting issues
+* formatting issues for static analysis
+* get active camera validation error
+* package imports for synthetic data
+* semantic segmentation datatypes
+* setting camera parameters for 4.5
+* virtual camera configuration model
+* visualization of 2d bounding boxes
+
+### Performance Improvements
+
+* optimise reading and writing camera paramters for Isaac sim 4.5
+
 ## 1.45.2 (2025-03-17)
 
 ### Bug Fixes

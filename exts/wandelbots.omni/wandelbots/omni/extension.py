@@ -1,37 +1,58 @@
+import asyncio
 import json
 import os
-import omni.usd
-import carb.settings
 import weakref
 import webbrowser
-import omni.ui as ui
-import omni.kit.pipapi
+
+import carb
+import carb.settings
+from fastapi.openapi.utils import get_openapi
+from wandelbots.omni.base import omniservice_app
+from wandelbots.omni.core.networks.io_stream_service import (
+    IOStreamService,
+    get_io_stream_service,
+)
+from wandelbots.omni.environment import host_database
+from wandelbots.omni.router.v1.utils import StreamManager, get_stream_manager
+from wandelbots.omni.utils.base import get_current_version
+from wandelbots.omni.utils.dependencies import check_dependencies
+from wandelbots.omni.utils.shims.menu import make_menu_item_description
 
 import omni.ext
 import omni.kit.commands
+import omni.timeline
+import omni.ui as ui
 import omni.usd
-from wandelbots.omni.base import omniservice_app
-from wandelbots.omni.environment import host_database
-from fastapi.openapi.utils import get_openapi
-from wandelbots.omni.utils.shims.menu import make_menu_item_description
 from omni.kit.menu.utils import add_menu_items, remove_menu_items
 from omni.services.core import main
-import carb
-from wandelbots.omni.utils.base import get_current_version
-from wandelbots.omni.utils.dependencies import check_dependencies
-from wandelbots.omni.router.v1.utils import StreamManager, get_stream_manager
-import omni.timeline
 
 kit_app = main.get_app()
 
 
 class OmniService(omni.ext.IExt):
     def on_startup(self, ext_id) -> None:
+        check_dependencies()
         carb.log_info("Mounting /omniservice")
         self.stream_manager = StreamManager()
-        check_dependencies()
+        self.io_stream_service = IOStreamService()
 
-        omniservice_app.dependency_overrides[get_stream_manager] = lambda: self.stream_manager
+        omniservice_app.dependency_overrides[get_stream_manager] = (
+            lambda: self.stream_manager
+        )
+        omniservice_app.dependency_overrides[get_io_stream_service] = (
+            lambda: self.io_stream_service
+        )
+
+        self.timeline = omni.timeline.get_timeline_interface()
+        carb.log_verbose(f"{self} listening to timeline events")
+        self.timeline_sub = (
+            self.timeline.get_timeline_event_stream().create_subscription_to_pop(
+                lambda event: self._on_timeline_events(
+                    async_loop=asyncio.get_event_loop(), event=event
+                )
+            )
+        )
+
         main.register_mount("/omniservice", omniservice_app)
         self.menu_item_name = "Wandelbots NOVA"
 
@@ -45,7 +66,20 @@ class OmniService(omni.ext.IExt):
         self._generate_schema()
         self._create_menu(ext_id=ext_id)
 
-        
+    async def start_all_io_streams(self):
+        await self.io_stream_service.start_all_streams()
+
+        # Define a callback function to handle timeline events
+
+    def _on_timeline_events(self, async_loop, event):
+        if event.type == omni.timeline.TimelineEventType.PLAY.value:
+            async_loop.create_task(self.start_all_io_streams())
+
+        if (
+            event.type == omni.timeline.TimelineEventType.STOP.value
+            or event.type == omni.timeline.TimelineEventType.PAUSE.value
+        ):
+            async_loop.create_task(self.io_stream_service.stop_all_streams())
 
     def _on_stage_event(self, event):
         if event.type == int(omni.usd.StageEventType.OPENED) or event.type == int(
@@ -57,19 +91,24 @@ class OmniService(omni.ext.IExt):
         carb.log_info("Unmount /omniservice")
         main.deregister_mount("/omniservice")
         omniservice_app.openapi_schema = None
-        
 
         remove_menu_items(self._menu_items, self.menu_item_name)
         omniservice_app.dependency_overrides[get_stream_manager] = None
-        
+
         self.stream_manager.close()
         self.stream_manager = None
         host_database.clear_all()
 
-        timeline = omni.timeline.get_timeline_interface()
-        if timeline.is_playing():
+        asyncio.get_event_loop().run_until_complete(self.io_stream_service.clear())
+        self.io_stream_service = None
+        omniservice_app.dependency_overrides[get_io_stream_service] = None
+
+        self.timeline_sub.unsubscribe()
+        self.timeline_sub = None
+
+        if self.timeline.is_playing():
             carb.log_info("Stopping timeline")
-            timeline.stop()
+            self.timeline.stop()
 
     def _create_menu(self, ext_id):
         self._menu_items = [
@@ -127,7 +166,9 @@ class OmniService(omni.ext.IExt):
                     alignment=ui.Alignment.CENTER,
                     style={"font_size": 20, "font_weight": "bold"},
                 )
-                ui.Label(f"Version {OmniService._version}", alignment=ui.Alignment.CENTER)
+                ui.Label(
+                    f"Version {OmniService._version}", alignment=ui.Alignment.CENTER
+                )
 
     @staticmethod
     def _generate_schema():

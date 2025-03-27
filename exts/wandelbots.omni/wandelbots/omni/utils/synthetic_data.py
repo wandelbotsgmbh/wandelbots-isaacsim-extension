@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 import omni.isaac.core.utils.semantics as semantic_utils
@@ -7,13 +7,16 @@ from wandelbots.omni.utils.prim_utils import PrimUtils
 from omni.replicator.core.scripts.writers_default.tools import data_to_colour
 from PIL import Image, ImageDraw
 from sklearn.neighbors import NearestNeighbors
+from scipy.spatial.transform import Rotation as R
 
+from wandelbots.omni.datatypes import BoundingBox2D, BoundingBox3D, CameraParams
 
 class SyntheticDataUtils:
     @staticmethod
-    def colorize_segmented_data(segmented_data: np.ndarray) -> np.ndarray:
+    def colorize_segmented_data(segmented_data: list) -> np.ndarray:
         color_dict = {}
         np.random.seed(33)
+        segmented_data = np.array(segmented_data)
         for each in np.unique(segmented_data):
             color = list(np.random.choice(range(256), size=3))
             color_dict.update({each: color})
@@ -28,31 +31,23 @@ class SyntheticDataUtils:
 
     @staticmethod
     def colorize_3d_bounding_boxes(
-        image: Image, bbox_3ds: dict, camera_params: dict
+        image: Image, bbox_3ds: list[BoundingBox3D], camera_params: CameraParams
     ) -> Image:
-        cam_view_transform = np.array(camera_params["cameraViewTransform"]).reshape(
+        cam_view_transform = np.array(camera_params.cameraViewTransform).reshape(
             (4, 4)
         )
         cam_view_transform = cam_view_transform.T
-        cam_projection_transform = np.array(camera_params["cameraProjection"]).reshape(
+        cam_projection_transform = np.array(camera_params.cameraProjection).reshape(
             (4, 4)
         )
         cam_projection_transform = cam_projection_transform.T
-        width, height = camera_params["resolution"]
+        width, height = camera_params.resolution
 
-        colors = [data_to_colour(bbox["semanticId"]) for bbox in bbox_3ds["data"]]
-        for bbox_data in bbox_3ds["data"]:
-            s_id, x_min, y_min, z_min, x_max, y_max, z_max = (
-                bbox_data[0],
-                bbox_data[1],
-                bbox_data[2],
-                bbox_data[3],
-                bbox_data[4],
-                bbox_data[5],
-                bbox_data[6],
-            )
-            local_to_world_transform = bbox_data[7]
-            local_to_world_transform = local_to_world_transform.T
+        colors = {bbox.semantic_id: data_to_colour(bbox.semantic_id) for bbox in bbox_3ds}
+        for bbox_data in bbox_3ds:
+            s_id = bbox_data.semantic_id
+            x_min, y_min, z_min, x_max, y_max, z_max = bbox_data.bbox
+            local_to_world_transform = np.array(bbox_data.transform).T
             vertices_local = [
                 np.array([x_min, y_min, z_min, 1]),
                 np.array([x_min, y_min, z_max, 1]),
@@ -90,18 +85,17 @@ class SyntheticDataUtils:
             return image
 
     @staticmethod
-    def colorize_2d_bounding_boxes(image: Image, bbox_2ds: dict) -> Image:
+    def colorize_2d_bounding_boxes(image: Image, bbox_2ds: BoundingBox2D) -> Image:
         draw = ImageDraw.Draw(image)
-        colors = [data_to_colour(bbox["semanticId"]) for bbox in bbox_2ds["data"]]
-        bbox_2ds_data = np.array(bbox_2ds["data"].tolist()).astype(np.int64)
-        for s_id, xmin, ymin, xmax, ymax, _ in bbox_2ds_data:
-            draw.rectangle([(xmin, ymin), (xmax, ymax)], outline=colors[s_id], width=2)
+        for each in bbox_2ds:
+            xmin, ymin, xmax, ymax = map(int, each.bbox)
+            color = data_to_colour(each.semantic_id)
+            draw.rectangle([(xmin, ymin), (xmax, ymax)], outline=color, width=2)
+
         return image
 
     @staticmethod
-    def downscale_point_cloud(
-        points: np.ndarray, colors: np.ndarray, normals: np.ndarray, percentage: float
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def downscale_point_cloud(points: np.ndarray, colors: np.ndarray, normals: np.ndarray, percentage: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         original_points_count = len(points)
         downsampled_points_count = int(original_points_count * percentage)
         nn_model = NearestNeighbors(n_neighbors=1)
@@ -117,8 +111,8 @@ class SyntheticDataUtils:
         return selected_points, selected_colors, selected_normals
 
     @staticmethod
-    def get_semantic_predicate(object_class: List[str] = "all") -> str:
-        if "all" in object_class:
+    def get_semantic_predicate(object_class: list[str]) -> str:
+        if object_class==["all"]:
             semantic_predicate = "class:*"
         else:
             sem_str = "|".join(object_class)
@@ -150,3 +144,22 @@ class SyntheticDataUtils:
     def remove_all_semantic_labels() -> None:
         source_prim = PrimUtils.get_object("/")
         semantic_utils.remove_all_semantics(source_prim, recursive=True)
+
+    @staticmethod
+    async def get_camera_tfm(camera_path: str) -> np.ndarray:
+        pose = PrimUtils.get_pose(camera_path, coordinate_system="world")
+        tfm = np.eye(4)
+        tfm[:3, :3] = R.from_rotvec(pose.pose[3:]).as_matrix()
+        tfm[:3, -1] = pose.pose[:3]
+        tfm[:3, -1] = tfm[:3, -1]
+        return np.linalg.inv(tfm)
+
+    @staticmethod
+    def transform_points(points3d, tfm) -> np.ndarray:
+        points4d = np.hstack([points3d, np.ones((points3d.shape[0], 1))])
+        points4d = np.dot(points4d, tfm.T)
+        return points4d[:, :3]
+
+    @staticmethod
+    def transform_normals(normals3d, tfm) -> np.ndarray:
+        return np.dot(normals3d, tfm[:3, :3].T)
