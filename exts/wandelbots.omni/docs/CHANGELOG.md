@@ -1,5 +1,17 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.47.3 (2025-04-09)
+
+### Bug Fixes
+
+* **RPS-1527:** Fixed invalid async in ghost object creation
+
+## 1.47.2 (2025-03-27)
+
+### Bug Fixes
+
+* missing __init__.py file for loading extension
+
 ## 1.47.1 (2025-03-20)
 
 ### Bug Fixes

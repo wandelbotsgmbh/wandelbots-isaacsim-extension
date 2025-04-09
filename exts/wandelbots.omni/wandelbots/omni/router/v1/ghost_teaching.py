@@ -132,7 +132,7 @@ async def add_ghost_object(
 
     # set ghost object to active TCP pose
     if ref_pose:
-        await PrimUtils.set_pose(target_path, ref_pose)
+        PrimUtils.set_pose(target_path, ref_pose)
 
 
 @ghost_teaching_router.delete(
