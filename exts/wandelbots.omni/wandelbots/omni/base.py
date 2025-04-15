@@ -1,7 +1,11 @@
 from wandelbots.omni.datatypes import Auth0Credentials
-from wandelbots.omni.utils.auth import get_auth_token, store_auth_token, validate_request
+from wandelbots.omni.utils.auth import (
+    get_auth_token,
+    store_auth_token,
+    validate_request,
+)
 from wandelbots.omni.utils.base import get_versions_of_enabled_extensions
-from fastapi import Body, FastAPI, Request
+from fastapi import Body, FastAPI, Request, HTTPException
 from fastapi import status as st
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -22,7 +26,7 @@ from .router.v1 import (
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="1.47.3",
+    version="1.47.4",
     redoc_url=None,
 )
 omniservice_app.add_middleware(
@@ -32,7 +36,6 @@ omniservice_app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 @omniservice_app.get("/status", status_code=st.HTTP_200_OK)
@@ -70,7 +73,7 @@ async def authenticate(credentials: Auth0Credentials = Body()) -> None:
     """
     try:
         protocol = "https" if credentials.is_secured else "http"
-        base_url = f"{protocol}://{credentials.host}/"
+        base_url = f"{protocol}://{credentials.host}/api/v1/license"
 
         if credentials.access_token:
             token_to_validate = credentials.access_token
@@ -82,7 +85,7 @@ async def authenticate(credentials: Auth0Credentials = Body()) -> None:
         if token_to_validate is not None:
             store_auth_token(token_to_validate)
     except Exception as e:
-        raise ValueError(f"Can not authenticate with Wandelbots NOVA. {e}")
+        raise HTTPException(500, f"Can not authenticate with Wandelbots NOVA. {e}")
 
 
 @omniservice_app.get("/api", include_in_schema=False)
@@ -126,5 +129,3 @@ omniservice_app.include_router(router=tool_router)
 omniservice_app.include_router(router=stream_router)
 omniservice_app.include_router(router=ghost_teaching_router)
 omniservice_app.include_router(router=ui_router)
-    
-    

@@ -1,5 +1,11 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.47.4 (2025-04-15)
+
+### Bug Fixes
+
+* Fixed used base_url endpoint for authentication
+
 ## 1.47.3 (2025-04-09)
 
 ### Bug Fixes

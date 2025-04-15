@@ -60,7 +60,7 @@ async def validate_request(token: str | None, base_url: str):
                     if response.status_code != 200:
                         raise HTTPException(
                             400,
-                            "Unable to ping server after successfully after establishing connection",
+                            f"Unable to ping server after successfully (status={response.status_code}) after establishing connection",
                         )
                     carb.log_info("Authentication successful")
             except httpx.HTTPStatusError as e:
@@ -72,7 +72,7 @@ async def validate_request(token: str | None, base_url: str):
                 else:
                     raise HTTPException(
                         403,
-                        "Authentication error: Forbidden access. You might not have the necessary permissions",
+                        f"Authentication error: Forbidden access (status={e.response.status_code}). You might not have the necessary permissions",
                     )
             except Exception as e:
                 raise HTTPException(400, "Invalid authentication details") from e
