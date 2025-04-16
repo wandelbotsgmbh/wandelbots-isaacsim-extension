@@ -61,7 +61,7 @@ class OmniService(omni.ext.IExt):
             .get_stage_event_stream()
             .create_subscription_to_pop(self._on_stage_event)
         )
-        
+
         self._load_carb_settings()
         self._generate_schema()
         self._create_menu(ext_id=ext_id)
@@ -99,7 +99,8 @@ class OmniService(omni.ext.IExt):
         self.stream_manager = None
         host_database.clear_all()
 
-        asyncio.get_event_loop().run_until_complete(self.io_stream_service.clear())
+        # Clearing the stream in sync with on_shutdown causes isaac sim to crash
+        asyncio.get_event_loop().create_task(self.io_stream_service.clear())
         self.io_stream_service = None
         omniservice_app.dependency_overrides[get_io_stream_service] = None
 
@@ -152,6 +153,7 @@ class OmniService(omni.ext.IExt):
     def _authorize():
         # Lazy loading of dependency to prevent imports missing while nova-sdk is being installed
         from wandelbots.omni.gui.auth import Auth0UIBuilder
+
         ui_builder = Auth0UIBuilder()
         ui_builder.display_auth_window()
 

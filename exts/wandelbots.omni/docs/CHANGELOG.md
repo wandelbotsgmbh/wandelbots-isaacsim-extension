@@ -1,5 +1,18 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.47.6 (2025-04-16)
+
+### Bug Fixes
+
+* Fixed crash in extension shutdown
+
+## 1.47.5 (2025-04-16)
+
+### Bug Fixes
+
+* inverse first and inverse second modes when complex rots are present
+* relative pose orientations
+
 ## 1.47.4 (2025-04-15)
 
 ### Bug Fixes

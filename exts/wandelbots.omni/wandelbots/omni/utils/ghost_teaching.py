@@ -203,7 +203,7 @@ async def add_source_ghost_object(source_prim_path: str) -> None:
         tcp_fix_paths = target_prim.GetChildren()
         for each in tcp_fix_paths:
             rel_pose = PrimUtils.get_relative_pose(
-                each.GetPrimPath().pathString, tcp_source.prim_path, mode="inverse_both"
+                each.GetPrimPath().pathString, tcp_source.prim_path, mode="inverse_first"
             )
             await set_pose(each.GetPrimPath().pathString, rel_pose)
 

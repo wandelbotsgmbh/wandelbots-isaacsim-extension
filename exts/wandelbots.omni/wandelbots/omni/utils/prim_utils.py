@@ -208,13 +208,13 @@ class PrimUtils:
         prim2_matrix = pose_to_matrix(prim2_pose.pose)
 
         if mode == "normal":  # prim1::prim2
-            result_matrix = np.linalg.inv(prim1_matrix) @ prim2_matrix
-        elif mode == "inverse_first":  # ~prim1::prim2
             result_matrix = prim1_matrix @ prim2_matrix
+        elif mode == "inverse_first":  # ~prim1::prim2
+            result_matrix = np.linalg.inv(prim1_matrix) @ prim2_matrix
         elif mode == "inverse_second":  # prim1::~prim2
-            result_matrix = np.linalg.inv(prim1_matrix) @ np.linalg.inv(prim2_matrix)
+            result_matrix = prim1_matrix @ np.linalg.inv(prim2_matrix)
         elif mode == "inverse_both":  # ~prim1::~prim2
-            result_matrix = np.linalg.inv(prim2_matrix) @ prim1_matrix
+            result_matrix = np.linalg.inv(prim1_matrix) @ np.linalg.inv(prim2_matrix)
         else:
             raise ValueError(
                 "Invalid mode. Choose from 'normal', 'inverse_first', 'inverse_second', or 'inverse_both'."
