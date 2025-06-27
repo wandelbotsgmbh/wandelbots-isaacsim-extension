@@ -1,5 +1,7 @@
 # Wandelbots NOVA
 
+> This extension release requires Wandelbots NOVA 25.6.
+
 This extension lets you connect your NVIDIA Isaac Sim simulation environment with Wandelbots NOVA.
 
 Wandelbots Nova enables easy programming of industrial robots with a brand-agnostic approach. Users can set up different robot models and teach them through a user-friendly interface or by using the provided APIs.

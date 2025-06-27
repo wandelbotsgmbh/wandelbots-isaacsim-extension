@@ -1,5 +1,17 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.48.0 (2025-06-26)
+
+### Features
+
+* **RPS-1819:** Compatability release for Wandelbots NOVA 25.6
+
+## 1.47.7 (2025-05-06)
+
+### Bug Fixes
+
+* upload to azure storage account
+
 ## 1.47.6 (2025-04-16)
 
 ### Bug Fixes

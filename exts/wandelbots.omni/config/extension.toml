@@ -3,7 +3,7 @@ reloadable = true
 order = 0
 
 [package]
-version = "1.47.6"
+version = "1.48.0"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -33,7 +33,7 @@ icon = "data/icon.png"
 requirements = [
     "httpx==0.28.1",
     "scikit-learn==1.6.1",
-    "wandelbots-nova==0.46.0",
+    "wandelbots-nova==1.8.3",
     "python-decouple==3.8"
 ]
 

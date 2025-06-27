@@ -7,6 +7,7 @@ import omni
 import omni.timeline
 import pydantic
 import websockets
+import inspect
 from wandelbots.omni.utils.auth import get_auth_token
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
@@ -178,13 +179,24 @@ class StreamingConnector:
     async def _parse(self, **kwargs):
         pass
 
+    def _to_header_params(self, headers):
+        signature = inspect.signature(websockets.connect)
+        kwargs = {}
+        # newer websockets versions only accept additional_headers
+        if "additional_headers" in signature.parameters:
+            kwargs["additional_headers"] = headers
+        elif "extra_headers" in signature.parameters:
+            kwargs["extra_headers"] = headers
+        return kwargs
+
+
     async def _open_websocket_connection(self, uri, token: str | None):
         async with self._stream_lifecycle_lock:
             carb.log_info(f"Opening websocket connection to {uri}")
             self.connection_timeout.reset()
             if token: 
-                headers = {"Authorization": f"Bearer {token}"}
-                self.websocket = await websockets.connect(uri, extra_headers=headers)
+                kwargs = self._to_header_params({"Authorization": f"Bearer {token}"})
+                self.websocket = await websockets.connect(uri, **kwargs)
             else:
                 self.websocket = await websockets.connect(uri)
 

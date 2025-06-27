@@ -51,8 +51,8 @@ class RobotStateConnector(StreamingConnector):
         websocket_protocol = "wss" if self._robot_configuration["is_secured"] else "ws"
         base_url = f"{websocket_protocol}://{self.host}/api/v2/cells/{self.cell}"
         if self.is_external_joint_stream():
-            return f"{base_url}/controllers/{self.controller_id}/teach-pendant/motion-groups/external-joints-stream"
-        return f"{base_url}/motion-groups/{self.motion_group}/state-stream?response_rate={self.configuration.robot_state}"
+            return f"{base_url}/virtual-controllers/{self.controller_id}/external-joints-stream"
+        return f"{base_url}/controllers/{self.controller_id}/motion-groups/{self.motion_group}/state-stream?response_rate={self.configuration.robot_state}"
 
     async def check_connection(self, token: str | None):
         """
@@ -61,15 +61,18 @@ class RobotStateConnector(StreamingConnector):
         await self.get_motion_group_state(token)
 
     async def get_motion_group_state(self, token: str | None):
-        api_client = get_api_client(self.host, self._robot_configuration["is_secured"], token)
-        state = await wb.MotionGroupInfosApi(api_client=api_client).get_current_motion_group_state(
-            self.cell, self.motion_group
+        api_client = get_api_client(
+            self.host, self._robot_configuration["is_secured"], token
         )
+        state = await wb.MotionGroupInfosApi(
+            api_client=api_client
+        ).get_current_motion_group_state(self.cell, self.motion_group)
         await api_client.close()
         return state
 
     async def open(self):
         self.websocket_uri = self._generate_websocket_uri()
+        print("Connecting to websocket at:", self.websocket_uri)
         token = get_auth_token()
         await self._open_websocket_connection(uri=self.websocket_uri, token=token)
 
@@ -83,7 +86,7 @@ class RobotStateConnector(StreamingConnector):
     async def send(self, message: str):
         raise NotImplementedError
 
-    async def start_stream(self, **kwargs):        
+    async def start_stream(self, **kwargs):
         token = get_auth_token()
         result = await self.get_motion_group_state(token=token)
 
@@ -91,7 +94,9 @@ class RobotStateConnector(StreamingConnector):
         if joint_count != self.default_DOFS:
             carb.log_error("MotionState joint count does not match configuration DOF")
         robot = kwargs.get("robot")
-        carb.log_info(f"Start {self.motion_group} with {joint_count} joints externalJoints={self.is_external_joint_stream()}")
+        carb.log_info(
+            f"Start {self.motion_group} with {joint_count} joints externalJoints={self.is_external_joint_stream()}"
+        )
 
         if self.is_external_joint_stream():
             joint_positions = self.get_joint_positions(robot)
@@ -119,10 +124,7 @@ class RobotStateConnector(StreamingConnector):
                 torques=zeros,
             ),
         ).to_dict()
-        # TODO: needs to be fixed in api package
-        # Model is invalid and needs a motion group
-        joint_state_request["motion_group"] = self.motion_group
-        await self.websocket.send(json.dumps(joint_state_request))
+        await self.websocket.send(json.dumps({"states": [joint_state_request]}))
 
     async def _parse(self, **kwargs):
         # Make sure robot with articulation root is present
@@ -161,25 +163,35 @@ class RobotStateConnector(StreamingConnector):
 
         if self.timeline.is_stopped():
             return
-        
+
         self.apply_joints(robot, joint_positions)
-        
 
     async def _update_joints_in_external_mode(
-        self, robot, motion_response_result: dict
+        self,
+        robot,
+        motion_response_result: list[wb_models.ExternalJointStreamDatapoint],
     ):
-        # Expected data format is { "positions": [...] }
-        if "positions" not in motion_response_result:
-            carb.log_error('"positions" not found in motion state response.')
+        if len(motion_response_result) == 0:
+            carb.log_warn(
+                f"Received empty motion state response for {self.motion_group_id}"
+            )
             return
-        joint_positions = motion_response_result["positions"]
+        if len(motion_response_result) > 1:
+            carb.log_warn(
+                f"Received multiple motion states for {self.motion_group_id}, only using the first one"
+            )
+
+        first_datapoint = wb_models.ExternalJointStreamDatapoint.from_dict(
+            motion_response_result[0]
+        )
+        joint_positions = first_datapoint.value.positions
 
         # Robot can only be updated if timeline is playing
         # Otherwise you will get something like the following error:
         # Physics Simulation View is not created yet in order to use apply_action/get_joint_positions
         if self.timeline.is_playing():
             self.apply_joints(robot, joint_positions)
-            
+
             # Send feedback of articulation action
             self._last_joints = self.get_joint_positions(robot)
 
@@ -206,7 +218,9 @@ class RobotStateConnector(StreamingConnector):
             joint_positions (float): New position target for robot joints (needs to match joint count)
         """
         if not robot.articulation.is_valid():
-            carb.log_error(f"Invalid articulation for {(self._configuration.identifier)}")
+            carb.log_error(
+                f"Invalid articulation for {(self._configuration.identifier)}"
+            )
             return
 
         if self.default_DOFS is None:
@@ -226,5 +240,5 @@ class RobotStateConnector(StreamingConnector):
             joint_velocities=None,
             joint_indices=np.array(range(self.default_DOFS)),
         )
-        
+
         robot.articulation.apply_action(robot_action)
