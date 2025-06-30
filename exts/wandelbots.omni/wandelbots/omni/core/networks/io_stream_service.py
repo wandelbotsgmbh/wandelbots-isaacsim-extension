@@ -173,6 +173,19 @@ class ControllerIOStreamService:
                 )
                 return
 
+            # Need to filter the unsubscribed subscription out because the weakref remove might be too late
+            # and we would keep an empty io with zero subscriptions
+            filtered_subscriptions = [
+                sub for sub in self.io_subscriptions[io] if sub.id != subscription_id
+            ]
+
+            if len(filtered_subscriptions) == 0:
+                del self.io_subscriptions[io]
+            else:
+                self.io_subscriptions[io] = weakref.WeakSet(filtered_subscriptions)
+
+    def _remove_empty_io_subscriptions(self):
+        for io in list(self.io_subscriptions.keys()):
             if len(self.io_subscriptions[io]) == 0:
                 del self.io_subscriptions[io]
 
@@ -223,6 +236,11 @@ class ControllerIOStreamService:
 
             watched_ios: list[str] = []
             for io in ios:
+                if len(self.io_subscriptions[io]) == 0:
+                    carb.log_verbose(
+                        f"{self.controller} {io} has no subscriptions, skipping"
+                    )
+                    continue
                 try:
                     response = wb_models.ListIOValuesResponse.from_dict(
                         requests.get(
@@ -233,6 +251,7 @@ class ControllerIOStreamService:
                             timeout=10,
                         ).json()
                     )
+
                     self.io_cache[io] = get_io_value(response.io_values[0])
                     if self.io_cache[io] is None:
                         raise ValueError("Value not supported")
@@ -247,7 +266,9 @@ class ControllerIOStreamService:
                 return
 
             carb.log_verbose("Connecting")
-            ios_query_string = urllib.parse.urlencode({"ios": list(ios)}, doseq=True)
+            ios_query_string = urllib.parse.urlencode(
+                {"ios": list(watched_ios)}, doseq=True
+            )
 
             uri = f"{self.api_configuration.base_url_websocket}/cells/{self.cell}/controllers/{self.controller}/ios/stream?{ios_query_string}"
             carb.log_verbose(f"Open io stream {uri}")

@@ -72,7 +72,7 @@ class RobotStateConnector(StreamingConnector):
 
     async def open(self):
         self.websocket_uri = self._generate_websocket_uri()
-        print("Connecting to websocket at:", self.websocket_uri)
+        carb.log_verbose(f"Connecting to websocket at: {self.websocket_uri}")
         token = get_auth_token()
         await self._open_websocket_connection(uri=self.websocket_uri, token=token)
 

@@ -1,5 +1,13 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 1.48.1 (2025-06-30)
+
+### Bug Fixes
+
+* Fixed empty IO subscription artifacts after unsubscribe
+* Fixed invalid IOs not being filtered out correctly
+* Fixed reconnect triggering reset every time
+
 ## 1.48.0 (2025-06-26)
 
 ### Features

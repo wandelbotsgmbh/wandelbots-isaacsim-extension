@@ -60,7 +60,6 @@ class ReconnectingWebsocket:
             if self.websocket:
                 carb.log_warn(f"{self.websocket_uri} is already open")
                 return
-            self.connection_timeout.reset()
             self.websocket = await websockets.connect(
                 self.websocket_uri, extra_headers=self.websocket_additional_headers
             )
@@ -91,7 +90,13 @@ class ReconnectingWebsocket:
                     carb.log_error(
                         f"Reconnecting attempt {self.connection_timeout.wait_count}"
                     )
-                    await self.open(self.websocket_uri)
+                    try:
+                        await self.open()
+                    except Exception as connection_error:
+                        carb.log_error(
+                            f"Reconnecting failed with error {connection_error}"
+                        )
+                        continue
         except websockets.ConnectionClosedOK as connection_closed:
             carb.log_verbose(f'Connection closed "{connection_closed}"')
         except websockets.ConnectionClosedError as connection_error:
