@@ -1,15 +1,22 @@
-from typing import Dict
-
+import carb
 import numpy as np
-import omni.isaac.core.utils.semantics as semantic_utils
-import omni.isaac.core.utils.stage as stage_utils
-from wandelbots.omni.utils.prim_utils import PrimUtils
+
+try:
+    import isaacsim.core.utils.semantics as semantic_utils
+    import isaacsim.core.utils.stage as stage_utils
+except ImportError:
+    import omni.isaac.core.utils.semantics as semantic_utils
+    import omni.isaac.core.utils.stage as stage_utils
+
+    carb.log_warn("snythetic_data is using legacy isaac sim imports")
+from wandelbots.omni.utils.prims import PrimUtils
 from omni.replicator.core.scripts.writers_default.tools import data_to_colour
 from PIL import Image, ImageDraw
 from sklearn.neighbors import NearestNeighbors
 from scipy.spatial.transform import Rotation as R
 
-from wandelbots.omni.datatypes import BoundingBox2D, BoundingBox3D, CameraParams
+from wandelbots.omni.periphery.camera_configuration import BoundingBox2D, BoundingBox3D
+
 
 class SyntheticDataUtils:
     @staticmethod
@@ -31,19 +38,34 @@ class SyntheticDataUtils:
 
     @staticmethod
     def colorize_3d_bounding_boxes(
-        image: Image, bbox_3ds: list[BoundingBox3D], camera_params: CameraParams
+        camera_path: str,
+        resolution: tuple[int, int],
+        image: Image,
+        bbox_3ds: list[BoundingBox3D],
     ) -> Image:
-        cam_view_transform = np.array(camera_params.cameraViewTransform).reshape(
-            (4, 4)
-        )
-        cam_view_transform = cam_view_transform.T
-        cam_projection_transform = np.array(camera_params.cameraProjection).reshape(
-            (4, 4)
-        )
-        cam_projection_transform = cam_projection_transform.T
-        width, height = camera_params.resolution
+        from pxr import Usd, UsdGeom, Gf
 
-        colors = {bbox.semantic_id: data_to_colour(bbox.semantic_id) for bbox in bbox_3ds}
+        camera: Gf.Camera = UsdGeom.Camera(
+            stage_utils.get_current_stage(), camera_path
+        ).GetCamera(Usd.TimeCode.Default())
+        width, height = resolution
+        camera_matrix = camera.get_intrinsics_matrix()
+        transformation_matrix = camera.get_view_matrix_ros()
+        projection_matrix = np.vstack(
+            [
+                np.matmul(camera_matrix, transformation_matrix[:3, :]),
+                np.array([0, 0, 0, 1]),
+            ]
+        )
+
+        cam_view_transform = np.array(transformation_matrix.tolist()).reshape((4, 4))
+        cam_view_transform = cam_view_transform.T
+        cam_projection_transform = np.array(projection_matrix).reshape((4, 4))
+        cam_projection_transform = cam_projection_transform.T
+
+        colors = {
+            bbox.semantic_id: data_to_colour(bbox.semantic_id) for bbox in bbox_3ds
+        }
         for bbox_data in bbox_3ds:
             s_id = bbox_data.semantic_id
             x_min, y_min, z_min, x_max, y_max, z_max = bbox_data.bbox
@@ -95,7 +117,9 @@ class SyntheticDataUtils:
         return image
 
     @staticmethod
-    def downscale_point_cloud(points: np.ndarray, colors: np.ndarray, normals: np.ndarray, percentage: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def downscale_point_cloud(
+        points: np.ndarray, colors: np.ndarray, normals: np.ndarray, percentage: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         original_points_count = len(points)
         downsampled_points_count = int(original_points_count * percentage)
         nn_model = NearestNeighbors(n_neighbors=1)
@@ -112,7 +136,7 @@ class SyntheticDataUtils:
 
     @staticmethod
     def get_semantic_predicate(object_class: list[str]) -> str:
-        if object_class==["all"]:
+        if object_class == ["all"]:
             semantic_predicate = "class:*"
         else:
             sem_str = "|".join(object_class)
@@ -121,8 +145,9 @@ class SyntheticDataUtils:
         return semantic_predicate
 
     @staticmethod
-    def get_all_semantic_labels() -> Dict[str, list]:
+    def get_all_semantic_labels() -> dict[str, list]:
         labels = {}
+
         for prim in stage_utils.traverse_stage():
             label = semantic_utils.get_semantics(prim)
             if "Semantics" in label:
@@ -131,23 +156,23 @@ class SyntheticDataUtils:
 
     @staticmethod
     def set_semantic_label(prim_path: str, label: str) -> None:
-        prim = PrimUtils.get_object(prim_path)
+        prim = PrimUtils.get_prim(prim_path)
         semantic_utils.add_update_semantics(prim, label)
 
     @staticmethod
     def get_semantic_label(prim_path: str) -> list[str]:
-        prim = PrimUtils.get_object(prim_path)
+        prim = PrimUtils.get_prim(prim_path)
         label = semantic_utils.get_semantics(prim)
         return [label["Semantics"][1]] if label else []
 
     @staticmethod
     def remove_all_semantic_labels() -> None:
-        source_prim = PrimUtils.get_object("/")
+        source_prim = PrimUtils.get_prim("/")
         semantic_utils.remove_all_semantics(source_prim, recursive=True)
 
     @staticmethod
     async def get_camera_tfm(camera_path: str) -> np.ndarray:
-        pose = PrimUtils.get_pose(camera_path, coordinate_system="world")
+        pose = PrimUtils.get_prim_pose(camera_path, coordinate_system="world")
         tfm = np.eye(4)
         tfm[:3, :3] = R.from_rotvec(pose.pose[3:]).as_matrix()
         tfm[:3, -1] = pose.pose[:3]

@@ -65,3 +65,10 @@ def get_api_client_from_config(
         token=config.access_token,
         version=config.version,
     )
+
+
+def get_base_headers(access_token: str | None) -> dict:
+    base_headers = {"X-Wandelbots-Client": "isaac-sim-extension"}
+    if access_token:
+        base_headers["Authorization"] = f"Bearer {access_token}"
+    return base_headers

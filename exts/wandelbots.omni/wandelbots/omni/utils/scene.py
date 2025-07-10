@@ -1,4 +1,3 @@
-from typing import Tuple
 import omni.timeline
 import omni.usd
 from pxr import UsdGeom
@@ -6,7 +5,7 @@ from pxr import UsdGeom
 
 class SceneUtils:
     @staticmethod
-    async def check_simulation() -> Tuple[omni.timeline.Timeline, bool]:
+    async def check_simulation() -> tuple[omni.timeline.Timeline, bool]:
         """
         Checks if the simulation is still played in the scene
         Returns:

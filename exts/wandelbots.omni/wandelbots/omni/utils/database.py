@@ -33,17 +33,17 @@ class InMemoryDatabase(MutableMapping):
         for part in parts[:-1]:
             current_node = current_node[part]
         del current_node[parts[-1]]
-    
+
     def _is_dict_empty_or_none(value: dict) -> bool:
         return not value
 
     def __contains__(self, key):
         current_node = self.data
         parts = key.split(".")
-        current_node_found = not InMemoryDatabase._is_dict_empty_or_none(current_node) 
+        current_node_found = not InMemoryDatabase._is_dict_empty_or_none(current_node)
         if not current_node_found:
             return False
-        
+
         for part in parts:
             current_node = current_node.get(part, {})
             if InMemoryDatabase._is_dict_empty_or_none(current_node):
