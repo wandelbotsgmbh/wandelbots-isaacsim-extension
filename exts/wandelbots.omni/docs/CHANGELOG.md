@@ -1,5 +1,45 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.0.1 (2025-07-13)
+
+### Bug Fixes
+
+* Changed nova sdk version to 1.9.1
+
+# Changelog
+
+## 2.0.0 (2025-07-09)
+
+### Features
+
+* Made endpoints RESTful
+* Optimized doc strings
+* Added query and body request parameters
+* Handled deprecated types in data types
+* Refactored prims utils
+* Renamed robot to motion-group
+* Simplified camera endpoints
+
+## 1.48.1 (2025-06-30)
+
+### Bug Fixes
+
+* Fixed empty IO subscription artifacts after unsubscribe
+* Fixed invalid IOs not being filtered out correctly
+* Fixed reconnect triggering reset every time
+
+## 1.48.0 (2025-06-26)
+
+### Features
+
+* **RPS-1819:** Compatability release for Wandelbots NOVA 25.6
+
+## 1.47.7 (2025-05-06)
+
+### Bug Fixes
+
+* upload to azure storage account
+
 ## 1.47.6 (2025-04-16)
 
 ### Bug Fixes
