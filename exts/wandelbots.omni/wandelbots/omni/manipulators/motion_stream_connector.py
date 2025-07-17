@@ -4,7 +4,7 @@ import json
 import carb
 import numpy as np
 import omni.timeline
-import wandelbots_api_client as wb
+import wandelbots_api_client.v2 as wb
 import wandelbots_api_client.v2.models as wb_models
 from omni.isaac.core.utils.types import ArticulationAction
 from wandelbots.omni.core.networks import ReconnectingWebsocket
@@ -41,6 +41,7 @@ class MotionStreamConnector:
     @property
     def _websocket_uri(self):
         base_url = self.api_configuration.base_url_websocket
+        print(base_url)
         if self.is_external_joint_stream:
             return f"{base_url}/cells/{self.configuration.cell}/virtual-controllers/{self.configuration.controller_id}/external-joints-stream"
         return f"{base_url}/cells/{self.configuration.cell}/controllers/{self.configuration.controller_id}/motion-groups/{self.configuration.motion_group}/state-stream?response_rate={self.configuration.response_rate}"
@@ -60,15 +61,14 @@ class MotionStreamConnector:
             version="v2",
         )
 
-    async def get_motion_group_state(self):
-        # Need to switch to v1 until v2 is stable
-        api_configuration = self.api_configuration
-        api_configuration.version = "v1"
-        async with get_api_client_from_config(api_configuration) as api_client:
-            state = await wb.MotionGroupInfosApi(
+    async def get_motion_group_state(self) -> wb_models.MotionGroupState:
+        async with get_api_client_from_config(self.api_configuration) as api_client:
+            state = await wb.MotionGroupApi(
                 api_client=api_client
             ).get_current_motion_group_state(
-                self.configuration.cell, self.configuration.motion_group
+                self.configuration.cell,
+                self.configuration.controller_id,
+                self.configuration.motion_group,
             )
             return state
 
@@ -83,16 +83,45 @@ class MotionStreamConnector:
         self.api_configuration = self._get_api_configuration(get_auth_token())
 
         result = await self.get_motion_group_state()
-        self.stream_joint_count = len(result.state.joint_position.joints)
+        self.stream_joint_count = len(result.joint_position.joints)
         carb.log_info(
             f"Start {self.configuration.motion_group} jointCount={self.stream_joint_count} externalJoints={self.is_external_joint_stream}"
         )
 
         await self.stream.open()
-        if self.is_external_joint_stream:
-            joint_positions = self.get_joint_positions()
-            # external joint stream requires the simulation to send its state first
-            await self.send_joint_positions(joint_positions)
+        if not self.is_external_joint_stream:
+            return
+
+        # If we are in external joint stream mode, we need to ensure the controller is in control mode
+        # otherwise the backend will not send joint states
+        async with get_api_client_from_config(self.api_configuration) as api_client:
+            controller_api = wb.ControllerApi(api_client=api_client)
+            mode_response = await controller_api.get_mode(
+                self.configuration.cell, self.configuration.controller_id
+            )
+            if (
+                mode_response.robot_system_mode
+                == wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_MONITOR
+            ):
+                carb.log_info(
+                    f"MotionGroup {self.configuration.motion_group} is in monitor mode, switching to control mode"
+                )
+                await controller_api.set_default_mode(
+                    self.configuration.cell,
+                    self.configuration.controller_id,
+                    wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
+                )
+            elif (
+                mode_response.robot_system_mode
+                != wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL
+            ):
+                carb.log_warn(
+                    f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {mode_response.robot_system_mode}, expected control mode"
+                )
+
+        joint_positions = self.get_joint_positions()
+        # external joint stream requires the simulation to send its state first
+        await self.send_joint_positions(joint_positions)
 
     async def send_joint_positions(self, positions: list[float]):
         if positions is None:
@@ -104,7 +133,7 @@ class MotionStreamConnector:
         zeros = list(np.zeros(self.stream_joint_count))
         joint_state_request = wb_models.ExternalJointStreamDatapoint(
             motion_group=self.configuration.motion_group,
-            value=wb_models.ExternalJointStreamDatapointValue(
+            value=wb_models.MotionGroupJoints(
                 positions=positions,
                 velocities=zeros,
                 accelerations=zeros,
@@ -129,29 +158,24 @@ class MotionStreamConnector:
         result = data["result"]
 
         if self.is_external_joint_stream:
-            await self._update_joints_in_external_mode(result)
-        else:
-            self._update_joints(result)
-
-    def _update_joints(self, motion_response_result: dict):
-        # Expected data format is { "joint_position": { "joints": [...] } }
-
-        if "joint_position" not in motion_response_result:
-            carb.log_error('"state.joint_position" not found in motion state response.')
-            return
-        result_joint_positions = motion_response_result["joint_position"]
-        if "joints" not in result_joint_positions:
-            carb.log_error(
-                '"state.joint_positions.joints" not found in motion state response.'
+            await self._update_joints_in_external_mode(
+                [
+                    wb_models.ExternalJointStreamDatapoint.from_dict(datapoint)
+                    for datapoint in result
+                ]
             )
-            return
-        joint_positions = result_joint_positions["joints"]
-        self._last_joints = joint_positions
+        else:
+            self._update_joints(
+                motion_response_result=wb_models.MotionGroupState.from_dict(result)
+            )
+
+    def _update_joints(self, motion_response_result: wb_models.MotionGroupState):
+        self._last_joints = motion_response_result.joint_position.joints
 
         if self.timeline.is_stopped():
             return
 
-        self.apply_joints(joint_positions)
+        self.apply_joints(motion_response_result.joint_position.joints)
 
     async def _update_joints_in_external_mode(
         self, motion_response_result: list[wb_models.ExternalJointStreamDatapoint]
@@ -167,16 +191,11 @@ class MotionStreamConnector:
                 f"Received multiple motion states for {self.configuration.motion_group_id}, only using the first one"
             )
 
-        first_datapoint = wb_models.ExternalJointStreamDatapoint.from_dict(
-            motion_response_result[0]
-        )
-        joint_positions = first_datapoint.value.positions
-
         # Robot can only be updated if timeline is playing
         # Otherwise you will get something like the following error:
         # Physics Simulation View is not created yet in order to use apply_action/get_joint_positions
         if self.timeline.is_playing():
-            self.apply_joints(joint_positions)
+            self.apply_joints(motion_response_result[0].value.positions)
 
             # Send feedback of articulation action
             self._last_joints = self.get_joint_positions()

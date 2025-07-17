@@ -1,12 +1,16 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.0.2 (2025-07-16)
+
+### Bug Fixes
+
+* **RPS-1869:** Upgraded connector models and enabled auto control mode switch for ext. joint stream
+
 ## 2.0.1 (2025-07-13)
 
 ### Bug Fixes
 
 * Changed nova sdk version to 1.9.1
-
-# Changelog
 
 ## 2.0.0 (2025-07-09)
 
