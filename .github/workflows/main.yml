@@ -16,14 +16,6 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all tags
 
-      - name: Create .env File
-        run: |
-          echo "" >> exts/wandelbots.omni/config/extension.toml
-          echo "[env]" >> exts/wandelbots.omni/config/extension.toml
-          echo "NOVA_AUTH0_DOMAIN = ${{ secrets.AUTH0_DOMAIN }}" >> exts/wandelbots.omni/config/extension.toml
-          echo "NOVA_AUTH0_AUDIENCE = ${{ secrets.AUTH0_AUDIENCE }}" >> exts/wandelbots.omni/config/extension.toml
-          echo "NOVA_AUTH0_CLIENT_ID = ${{ secrets.AUTH0_CLIENT_ID }}" >> exts/wandelbots.omni/config/extension.toml
-
       - name: Get the Git Tag for this Commit
         id: get_tag
         run: echo "TAG_NAME=$(git describe --tags $(git rev-list --tags --max-count=1))" >> $GITHUB_ENV
@@ -43,16 +35,6 @@ jobs:
           echo "TAG_MESSAGE<<EOF" >> $GITHUB_ENV
           echo "$TAG_MESSAGE" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-
-      - name: Verify .env File Exists
-        run: |
-          if [ ! -f exts/wandelbots.omni/config/.env ]; then
-            echo ".env file is missing!"
-            exit 1
-          else
-            echo ".env exists"
-            echo `cat exts/wandelbots.omni/config/.env`
-          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
