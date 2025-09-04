@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Literal
 
 import carb
 import numpy as np
@@ -41,7 +42,6 @@ class MotionStreamConnector:
     @property
     def _websocket_uri(self):
         base_url = self.api_configuration.base_url_websocket
-        print(base_url)
         if self.is_external_joint_stream:
             return f"{base_url}/cells/{self.configuration.cell}/virtual-controllers/{self.configuration.controller_id}/external-joints-stream"
         return f"{base_url}/cells/{self.configuration.cell}/controllers/{self.configuration.controller_id}/motion-groups/{self.configuration.motion_group}/state-stream?response_rate={self.configuration.response_rate}"
@@ -94,15 +94,37 @@ class MotionStreamConnector:
 
         # If we are in external joint stream mode, we need to ensure the controller is in control mode
         # otherwise the backend will not send joint states
+        await self._ensure_control_mode()
+
+        joint_positions = self.get_joint_positions()
+        # external joint stream requires the simulation to send its state first
+        await self.send_joint_positions(joint_positions)
+
+    async def _ensure_control_mode(self) -> None:
         async with get_api_client_from_config(self.api_configuration) as api_client:
             controller_api = wb.ControllerApi(api_client=api_client)
-            mode_response = await controller_api.get_mode(
-                self.configuration.cell, self.configuration.controller_id
+
+            # Need to parse the moved mode endpoint manually until the API client 25.7.0 is included in the sdk
+            controller_state = json.loads(
+                (
+                    await controller_api.get_current_robot_controller_state_with_http_info(
+                        self.configuration.cell, self.configuration.controller_id
+                    )
+                ).raw_data.decode("utf-8")
             )
-            if (
-                mode_response.robot_system_mode
-                == wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_MONITOR
-            ):
+
+            # <25.7.0 the controller state did not have a mode field
+            if "mode" not in controller_state:
+                carb.log_verbose(
+                    "Controller state does not have mode, switching back to legacy endpoint"
+                )
+                await self._ensure_control_mode_legacy(controller_api)
+                return
+
+            controller_mode: Literal["MODE_CONTROL", "MODE_MONITOR"] = controller_state[
+                "mode"
+            ]
+            if controller_mode == "MODE_MONITOR":
                 carb.log_info(
                     f"MotionGroup {self.configuration.motion_group} is in monitor mode, switching to control mode"
                 )
@@ -111,17 +133,32 @@ class MotionStreamConnector:
                     self.configuration.controller_id,
                     wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
                 )
-            elif (
-                mode_response.robot_system_mode
-                != wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL
-            ):
+            elif controller_mode != "MODE_CONTROL":
                 carb.log_warn(
-                    f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {mode_response.robot_system_mode}, expected control mode"
+                    f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {controller_mode}, expected control mode"
                 )
 
-        joint_positions = self.get_joint_positions()
-        # external joint stream requires the simulation to send its state first
-        await self.send_joint_positions(joint_positions)
+    async def _ensure_control_mode_legacy(
+        self, controller_api: wb.ControllerApi
+    ) -> None:
+        controller_mode = (
+            await controller_api.get_mode(
+                self.configuration.cell, self.configuration.controller_id
+            )
+        ).robot_system_mode
+        if controller_mode == wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_MONITOR:
+            carb.log_info(
+                f"MotionGroup {self.configuration.motion_group} is in monitor mode, switching to control mode"
+            )
+            await controller_api.set_default_mode(
+                self.configuration.cell,
+                self.configuration.controller_id,
+                wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
+            )
+        elif controller_mode != wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL:
+            carb.log_warn(
+                f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {controller_mode}, expected control mode"
+            )
 
     async def send_joint_positions(self, positions: list[float]):
         if positions is None:

@@ -459,33 +459,6 @@ async def set_prim_visibility(
         raise HTTPException(500, f"Could not show prim at path: {e}")
 
 
-@prims_router.patch(
-    path="/physics/colliders",
-    status_code=status.HTTP_204_NO_CONTENT,
-    operation_id="update_colliders",
-    response_model=None,
-    responses={
-        204: {"description": "Collider state updated successfully"},
-        404: {"description": "Invalid prim path"},
-        500: {"description": "Could not update collider state"},
-    },
-)
-async def update_colliders(
-    prim_path: str = Depends(validate_prim_path_body),
-    enable: bool = Body(
-        ..., description="Set to true to enable collider, false to disable"
-    ),
-) -> None:
-    """
-    Enable or disable the colliders on a prim.
-    """
-    try:
-        prim = PrimUtils.get_prim(prim_path)
-        prim.GetAttribute("physics:collisionEnabled").Set(True if enable else False)
-    except Exception as e:
-        raise HTTPException(500, f"Could not enable collider of prim at path: {e}")
-
-
 class PrimSelection(BaseModel):
     prim_paths: list[str] = Field(
         ..., descirption="Prims which will replace the selection"

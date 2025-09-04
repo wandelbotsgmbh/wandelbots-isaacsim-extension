@@ -1,10 +1,14 @@
-from wandelbots.omni.utils.database import InMemoryDatabase, CredentialStore
+from wandelbots.omni.utils.database import (
+    InMemoryDatabase,
+    CredentialStore,
+    InstanceStore,
+)
 from decouple import Config, RepositoryEnv
 import os
-import carb
 
 host_database = InMemoryDatabase()
 credential_store = CredentialStore()
+instance_store = InstanceStore()
 
 
 def find_env_file(start_path):
@@ -22,5 +26,4 @@ def load_env() -> Config:
         return None
 
     config = Config(RepositoryEnv(env_path))
-    carb.log_info(f"Loaded environment variables from {env_path}")
     return config

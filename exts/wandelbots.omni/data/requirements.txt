@@ -1,0 +1,5 @@
+httpx==0.28.1
+scikit-learn==1.6.1
+wandelbots-nova==2.9.0
+python-decouple==3.8
+tenacity==9.1.2

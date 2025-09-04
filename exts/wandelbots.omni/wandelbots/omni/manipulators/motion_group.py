@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
+from functools import cached_property
 
 import omni.isaac.core.utils.stage as stage_utils
 import pydantic
@@ -18,6 +19,10 @@ class MotionGroupConfiguration(pydantic.BaseModel):
         description="Path to motion-group prim with ArticulationRootApi",
     )
     motion_stream_configuration: MotionStreamConfiguration
+
+    @cached_property
+    def identifier(self) -> str:
+        return self.motion_stream_configuration.identifier
 
 
 @dataclass

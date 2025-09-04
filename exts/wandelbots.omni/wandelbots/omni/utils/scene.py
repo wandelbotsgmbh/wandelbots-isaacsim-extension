@@ -5,7 +5,7 @@ from pxr import UsdGeom
 
 class SceneUtils:
     @staticmethod
-    async def check_simulation() -> tuple[omni.timeline.Timeline, bool]:
+    def check_simulation() -> tuple[omni.timeline.Timeline, bool]:
         """
         Checks if the simulation is still played in the scene
         Returns:
@@ -20,3 +20,7 @@ class SceneUtils:
         stage = omni.usd.get_context().get_stage()
         stage_unit = UsdGeom.GetStageMetersPerUnit(stage)
         return stage_unit
+
+    @staticmethod
+    def value_to_millimeters(stage_value: float) -> float:
+        return (stage_value / SceneUtils.get_stage_units()) * 1000.0

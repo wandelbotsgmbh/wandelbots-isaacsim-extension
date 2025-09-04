@@ -7,13 +7,26 @@ from nova.auth.auth_config import Auth0Config
 from nova.auth.authorization import Auth0DeviceAuthorization
 
 
+def get_auth_environment():
+    """
+    Get the current authentication environment.
+    """
+    config = load_env()
+    if config is None:
+        carb.log_verbose("Using default authentication environment.")
+        return "prod"
+
+    auth0_environment = config("AUTH0_ENVIRONMENT", default="prod")
+    carb.log_verbose(f"Using authentication environment: {auth0_environment}")
+    return auth0_environment
+
+
 def get_auth_token():
     config = get_auth_config()
-    storage_key = config.get_validated_config()[0]
-    if storage_key in credential_store:
-        carb.log_verbose(f"Retrieved stored token for {storage_key}.")
-        return credential_store[storage_key]
-    return None
+    host = config.get_validated_config()[0]
+
+    carb.log_verbose(f"Retrieved stored token for {host}.")
+    return credential_store.get_token(host)
 
 
 async def poll_token_endpoint(controller: Auth0DeviceAuthorization):
@@ -31,15 +44,28 @@ def get_device_code_info(controller: Auth0DeviceAuthorization):
         carb.log_error(f"Failed to request device code: {e}")
 
 
-def store_auth_token(token: str):
+def store_auth_token(token: str, host: str = None):
     try:
-        config = get_auth_config()
-        storage_key = config.get_validated_config()[0]
-        if storage_key in credential_store:
-            return credential_store[storage_key]
-        credential_store[storage_key] = token
+        if host is None:
+            config = get_auth_config()
+            host = config.get_validated_config()[0]
+
+        credential_store.store_token(host, token)
     except Exception as e:
         carb.log_error(f"Failed to store token: {e}")
+
+
+def invalidate_auth_token():
+    """Invalidate and remove the authentication token when 401 is received."""
+    try:
+        config = get_auth_config()
+        host = config.get_validated_config()[0]
+        credential_store.remove_token(host)
+        carb.log_info(f"Authentication token invalidated for {host}")
+    except KeyError:
+        carb.log_warn("No token found to invalidate")
+    except Exception as e:
+        carb.log_error(f"Failed to invalidate token: {e}")
 
 
 def get_auth_config():

@@ -1,5 +1,88 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.3.0 (2025-08-21)
+
+### Features
+
+* Add cloud instance workflow
+* Add custom instance
+* Add custom instance and cleanup
+* Add folder for instances ui components
+* Add icons and refeactor structure
+* Add model name for robot
+* Add toggle of instance status (start, stop)
+* Add window which lists nova instances
+* Create motion group connection between nova and isaac sim
+* List motion groups
+* Migrate from motion_group_name to prim_path as identifier
+* Migrate to prim_path to get motion_group
+* Populate instances and cells
+* Refactor and update instances individually.
+* Refactoring instancedata. Update UI to look bit refined.
+* Remember connection state
+* Separate concerns. Extract delegate logic. Restructure.
+* Split up instances to distinct modules. Update wandelbots-nova to 2.9.0
+* Update connect and disconnect functionality
+* Update credential store to persist auth token
+* Update icons.py to use os instead of omni.kit.app
+* Update motion group configuration
+* Update openapi spec and update deletion of instance
+* Update signup process and cleanup
+* Update spaces and colors and show error message when motion group is already in use.
+
+### Bug Fixes
+
+* Add message when no instance is available
+* Check if we pull for auth token
+* Delete and styling and code formatting
+* Instance form cancel button was not working
+* Make custom instances work again
+* Refresh after delete
+* Remove conflicting dependencies
+* Remove custom instance was not working.
+* Removing motion group to prim path connection was not possible
+* Show message when no cloud instances are available
+* Support multiple cells again
+* Update authentication endpoint compatible
+* Update rendering
+* Update UI and cleanup colors.
+
+## 2.2.2 (2025-08-21)
+
+### Bug Fixes
+
+* Update naming of python client
+
+## 2.2.1 (2025-08-20)
+
+### Bug Fixes
+
+* Updated api client publishing
+
+## 2.2.0 (2025-08-20)
+
+### Features
+
+* Added truth table and range select node generation scripts
+
+## 2.1.2 (2025-07-29)
+
+### Bug Fixes
+
+* **RPS-1916:** Moved required pip packages to extension
+
+## 2.1.1 (2025-07-28)
+
+### Bug Fixes
+
+* **RPS-1913:** Updated control mode switch to new endpoint in NOVA 25.7.0
+
+## 2.1.0 (2025-07-28)
+
+### Features
+
+* **RPS-1356:** Collision export
+
 ## 2.0.2 (2025-07-16)
 
 ### Bug Fixes

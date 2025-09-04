@@ -2,6 +2,7 @@ import pathlib
 from enum import Enum
 from typing import Literal, Optional, Union
 from pydantic import BaseModel, SecretStr, Field, conlist
+import wandelbots_api_client.v2.models as nova_models
 
 
 class UsdStageModel(BaseModel):
@@ -12,6 +13,12 @@ class WSPose(BaseModel):
     pose: conlist(float, min_length=6, max_length=6) = Field(
         [0, 0, 0, 0, 0, 0], description="Pose in rotation vector format (WS)"
     )
+
+    def to_nova_pose(self) -> nova_models.Pose:
+        return nova_models.Pose(
+            position=self.pose[:3],
+            orientation=self.pose[3:],
+        )
 
 
 class QuatPose(BaseModel):

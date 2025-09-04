@@ -1,73 +1,56 @@
 import carb
 import os
-import toml
 import omni.kit.pipapi
-from importlib.metadata import distributions
+import sys
 
 
-def read_dependencies():
-    toml_file_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-        "config",
-        "extension.toml",
+def _get_pip_prebundle_dir():
+    return os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../../pip_prebundle")
     )
 
-    with open(toml_file_path, "r") as file:
-        data = toml.load(file)
 
-    # Extracting the requirements list from the 'python.pipapi' section
-    pipapi = data.get("python", {}).get("pipapi", {})
-    requirements = pipapi.get("requirements", [])
-    modules = pipapi.get("modules", [])
+def install_required_packages():
+    pip_prebundle_dir = _get_pip_prebundle_dir()
+    if pip_prebundle_dir not in sys.path:
+        sys.path.insert(0, pip_prebundle_dir)
 
-    dependencies = []
-    for requirement, module in zip(requirements, modules):
-        package, version = requirement.split("==")
-        dependencies.append({"package": package, "version": version, "module": module})
+    requirements_file = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "../../../data/requirements.txt")
+    )
+    if os.path.exists(pip_prebundle_dir):
+        carb.log_verbose(f"{pip_prebundle_dir} exists, skipping dependency check.")
+        return
 
-    return dependencies
-
-
-def check_dependencies():
-    dependencies = read_dependencies()
+    if not os.path.exists(requirements_file):
+        carb.log_verbose(
+            f"{requirements_file} does not exist, skipping dependency check."
+        )
+        return
 
     try:
-        for dependency in dependencies:
-            if not _is_installed(dependency):
-                _install_package(dependency)
+        install_status_code = omni.kit.pipapi.call_pip(
+            args=[
+                "install",
+                f"--target={pip_prebundle_dir}",
+                "-r",
+                f"{requirements_file}",
+            ],
+            surpress_output=False,
+        )
+        carb.log_info(f"Dependencies installed. status_code: {install_status_code}")
+
     except Exception as e:
         carb.log_error(f"Failed to install dependencies: {e}")
 
 
-def _install_package(dependency):
-    package = dependency["package"]
-    version = dependency["version"]
-    module = dependency["module"]
-
-    carb.log_warn(f"Installing {package} ({version})...")
-
-    omni.kit.pipapi.install(
-        package=package,
-        version=version,
-        ignore_import_check=False,
-        ignore_cache=True,
-        use_online_index=True,
-        surpress_output=False,
-        module=module,
-    )
-    carb.log_warn(f"{package} ({version}) installed")
+install_required_packages()
 
 
-def _is_installed(dependency) -> bool:
-    for dist in distributions():
-        package = dependency["package"]
-        version = dependency["version"]
-        if dist.metadata["Name"] == dependency["package"]:
-            installed_version = dist.version
-            if installed_version == dependency["version"]:
-                carb.log_info(
-                    f"{package} ({version}) is up to date. Nothing to do here."
-                )
-                return True
+def remove_extension_packages():
+    packaged_dir = _get_pip_prebundle_dir()
+    if packaged_dir in sys.path:
+        sys.path.remove(packaged_dir)
 
-    return False
+    if packaged_dir in sys.path:
+        carb.log_error(f"Failed to remove {packaged_dir} from sys.path")

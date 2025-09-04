@@ -26,42 +26,41 @@ class MotionGroupService:
         self.motion_group_lock = asyncio.Lock()
         self.timeline = omni.timeline.get_timeline_interface()
 
-    def has_motion_group(self, motion_group_name: str) -> bool:
-        return motion_group_name in host_database["motion_groups"]
+    def has_motion_group(self, prim_path: str) -> bool:
+        print(f"Host database motion groups: {host_database['motion_groups']}")
+        return prim_path in host_database["motion_groups"]
 
-    def get_all_motion_group_names(self) -> list[str]:
+    def get_all_motion_group_prim_paths(self) -> list[str]:
         return host_database["motion_groups"] if host_database["motion_groups"] else []
 
-    def _get_motion_group_dict(self, motion_group_name: str) -> dict:
-        db_path = f"motion_groups.{motion_group_name}"
-        if motion_group_name not in host_database["motion_groups"]:
-            raise KeyError(f"Robot {motion_group_name} not found")
+    def _get_motion_group_dict(self, prim_path: str) -> dict:
+        db_path = f"motion_groups.{prim_path}"
+        if prim_path not in host_database["motion_groups"]:
+            raise KeyError(f"Motion group for {prim_path} not found")
         return host_database[db_path]
 
-    def get_motion_group_instance(self, motion_group_name: str) -> MotionGroup | None:
-        motion_group = self._get_motion_group_dict(motion_group_name)
+    def get_motion_group_instance(self, prim_path: str) -> MotionGroup | None:
+        motion_group = self._get_motion_group_dict(prim_path)
         return motion_group["instance"] if "instance" in motion_group else None
 
     def get_motion_group_configuration(
         self,
-        motion_group_name: str,
+        prim_path: str,
     ) -> MotionGroupConfiguration | None:
-        motion_group = self._get_motion_group_dict(motion_group_name)
+        motion_group = self._get_motion_group_dict(prim_path)
         return (
             motion_group["configuration"] if "configuration" in motion_group else None
         )
 
-    def _get_motion_group_stream(
-        self, motion_group_name: str
-    ) -> MotionStreamConnector | None:
-        motion_group = self._get_motion_group_dict(motion_group_name)
+    def _get_motion_group_stream(self, prim_path: str) -> MotionStreamConnector | None:
+        motion_group = self._get_motion_group_dict(prim_path)
         return motion_group["stream"] if "stream" in motion_group else None
 
     def get_motion_group_by_prim_path(
         self, prim_path: str
     ) -> MotionGroupConfiguration | None:
-        for motion_group_name in host_database["motion_groups"]:
-            config = self.get_motion_group_configuration(motion_group_name)
+        for prim_path in host_database["motion_groups"]:
+            config = self.get_motion_group_configuration(prim_path)
             if config.prim_path == prim_path:
                 return config
         return None
@@ -77,10 +76,10 @@ class MotionGroupService:
                     f"Connection validation failed {ex} ({ex.__class__.__name__})"
                 )
 
-            host_database[f"motion_groups.{configuration.name}.configuration"] = (
+            host_database[f"motion_groups.{configuration.prim_path}.configuration"] = (
                 configuration
             )
-            host_database[f"motion_groups.{configuration.name}.instance"] = (
+            host_database[f"motion_groups.{configuration.prim_path}.instance"] = (
                 motion_group_instance
             )
 
@@ -101,13 +100,13 @@ class MotionGroupService:
 
     async def update_motion_group_stream_configuration(
         self,
-        motion_group_name: str,
+        prim_path: str,
         motion_stream_configuration: MotionStreamConfiguration,
     ):
         async with self.motion_group_lock:
-            old_configuration = self.get_motion_group_configuration(motion_group_name)
+            old_configuration = self.get_motion_group_configuration(prim_path)
             if old_configuration is None:
-                raise RuntimeError(f"Configuration of {motion_group_name} not found")
+                raise RuntimeError(f"Configuration of {prim_path} not found")
 
             updated_configuration = deepcopy(old_configuration)
             updated_configuration.motion_stream_configuration = (
@@ -122,74 +121,74 @@ class MotionGroupService:
                 f"Connection validation failed ({ex.__class__.__name__})"
 
             host_database[
-                f"motion_groups.{updated_configuration.name}.configuration"
+                f"motion_groups.{updated_configuration.prim_path}.configuration"
             ] = updated_configuration
-            host_database[f"motion_groups.{updated_configuration.name}.instance"] = (
-                motion_group_instance
-            )
+            host_database[
+                f"motion_groups.{updated_configuration.prim_path}.instance"
+            ] = motion_group_instance
 
         # Create new stream from config if exists
         async with self.stream_action_lock:
-            motion_stream = self._get_motion_group_stream(motion_group_name)
+            motion_stream = self._get_motion_group_stream(prim_path)
             if motion_stream is None:
                 return
 
             # Store for new stream starting state
             was_streaming = motion_stream.stream.streaming
 
-            await self._remove_stream(motion_group_name)
-            motion_stream = await self._create_stream(motion_group_name)
+            await self._remove_stream(prim_path)
+            motion_stream = await self._create_stream(prim_path)
             if was_streaming:
                 await self._start_stream(motion_stream)
 
-    async def remove_motion_group(self, motion_group_name: str):
+    async def remove_motion_group(self, prim_path: str):
         async with self.motion_group_lock:
-            if not self.has_motion_group(motion_group_name):
-                raise RuntimeError(f"Robot {motion_group_name} not found")
+            if not self.has_motion_group(prim_path):
+                raise RuntimeError(f"Motion Group for {prim_path} not found")
 
-            await self._remove_stream(motion_group_name)
+            await self._remove_stream(prim_path)
 
             # Delete the motion_group
-            del host_database[f"motion_groups.{motion_group_name}"]
+            del host_database[f"motion_groups.{prim_path}"]
 
     async def start_streams(self):
         async with self.stream_action_lock:
-            for motion_group_name in self.get_all_motion_group_names():
+            for prim_path in self.get_all_motion_group_prim_paths():
                 try:
-                    stream = self._get_motion_group_stream(motion_group_name)
+                    stream = self._get_motion_group_stream(prim_path)
                     if not stream:
-                        stream = await self._create_stream(motion_group_name)
+                        stream = await self._create_stream(prim_path)
                     await self._start_stream(stream)
                 except Exception as ex:
-                    carb.log_error(f"Failed to stream {motion_group_name}. {ex}")
+                    carb.log_error(f"Failed to stream {prim_path}. {ex}")
 
     async def stop_streams(self):
         async with self.stream_action_lock:
-            for motion_group_name in self.get_all_motion_group_names():
+            for prim_path in self.get_all_motion_group_prim_paths():
                 try:
-                    stream = self._get_motion_group_stream(motion_group_name)
+                    stream = self._get_motion_group_stream(prim_path)
                     if not stream:
                         continue
                     await self._stop_stream(stream)
                 except Exception as ex:
-                    carb.log_error(f"Failed to stop stream {motion_group_name}. {ex}")
+                    carb.log_error(f"Failed to stop stream {prim_path}. {ex}")
 
-    async def _create_stream(self, motion_group_name: str):
-        if self._get_motion_group_stream(motion_group_name):
+    async def _create_stream(self, prim_path: str):
+        if self._get_motion_group_stream(prim_path):
             raise RuntimeError(
-                f"{motion_group_name} is already created. Please delete it first to create a new stream"
+                f"{prim_path} is already created. Please delete it first to create a new stream"
             )
         try:
             stream = MotionStreamConnector(
-                motion_group=self.get_motion_group_instance(motion_group_name),
+                motion_group=self.get_motion_group_instance(prim_path),
                 configuration=self.get_motion_group_configuration(
-                    motion_group_name
+                    prim_path
                 ).motion_stream_configuration,
             )
             await stream.check_connection(get_auth_token())
         except Exception as e:
             raise RuntimeError(f"Unable to connect stream: {str(e)}")
-        host_database[f"motion_groups.{motion_group_name}.stream"] = stream
+        host_database[f"motion_groups.{prim_path}.stream"] = stream
         return stream
 
     async def _start_stream(self, stream_connector: MotionStreamConnector) -> None:
@@ -218,11 +217,11 @@ class MotionGroupService:
             )
         carb.log_info(f"Stream:{stream_connector.motion_group.identifier} stopped")
 
-    async def _remove_stream(self, motion_group_name: str):
-        if not self.has_motion_group(motion_group_name):
+    async def _remove_stream(self, prim_path: str):
+        if not self.has_motion_group(prim_path):
             return
 
-        stream_connector = self._get_motion_group_stream(motion_group_name)
+        stream_connector = self._get_motion_group_stream(prim_path)
         if not stream_connector:
             return
 
@@ -230,7 +229,7 @@ class MotionGroupService:
             await self._stop_stream(stream_connector)
 
         # Delete the stream
-        del host_database[f"motion_groups.{motion_group_name}.stream"]
+        del host_database[f"motion_groups.{prim_path}.stream"]
 
 
 _motion_group_service = MotionGroupService()

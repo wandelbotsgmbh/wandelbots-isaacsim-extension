@@ -1,7 +1,10 @@
+from typing import Optional
 import omni.ui as ui
 import webbrowser
 import asyncio
 import carb
+from wandelbots.omni.ui.utils import defer_call
+import omni.kit.clipboard as clipboard
 from wandelbots.omni.utils.auth import (
     store_auth_token,
     poll_token_endpoint,
@@ -9,13 +12,14 @@ from wandelbots.omni.utils.auth import (
     get_auth_config,
 )
 from nova.auth.authorization import Auth0DeviceAuthorization
+from wandelbots.omni.ui.colors import NOVAColor
 
 
 class Auth0UIBuilder:
     def __init__(self):
-        self._auth_window = None
+        self._container = None
+        self._callback = None
         self._dismissed = False
-        self._window_title = "Wandelbots NOVA | Authentication"
         self._close_button_lbl = "Close"
         self._auth_button_lbl = "Open instance confirmation"
         self._auth_subline_lbl = "This code must be identical to the code displayed during the instance confirmation:"
@@ -24,14 +28,88 @@ class Auth0UIBuilder:
             "Authentication not possible. Please try again later."
         )
         self._auth_config = get_auth_config()
+        self._polling = False
         self._auth_controller = Auth0DeviceAuthorization(self._auth_config)
 
-    def _on_dismissed_window(self, is_visible):
-        self._dismissed = not is_visible
+    def build_ui(self):
+        device_code_info = get_device_code_info(self._auth_controller)
+        verification_url = f"{device_code_info.verification_uri}?user_code={device_code_info.user_code}"
+        with self._container:
+            with ui.VStack(spacing=5):
+                with ui.HStack():
+                    ui.Spacer(width=15)
+                    ui.Label(
+                        "Copy URL or click open in browser to proceed:",
+                    )
+                    ui.Spacer(width=10)
+                with ui.HStack():
+                    ui.Spacer(width=10)
+                    ui.StringField(
+                        ui.SimpleStringModel(verification_url), read_only=True
+                    )
+                    ui.Spacer(width=10)
+                with ui.HStack(spacing=5):
+                    ui.Spacer(width=5)
+                    ui.Button(
+                        "Cancel", height=30, clicked_fn=lambda: self._on_dismissed()
+                    )
+                    ui.Spacer()
+                    ui.Button(
+                        "Copy URL",
+                        height=30,
+                        clicked_fn=lambda: self._on_copy_to_clipboard(verification_url),
+                    )
+                    ui.Button(
+                        "Open in Browser",
+                        height=30,
+                        style={
+                            "background_color": NOVAColor.PRIMARY_MAIN.color,
+                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+                        },
+                        clicked_fn=lambda: self._on_open_in_browser(verification_url),
+                    )
+                    ui.Spacer(width=5)
+                ui.Spacer(height=10)
 
-    def _handle_button_click(self, url):
+    async def _check_auth_status(self):
+        """Async function to check authentication status and update UI"""
+        try:
+            carb.log_info("Starting token polling...")
+            token = await poll_token_endpoint(self._auth_controller)
+            store_auth_token(token)
+            self._polling = False
+            self._callback(True)
+
+        except Exception as e:
+            carb.log_error(f"Error during authentication: {e}")
+            if self._dismissed:
+                self._polling = False
+                self._callback(False)
+                return
+
+            self._polling = False
+            self._callback(False)
+
+    def _on_dismissed(self):
+        self._polling = False
+        self._callback(False)
+
+    def _on_copy_to_clipboard(self, url):
         """Helper function to handle button click"""
+        if not self._polling:
+            self._waiting_for_auth()
+        clipboard.copy(url)
+        carb.log_info("Copying URL to clipboard. Waiting for callback...")
 
+    def _on_open_in_browser(self, url):
+        """Helper function to handle button click"""
+        if not self._polling:
+            self._waiting_for_auth()
+        webbrowser.open(url)
+        carb.log_info("Open in browser. Waiting for callback...")
+
+    def _waiting_for_auth(self):
+        self._polling = True
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -39,117 +117,11 @@ class Auth0UIBuilder:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        webbrowser.open(url)
+        carb.log_info("Copying URL to clipboard. Waiting for callback...")
         # Create task in the event loop
-        loop.create_task(self.check_auth_status())
+        loop.create_task(self._check_auth_status())
 
-    def create_initial_view(self, device_code_info, open_verification_url):
-        with self._auth_window.frame:
-            with ui.VStack(spacing=14, alignment=ui.Alignment.CENTER):
-                with ui.HStack(spacing=50):
-                    ui.Spacer()
-                    ui.Label(
-                        self._auth_subline_lbl,
-                        alignment=ui.Alignment.CENTER,
-                        width=300,
-                        style={"font_size": 16},
-                        word_wrap=True,
-                    )
-                    ui.Spacer()
-                ui.Label(
-                    device_code_info.user_code,
-                    alignment=ui.Alignment.CENTER,
-                    style={"font_size": 24},
-                )
-                with ui.HStack(spacing=10, alignment=ui.Alignment.CENTER):
-                    ui.Spacer()
-                    open_url_button = ui.Button(
-                        self._auth_button_lbl, width=300, height=50
-                    )
-                    open_url_button.set_clicked_fn(
-                        lambda: self._handle_button_click(open_verification_url)
-                    )
-                    ui.Spacer()
-                ui.Label(
-                    open_verification_url,
-                    alignment=ui.Alignment.CENTER,
-                    style={"font_size": 12},
-                )
-
-    def create_success_view(self):
-        self._auth_window = ui.Window(self._window_title, width=350, height=180)
-        with self._auth_window.frame:
-            with ui.VStack(spacing=14, alignment=ui.Alignment.CENTER):
-                ui.Label(
-                    self._success_headline_lbl,
-                    alignment=ui.Alignment.CENTER,
-                    style={"font_size": 16},
-                    word_wrap=True,
-                )
-                with ui.HStack(spacing=10, alignment=ui.Alignment.CENTER):
-                    ui.Spacer()
-                    close_button = ui.Button(
-                        self._close_button_lbl, width=300, height=50
-                    )
-                    ui.Spacer()
-
-                return close_button
-
-    def create_error_view(self):
-        if self._dismissed:
-            return
-
-        self._auth_window = ui.Window(self._window_title, width=350, height=180)
-        with self._auth_window.frame:
-            with ui.VStack(spacing=14, alignment=ui.Alignment.CENTER):
-                ui.Label(
-                    self._error_headline_lbl,
-                    alignment=ui.Alignment.CENTER,
-                    style={"font_size": 16},
-                    word_wrap=True,
-                )
-                with ui.HStack(spacing=10, alignment=ui.Alignment.CENTER):
-                    ui.Spacer()
-                    close_button = ui.Button(
-                        self._close_button_lbl, width=300, height=50
-                    )
-                    ui.Spacer()
-
-                return close_button
-
-    def create_auth_ui(self):
-        self._auth_window = ui.Window(
-            self._window_title,
-            width=400,
-            height=240,
-            visibility_changed_fn=self._on_dismissed_window,
-        )
-        device_code_info = get_device_code_info(self._auth_controller)
-        url = f"{device_code_info.verification_uri}?user_code={device_code_info.user_code}"
-        self.create_initial_view(device_code_info, url)
-
-    async def check_auth_status(self):
-        """Async function to check authentication status and update UI"""
-        try:
-            carb.log_info("Starting token polling...")
-            token = await poll_token_endpoint(self._auth_controller)
-            store_auth_token(token)
-            self._auth_window.frame.clear()
-            if self._dismissed:
-                return
-            close_button = self.create_success_view()
-            close_button.set_clicked_fn(
-                lambda: setattr(self._auth_window, "visible", False)
-            )
-        except Exception as e:
-            carb.log_error(f"Error during authentication: {e}")
-            self._auth_window.frame.clear()
-            if self._dismissed:
-                return
-            close_button = self.create_error_view()
-            close_button.set_clicked_fn(
-                lambda: setattr(self._auth_window, "visible", False)
-            )
-
-    def display_auth_window(self):
-        self.create_auth_ui()
+    def show(self, container: ui.Widget, callback: Optional[callable] = None):
+        self._container = container
+        self._callback = callback
+        defer_call(self.build_ui)

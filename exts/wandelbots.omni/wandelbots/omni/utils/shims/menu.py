@@ -6,8 +6,13 @@ from omni.kit.menu.utils import MenuItemDescription
 
 
 def make_menu_item_description(
-    ext_id: str, name: str, onclick_fun, action_name: str = ""
-) -> None:
+    ext_id: str,
+    name: str,
+    onclick_fun,
+    action_name: str = "",
+    header: str | None = None,
+    glyph: str = "",
+) -> MenuItemDescription:
     """Easily replace the onclick_fn with onclick_action when creating a menu description
 
     Args:
@@ -24,4 +29,6 @@ def make_menu_item_description(
     action_registry = omni.kit.actions.core.get_action_registry()
     action_registry.deregister_action(ext_id, action_unique)
     action_registry.register_action(ext_id, action_unique, onclick_fun)
-    return MenuItemDescription(name=name, onclick_action=(ext_id, action_unique))
+    return MenuItemDescription(
+        name=name, header=header, glyph=glyph, onclick_action=(ext_id, action_unique)
+    )

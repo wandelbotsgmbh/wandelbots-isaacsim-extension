@@ -23,3 +23,7 @@ class MotionStreamConfiguration(BaseModel):
     @cached_property
     def controller_id(self):
         return self.motion_group.split("@")[1]
+
+    @cached_property
+    def identifier(self):
+        return f"{self.host}-{self.cell}-{self.controller_id}-{self.motion_group}"

@@ -1,4 +1,5 @@
 import carb
+import re
 from fastapi import Body, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -11,6 +12,8 @@ from wandelbots.omni.router.v2 import (
     stage_router,
     teaching_router,
     trajectory_router,
+    collision_world_router,
+    colliders_router,
 )
 from wandelbots.omni.utils.auth import (
     get_auth_token,
@@ -20,10 +23,11 @@ from wandelbots.omni.utils.auth import (
 from wandelbots.omni.utils.base import get_versions_of_enabled_extensions
 import traceback
 
+
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="2.0.2",
+    version="2.3.0",
     docs_url=None,
     redoc_url=None,
 )
@@ -63,6 +67,8 @@ omniservice_app.include_router(router=ui_router)
 omniservice_app.include_router(router=teaching_router)
 omniservice_app.include_router(router=motion_groups_router)
 omniservice_app.include_router(router=trajectory_router)
+omniservice_app.include_router(router=collision_world_router)
+omniservice_app.include_router(router=colliders_router)
 
 
 @omniservice_app.get("/status", status_code=status.HTTP_200_OK)
@@ -107,13 +113,25 @@ async def authenticate(
 
         await validate_request(token_to_validate, base_url)
         if token_to_validate is not None:
-            store_auth_token(token_to_validate)
+            host = ensure_portal_host(credentials.host)
+            store_auth_token(token=token_to_validate, host=host)
 
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to authenticate with NOVA: {e}",
         )
+
+
+def ensure_portal_host(host: str) -> str:
+    """Convert *.instance.*.wandelbots.io to auth.portal.*.wandelbots.io"""
+    if re.match(r".*\.instance\..*\.wandelbots\.io", host):
+        parts = host.split(".")
+        parts[0] = "auth"
+        parts[1] = "portal"
+        converted_host = ".".join(parts)
+        return converted_host
+    return host
 
 
 @omniservice_app.get("/ui", include_in_schema=False)

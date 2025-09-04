@@ -31,8 +31,6 @@ from wandelbots.omni.utils.data import format_object_for_export
 
 
 stage_router = APIRouter(prefix="/stage", tags=["Stage"])
-
-
 TimelineState = Literal["playing", "paused", "stopped"]
 TimelineAction = Literal["play", "pause", "stop"]
 

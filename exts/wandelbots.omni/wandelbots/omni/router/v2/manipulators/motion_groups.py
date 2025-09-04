@@ -17,17 +17,17 @@ MotionGroupServiceDep = Annotated[MotionGroupService, Depends(get_motion_group_s
 
 
 def find_motion_group_or_raise(
-    motion_group_name: str, motion_group_service: MotionGroupServiceDep
+    prim_path: str, motion_group_service: MotionGroupServiceDep
 ) -> MotionGroupConfiguration | NoReturn:
-    if not motion_group_service.has_motion_group(motion_group_name):
+    if not motion_group_service.has_motion_group(prim_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Motion-Group {motion_group_name} not found",
+            detail=f"Motion-Group for {prim_path} not found",
         )
-    return motion_group_name
+    return prim_path
 
 
-MotionGroupName = Annotated[str, Depends(find_motion_group_or_raise)]
+MotionGroupPrimPath = Annotated[str, Depends(find_motion_group_or_raise)]
 
 
 @motion_groups_router.post(
@@ -73,7 +73,7 @@ async def create_motion_group(
 
 
 @motion_groups_router.put(
-    path="/{motion_group_name}",
+    path="/{prim_path}",
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="update_motion_group_stream",
     response_model=None,
@@ -85,7 +85,7 @@ async def create_motion_group(
     },
 )
 async def update_motion_group_motion_stream(
-    motion_group_name: MotionGroupName,
+    prim_path: MotionGroupPrimPath,
     configuration: MotionStreamConfiguration,
     motion_group_service: MotionGroupServiceDep,
 ) -> None:
@@ -96,7 +96,7 @@ async def update_motion_group_motion_stream(
 
     try:
         await motion_group_service.update_motion_group_stream_configuration(
-            motion_group_name, configuration
+            prim_path, configuration
         )
     except RuntimeError as e:
         raise HTTPException(
@@ -117,43 +117,43 @@ async def list_motion_groups(
     """
     return dict(
         (
-            motion_group_name,
-            motion_group_service.get_motion_group_configuration(motion_group_name),
+            prim_path,
+            motion_group_service.get_motion_group_configuration(prim_path),
         )
-        for motion_group_name in motion_group_service.get_all_motion_group_names()
+        for prim_path in motion_group_service.get_all_motion_group_prim_paths()
     )
 
 
 @motion_groups_router.get(
-    path="/{motion_group_name}",
+    path="/{prim_path}",
     operation_id="get_motion_group",
     response_model=MotionGroupConfiguration,
     responses={status.HTTP_404_NOT_FOUND: {"description": "Motion-Group not found"}},
 )
 async def get_motion_group(
-    motion_group_service: MotionGroupServiceDep, motion_group_name: MotionGroupName
+    motion_group_service: MotionGroupServiceDep, prim_path: MotionGroupPrimPath
 ) -> MotionGroupConfiguration:
     """
     Get the configuration of a motion_group
     """
-    return motion_group_service.get_motion_group_configuration(motion_group_name)
+    return motion_group_service.get_motion_group_configuration(prim_path)
 
 
 @motion_groups_router.delete(
-    path="/{motion_group_name}",
+    path="/{prim_path}",
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="remove_motion_group",
     response_model=None,
     responses={status.HTTP_404_NOT_FOUND: {"description": "Motion-Group not found"}},
 )
 async def remove_motion_group(
-    motion_group_name: MotionGroupName,
+    prim_path: MotionGroupPrimPath,
     motion_group_service: MotionGroupServiceDep,
 ) -> None:
     """
     Remove a motion_group
     """
-    await motion_group_service.remove_motion_group(motion_group_name)
+    await motion_group_service.remove_motion_group(prim_path)
 
 
 @motion_groups_router.delete(
@@ -170,5 +170,5 @@ async def clear_motion_groups(motion_group_service: MotionGroupServiceDep) -> No
     Removes all motion_groups
     """
 
-    for motion_group_name in list(motion_group_service.get_all_motion_group_names()):
-        await motion_group_service.remove_motion_group(motion_group_name)
+    for prim_path in list(motion_group_service.get_all_prim_paths()):
+        await motion_group_service.remove_motion_group(prim_path)

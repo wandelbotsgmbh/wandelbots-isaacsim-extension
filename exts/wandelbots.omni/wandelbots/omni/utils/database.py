@@ -4,9 +4,55 @@ from dataclasses import dataclass, field
 from collections.abc import MutableMapping
 import omni.kit.app
 import carb
+from wandelbots.omni.instances.models import NOVACustomInstance
 
 manager = omni.kit.app.get_app().get_extension_manager()
 ext_path = manager.get_extension_path_by_module("wandelbots.omni")
+
+
+class BaseStore:
+    def __init__(self, file_name: str, folder_name: str = "wandelbots"):
+        self._file_name = file_name
+        self._folder_name = folder_name
+        self._file_path = self._get_or_create_file_path(self._file_name)
+        self._data = self.load_data() or {}
+
+    def _get_or_create_file_path(
+        self, file_name: str, folder_name: str = "wandelbots"
+    ) -> str:
+        data_path = carb.tokens.get_tokens_interface().resolve("${data}")
+        file_path = os.path.join(data_path, folder_name, file_name)
+        if not os.path.exists(file_path):
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w") as f:
+                json.dump({}, f)
+            carb.log_verbose(f"File created at {file_path}")
+        return file_path
+
+    def load_data(self):
+        if not os.path.exists(self._file_path):
+            carb.log_verbose(
+                f"Credential file not found at {self._file_path}, returning empty data."
+            )
+            return {}
+        with open(self._file_path, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                carb.log_error(f"Failed to decode JSON from {self._file_path}")
+                return {}
+
+    def save_data(self):
+        try:
+            with open(self._file_path, "w") as f:
+                json.dump(self._data, f)
+        except Exception as e:
+            raise IOError(f"Could not read write: {str(e)}")
+
+    def clear(self):
+        carb.log_verbose("Clearing credential store")
+        self._data.clear()
+        self.save_data()
 
 
 @dataclass
@@ -65,47 +111,72 @@ class InMemoryDatabase(MutableMapping):
 
 
 @dataclass
-class CredentialStore(MutableMapping):
-    data = {}
+class InstanceStore(BaseStore):
+    def __init__(self):
+        super().__init__(file_name="instances.json")
 
-    def __getitem__(self, key):
-        if key not in self.data:
-            raise KeyError(key)
-        return self.data[key]
+    def store_instance(self, instance: NOVACustomInstance):
+        if not isinstance(instance, NOVACustomInstance):
+            raise TypeError("Expected instance to be of type NOVACustomInstance")
+        if not instance.host:
+            raise ValueError("Instance must have a host defined")
 
-    def __setitem__(self, key, value):
-        self.data[key] = value
+        self._data[instance.host] = instance.model_dump()
+        self.save_data()
 
-    def __delitem__(self, key):
-        if key not in self.data:
-            raise KeyError(key)
-        del self.data[key]
+    def remove_instance(self, instance_id: str):
+        """
+        Remove an instance by its ID.
 
-    def __len__(self):
-        return len(self.data)
+        Args:
+            instance_id: Unique identifier of the instance to remove
+        """
+        carb.log_info(f"Removing instance with ID: {instance_id}")
+        if instance_id in self._data:
+            del self._data[instance_id]
+            self.save_data()
+            carb.log_info(f"Instance {instance_id} removed successfully.")
+        else:
+            carb.log_warn(f"Instance {instance_id} not found in store.")
 
-    def __iter__(self):
-        return iter(self.data)
+    def get_instances(self) -> list[NOVACustomInstance]:
+        instances = []
+        for host, instance_data in self._data.items():
+            try:
+                instance = NOVACustomInstance(**instance_data)
+                instances.append(instance)
+            except Exception as e:
+                carb.log_error(
+                    f"Error creating NOVACustomInstance from data for host {host}: {e}"
+                )
+        return instances
 
-    def clear_all(self):
-        self.data.clear()
 
-    def load_data(self, file_path=os.path.join(ext_path, "_temp", "credentials.json")):
-        if not os.path.exists(os.path.dirname(file_path)):
-            os.makedirs(os.path.dirname(file_path))
-        try:
-            with open(file_path, "r") as f:
-                self.data = json.load(f)
-        except FileNotFoundError:
-            raise FileNotFoundError("Unable to find credentials")
-        except Exception as e:
-            raise IOError(f"Could not read credentials: {str(e)}")
+@dataclass
+class CredentialStore(BaseStore):
+    def __init__(self):
+        super().__init__(file_name="credentials.json")
 
-    def save_data(self, file_path=os.path.join(ext_path, "_temp", "credentials.json")):
-        if not os.path.exists(os.path.dirname(file_path)):
-            os.makedirs(os.path.dirname(file_path))
-        try:
-            with open(file_path, "w") as f:
-                json.dump(self.data, f)
-        except Exception as e:
-            raise IOError(f"Could not read write: {str(e)}")
+    def store_token(self, host: str, token: str):
+        if not host or not token:
+            raise ValueError("Host and token must be provided.")
+        self._data[host] = token
+        self.save_data()
+
+    def get_token(self, host: str) -> str:
+        if not host:
+            raise ValueError("Host must be provided.")
+        if host not in self._data:
+            carb.log_verbose("No token found for {host}. Authentication required.")
+            return None
+        return self._data[host]
+
+    def remove_token(self, host: str):
+        if not host:
+            raise ValueError("Host must be provided.")
+        if host in self._data:
+            del self._data[host]
+            self.save_data()
+            carb.log_info(f"Token removed for host: {host}")
+        else:
+            carb.log_warn(f"No token found for host: {host} - nothing to remove")

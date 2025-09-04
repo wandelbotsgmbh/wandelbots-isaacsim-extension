@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-import weakref
+from pathlib import Path
 import webbrowser
 
 import carb
@@ -14,26 +14,29 @@ import omni.usd
 from fastapi.openapi.utils import get_openapi
 from omni.kit.menu.utils import add_menu_items, remove_menu_items
 from omni.services.core import main
+from wandelbots.omni.utils.dependencies import remove_extension_packages
 from wandelbots.omni.base import omniservice_base_app
 from wandelbots.omni.environment import host_database
 from wandelbots.omni.io import get_io_stream_service, IOStreamService
 from wandelbots.omni.manipulators import get_motion_group_service, MotionGroupService
 from wandelbots.omni.utils.base import get_current_version
-from wandelbots.omni.utils.dependencies import check_dependencies
 from wandelbots.omni.utils.shims.menu import make_menu_item_description
 import wandelbots.omni.router.v2.base as v2
+import omni.kit.app
+from wandelbots.omni.environment import credential_store
+from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
 
 kit_app = main.get_app()
 
 
 class OmniService(omni.ext.IExt):
     def on_startup(self, ext_id) -> None:
-        check_dependencies()
         carb.log_info("Mounting /omniservice")
 
         # Collect services to bind them to the timeline state
         self.io_stream_service = get_io_stream_service()
         self.motion_group_service = get_motion_group_service()
+        self.instance_list_window: NOVAInstanceListUIBuilder = None
 
         self.timeline = omni.timeline.get_timeline_interface()
         carb.log_verbose(f"{self} listening to timeline events")
@@ -57,6 +60,26 @@ class OmniService(omni.ext.IExt):
         self._load_carb_settings()
         self._generate_schema()
         self._create_menu(ext_id=ext_id)
+        self._load_data()
+
+        self.register_snippets(ext_id)
+
+    def register_snippets(self, ext_id: str):
+        carb.log_verbose(f"Registering {ext_id} snippets")
+        self._settings = carb.settings.get_settings()
+        manager = omni.kit.app.get_app().get_extension_manager()
+        ext_path = manager.get_extension_path(ext_id)
+        rep_snippets_folder = str(Path(ext_path).joinpath("snippets").as_posix())
+
+        snippets_folders = (
+            self._settings.get("/exts/omni.kit.window.script_editor/snippetFolders")
+            or []
+        )
+        if rep_snippets_folder not in snippets_folders:
+            snippets_folders.append(rep_snippets_folder)
+        self._settings.set_string_array(
+            "/exts/omni.kit.window.script_editor/snippetFolders", snippets_folders
+        )
 
     async def start_all_io_streams(self):
         await self.io_stream_service.start_all_streams()
@@ -79,6 +102,8 @@ class OmniService(omni.ext.IExt):
             int(omni.usd.StageEventType.CLOSED),
         }:
             host_database.clear_all()
+            if self.instance_list_window:
+                self.instance_list_window.build_ui()
 
     async def _async_shutdown(
         motion_group_service: MotionGroupService, io_stream_service: IOStreamService
@@ -88,8 +113,10 @@ class OmniService(omni.ext.IExt):
         await motion_group_service.stop_streams()
         await io_stream_service.clear()
         host_database.clear_all()
+        remove_extension_packages()
 
     def on_shutdown(self) -> None:
+        self._save_data()
         carb.log_verbose("Unmount Omniservice")
         main.deregister_mount("/omniservice")
         omniservice_base_app.openapi_schema = None
@@ -113,61 +140,70 @@ class OmniService(omni.ext.IExt):
         self._menu_items = [
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Open Omniservice API",
-                onclick_fun=lambda a=weakref.proxy(self): a._open_omniservice_api(),
+                header="",
+                name="Connected Instances",
+                onclick_fun=lambda: self._open_connect_to_nova(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Open Documentation",
-                onclick_fun=lambda a=weakref.proxy(self): a._open_documentation(),
+                header="",
+                name="Omniservice API ...",
+                onclick_fun=lambda: self._open_omniservice_api(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Open Developer Portal",
-                onclick_fun=lambda a=weakref.proxy(self): a._open_developer_portal(),
+                name="Documentation ...",
+                onclick_fun=lambda: self._open_documentation(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Authenticate",
-                onclick_fun=lambda a=weakref.proxy(self): a._authorize(),
+                name="Developer Portal ...",
+                onclick_fun=lambda: self._open_developer_portal(),
+            ),
+            make_menu_item_description(
+                ext_id=ext_id,
+                header="",
+                name="About",
+                onclick_fun=lambda: self._open_about(),
             ),
         ]
         add_menu_items(self._menu_items, self.menu_item_name)
 
-    @staticmethod
-    def _open_omniservice_api():
-        port = OmniService._get_port()
+    def _load_data(self):
+        credential_store.load_data()
+
+    def _save_data(self):
+        credential_store.save_data()
+
+    def _open_omniservice_api(self):
+        port = self._get_port()
         webbrowser.open(f"http://127.0.0.1:{port}/omniservice/api/v2/ui")
 
-    @staticmethod
-    def _open_documentation():
+    def _open_documentation(self):
         webbrowser.open("https://docs.wandelbots.io/latest/intro-simulating/")
 
-    @staticmethod
-    def _open_developer_portal():
+    def _open_developer_portal(self):
         webbrowser.open("https://portal.wandelbots.io")
 
-    @staticmethod
-    def _authorize():
-        from wandelbots.omni.ui.auth import Auth0UIBuilder
+    def _open_connect_to_nova(self):
+        if self.instance_list_window:
+            self.instance_list_window.close()
 
-        ui_builder = Auth0UIBuilder()
-        ui_builder.display_auth_window()
+        self.instance_list_window = NOVAInstanceListUIBuilder()
+        self.instance_list_window.setup()
+        self.instance_list_window.build_ui()
 
-    @staticmethod
-    def _open_about():
-        OmniService._version = get_current_version()
-        OmniService._about_window = ui.Window("About Wandelbots", width=250, height=100)
-        with OmniService._about_window.frame:
+    def _open_about(self):
+        self._version = get_current_version()
+        self._about_window = ui.Window("About Wandelbots", width=250, height=100)
+        with self._about_window.frame:
             with ui.VStack(spacing=10, alignment=ui.Alignment.CENTER):
                 ui.Label(
                     "Wandelbots NOVA Extension",
                     alignment=ui.Alignment.CENTER,
                     style={"font_size": 20, "font_weight": "bold"},
                 )
-                ui.Label(
-                    f"Version {OmniService._version}", alignment=ui.Alignment.CENTER
-                )
+                ui.Label(f"Version {self._version}", alignment=ui.Alignment.CENTER)
 
     @staticmethod
     def _generate_schema():
@@ -207,7 +243,7 @@ class OmniService(omni.ext.IExt):
         }
 
         try:
-            for key, path in ssl_settings.items():
+            for _, path in ssl_settings.items():
                 full_path = f"{base_path}/{path}"
                 settings.set(full_path, settings.get(full_path))
         except Exception as e:

@@ -1,3 +1,4 @@
+from typing import cast
 import numpy as np
 import omni.isaac.core.utils.prims as prims_utils
 from wandelbots.omni.datatypes import (
@@ -14,6 +15,8 @@ from omni.isaac.sensor import Camera
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 from scipy.spatial.transform import Rotation
 import carb
+import omni.usd
+from wandelbots.omni.utils.scene import SceneUtils
 
 
 class PrimUtils:
@@ -65,9 +68,9 @@ class PrimUtils:
             if rotation_type == "cartesian"
             else quat
         )
-        # stage_unit = get_stage_units()                               # disabled
-        # pose = (position / stage_unit).tolist() + rotation.tolist()  # disabled
-        pose = (position * 1000).tolist() + rotation.tolist()
+        pose = (
+            (position / SceneUtils.get_stage_units()) * 1000
+        ).tolist() + rotation.tolist()
         return (
             WSPose(pose=pose) if rotation_type == "cartesian" else QuatPose(pose=pose)
         )
@@ -195,3 +198,21 @@ class PrimUtils:
                 PrimUtils.set_prim_pose(child_prim_path, default_pose)
             else:
                 carb.log_warn(f"Default pose not set for prim: {child_prim_path}")
+
+    def get_world_transform_xform(
+        prim: Usd.Prim,
+    ) -> tuple[Gf.Vec3d, Gf.Rotation, Gf.Vec3d]:
+        """
+        Get the world transform of a prim.
+        Returns translation, rotation, and scale.
+        """
+        world_transform: Gf.Matrix4d = omni.usd.get_world_transform_matrix(prim)
+        translation: Gf.Vec3d = world_transform.ExtractTranslation()
+        rotation: Gf.Rotation = world_transform.ExtractRotation()
+        scale: Gf.Vec3d = Gf.Vec3d(
+            *(
+                cast(Gf.Vec3d, v).GetLength()
+                for v in world_transform.ExtractRotationMatrix()
+            )
+        )
+        return translation, rotation, scale

@@ -45,7 +45,7 @@ class CameraCaptureService:
         capture_type: SYNTHETIC_DATA_CAPTURE_TYPES,
         resolution: tuple[int, int] = (512, 512),
     ):
-        _, was_playing = await SceneUtils.check_simulation()
+        _, was_playing = SceneUtils.check_simulation()
         try:
             carb.log_info(f"Capturing {capture_type} data from camera /World/TestCam")
 
