@@ -11,7 +11,10 @@ from wandelbots.omni.utils.auth import (
     get_device_code_info,
     get_auth_config,
 )
-from nova.auth.authorization import Auth0DeviceAuthorization
+from wandelbots_api_client.authorization import (
+    Auth0DeviceAuthorization,
+    Auth0DeviceCodeInfo,
+)
 from wandelbots.omni.ui.colors import NOVAColor
 
 
@@ -31,8 +34,7 @@ class Auth0UIBuilder:
         self._polling = False
         self._auth_controller = Auth0DeviceAuthorization(self._auth_config)
 
-    def build_ui(self):
-        device_code_info = get_device_code_info(self._auth_controller)
+    def build_ui(self, device_code_info=Auth0DeviceCodeInfo):
         verification_url = f"{device_code_info.verification_uri}?user_code={device_code_info.user_code}"
         with self._container:
             with ui.VStack(spacing=5):
@@ -121,7 +123,22 @@ class Auth0UIBuilder:
         # Create task in the event loop
         loop.create_task(self._check_auth_status())
 
+    def _show_device_code_ui(self):
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            # Create a new event loop if one doesn't exist
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        carb.log_verbose("Fetching device code")
+        # Create task in the event loop
+        task = loop.create_task(get_device_code_info(self._auth_controller))
+        task.add_done_callback(
+            lambda device_code: defer_call(lambda: self.build_ui(device_code.result()))
+        )
+
     def show(self, container: ui.Widget, callback: Optional[callable] = None):
         self._container = container
         self._callback = callback
-        defer_call(self.build_ui)
+        self._show_device_code_ui()

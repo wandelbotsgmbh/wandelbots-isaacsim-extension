@@ -6,7 +6,7 @@ import carb
 try:
     import isaacsim.core.utils.prims as prims_utils
 except ImportError:
-    import omni.isaac.core.utils.prims as prims_utils
+    import omni.isaac.core.utils.prims as prims_utils  # type: ignore
 
     carb.log_warn("motion_group_service is using legacy isaac sim imports")
 import omni.timeline
@@ -27,7 +27,6 @@ class MotionGroupService:
         self.timeline = omni.timeline.get_timeline_interface()
 
     def has_motion_group(self, prim_path: str) -> bool:
-        print(f"Host database motion groups: {host_database['motion_groups']}")
         return prim_path in host_database["motion_groups"]
 
     def get_all_motion_group_prim_paths(self) -> list[str]:

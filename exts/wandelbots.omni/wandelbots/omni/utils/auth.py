@@ -2,31 +2,31 @@ import carb
 import httpx
 
 from fastapi import HTTPException
-from wandelbots.omni.environment import credential_store, load_env
-from nova.auth.auth_config import Auth0Config
-from nova.auth.authorization import Auth0DeviceAuthorization
+from wandelbots.omni.environment import credential_store, load_config
+from wandelbots_api_client.authorization import Auth0Config, Auth0DeviceAuthorization
 
 
-def get_auth_environment():
-    """
-    Get the current authentication environment.
-    """
-    config = load_env()
+def get_portal_api_url() -> str | None:
+    config = get_auth_config()
     if config is None:
-        carb.log_verbose("Using default authentication environment.")
-        return "prod"
+        return None
 
-    auth0_environment = config("AUTH0_ENVIRONMENT", default="prod")
-    carb.log_verbose(f"Using authentication environment: {auth0_environment}")
-    return auth0_environment
+    portal_api = f"https://{config.domain.replace('auth.', 'api.')}/v1"
+    return portal_api
 
 
 def get_auth_token():
     config = get_auth_config()
     host = config.get_validated_config()[0]
 
+    token = credential_store.get_token(host)
+
+    if token is None:
+        carb.log_warn(f"No stored token found for {host}.")
+        return None
+
     carb.log_verbose(f"Retrieved stored token for {host}.")
-    return credential_store.get_token(host)
+    return token
 
 
 async def poll_token_endpoint(controller: Auth0DeviceAuthorization):
@@ -35,9 +35,9 @@ async def poll_token_endpoint(controller: Auth0DeviceAuthorization):
     return token
 
 
-def get_device_code_info(controller: Auth0DeviceAuthorization):
+async def get_device_code_info(controller: Auth0DeviceAuthorization):
     try:
-        device_code_info = controller.request_device_code()
+        device_code_info = await controller.request_device_code()
         carb.log_verbose(f"Device code info: {device_code_info}")
         return device_code_info
     except Exception as e:
@@ -68,19 +68,27 @@ def invalidate_auth_token():
         carb.log_error(f"Failed to invalidate token: {e}")
 
 
-def get_auth_config():
-    config = load_env()
+def get_auth_config() -> Auth0Config:
+    config = load_config("authentication.toml")
+    environments = config.get("wandelbots", {}).get("environments", [])
 
-    if config is None:
-        carb.log_verbose("Use default authentication information.")
-        return Auth0Config.from_env()
-    auth0_domain = config("AUTH0_DOMAIN")
-    auth0_client_id = config("AUTH0_CLIENT_ID")
-    auth0_audience = config("AUTH0_AUDIENCE")
-    carb.log_verbose("Use authentication information form .env.")
-    return Auth0Config(
-        domain=auth0_domain, client_id=auth0_client_id, audience=auth0_audience
-    )
+    if not environments:
+        return Auth0Config().default()
+
+    if len(environments) > 1:
+        name = environments[0]["name"]
+        domain = environments[0]["domain"]
+        client_id = environments[0]["client_id"]
+        audience = environments[0]["audience"]
+
+        carb.log_warn(
+            f"Multiple environments found in configuration. Using the first one: {name}"
+        )
+        return Auth0Config(
+            domain=domain,
+            client_id=client_id,
+            audience=audience,
+        )
 
 
 async def validate_request(token: str | None, base_url: str):

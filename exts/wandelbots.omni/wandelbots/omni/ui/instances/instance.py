@@ -76,6 +76,14 @@ class NOVAInstanceUIBuilder:
                 ui.Spacer(width=5)
             ui.Spacer(height=1)
             # Display content based on cells state
+            if not self._instance.is_compatible:
+                with ui.HStack():
+                    ui.Spacer(width=15)
+                    ui.Label(
+                        "Please update your Wandelbots NOVA instance to at least 25.8.0.",
+                        style={"color": NOVAColor.TEXT_SECONDARY.color},
+                    )
+                return
             if self._instance.status != "running":
                 with ui.HStack():
                     ui.Spacer(width=15)
@@ -178,7 +186,7 @@ class NOVAInstanceUIBuilder:
         if controller.motion_groups and len(controller.motion_groups) == 1:
             # If there's only one motion group, use it as the frame title
             motion_group = controller.motion_groups[0]
-            title = f"{motion_group.model_name} ({motion_group.name})"
+            title = f"{motion_group.motion_group_model_name} ({motion_group.name})"
             with ui.CollapsableFrame(
                 title=title,
                 height=0,

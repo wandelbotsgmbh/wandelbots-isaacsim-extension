@@ -151,7 +151,7 @@ class ControllerIOStreamService:
 
             self._remove_subscription(subscription_id)
 
-            if stream_running:
+            if stream_running and len(self.io_subscriptions.keys()) > 0:
                 await self.start_stream()
 
     def _add_subscription(self, subscription: Subscription, ios: list[str]):
@@ -188,6 +188,7 @@ class ControllerIOStreamService:
 
     async def _restart_stream(self):
         """Might be used when a subscription changed"""
+        carb.log_verbose(f"Restarting stream {self.cell}/{self.controller}")
         await self.stop_stream()
         await self.start_stream()
 
@@ -219,7 +220,9 @@ class ControllerIOStreamService:
     async def start_stream(self):
         async with self._io_stream_lock:
             if len(self.io_subscriptions.keys()) == 0:
-                carb.log_warn(f"{self.cell}/{self.controller} has no ios")
+                carb.log_verbose(
+                    f"Trying to start {self.cell}/{self.controller} without ios"
+                )
                 return
 
             if self.io_stream and self.io_stream.streaming:

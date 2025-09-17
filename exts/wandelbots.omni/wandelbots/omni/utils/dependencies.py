@@ -16,7 +16,7 @@ def install_required_packages():
         sys.path.insert(0, pip_prebundle_dir)
 
     requirements_file = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../../data/requirements.txt")
+        os.path.join(os.path.dirname(__file__), "../../../config/requirements.txt")
     )
     if os.path.exists(pip_prebundle_dir):
         carb.log_verbose(f"{pip_prebundle_dir} exists, skipping dependency check.")

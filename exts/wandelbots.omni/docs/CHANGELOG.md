@@ -1,5 +1,49 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.4.6 (2025-09-09)
+
+### Bug Fixes
+
+* Fixed missing dll on extension startup
+
+## 2.4.5 (2025-09-06)
+
+### Bug Fixes
+
+* Check compatability on base_version
+
+## 2.4.4 (2025-09-05)
+
+### Bug Fixes
+
+* Update order of environments for authentication
+
+## 2.4.3 (2025-09-05)
+
+### Bug Fixes
+
+* Add default config if no alternative environments are given for authentication.
+
+## 2.4.2 (2025-08-28)
+
+### Bug Fixes
+
+* **RPS-1990:** Fixed choosing proper portal API
+
+## 2.4.1 (2025-08-27)
+
+### Bug Fixes
+
+* Added reset to ogn node config once timeline stops
+* Fixed model_name namespace conflict
+* Updated portal login to latest api package
+
+## 2.4.0 (2025-08-27)
+
+### Features
+
+* **RPS-1922:** Compatability with 25.8.0
+
 ## 2.3.0 (2025-08-21)
 
 ### Features

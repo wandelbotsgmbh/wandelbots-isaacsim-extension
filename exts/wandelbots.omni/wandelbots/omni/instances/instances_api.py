@@ -13,8 +13,8 @@ from wandelbots.omni.instances.models import (
 )
 from wandelbots.omni.utils.auth import (
     get_auth_token,
+    get_portal_api_url,
     invalidate_auth_token,
-    get_auth_environment,
 )
 from wandelbots_api_client.v2.api.cell_api import CellApi
 from wandelbots_api_client.v2.api.controller_api import ControllerApi
@@ -25,9 +25,7 @@ from wandelbots.omni.environment import instance_store
 
 class NOVAInstancesAPI:
     def __init__(self):
-        environment = get_auth_environment()
-        env_prefix = f"{environment}." if environment and environment != "prod" else ""
-        self._base_url = f"https://api.portal.{env_prefix}wandelbots.io/v1"
+        self._base_url = get_portal_api_url()
 
     def get_cloud_instances(self) -> list[NOVACloudInstance]:
         token = get_auth_token()
@@ -55,7 +53,7 @@ class NOVAInstancesAPI:
         except requests.HTTPError as e:
             if e.response.status_code == 401:
                 carb.log_warn(
-                    "Authentication token is invalid (401). Invalidating token."
+                    "Authentication token for cloud instances is invalid (401). Invalidating token."
                 )
                 invalidate_auth_token()
                 return []
@@ -140,7 +138,7 @@ class NOVAInstancesAPI:
         except requests.HTTPError as e:
             if e.response.status_code == 401:
                 carb.log_warn(
-                    "Authentication token is invalid (401). Invalidating token."
+                    f"Authentication token for host '{instance.host}' is invalid (401). Invalidating token."
                 )
                 invalidate_auth_token()
             else:
@@ -232,7 +230,7 @@ class NOVAInstancesAPI:
                     motion_groups.append(
                         NOVAMotionGroupData(
                             name=motion_group_name,
-                            model_name=motion_group_desc.motion_group_model.replace(
+                            motion_group_model_name=motion_group_desc.motion_group_model.replace(
                                 "_", " "
                             ),
                         )

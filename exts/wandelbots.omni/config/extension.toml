@@ -1,9 +1,9 @@
 [core]
 reloadable = true
-order = 0
+order = 1000      # Make sure all .dlls are loaded before this extension
 
 [package]
-version = "2.3.0"
+version = "2.4.6"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."

@@ -6,6 +6,7 @@ from wandelbots_api_client.v2.models.controller_description import ControllerDes
 import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.utils.api import get_api_client
 from wandelbots.omni.ui.colors import NOVAColor
+from packaging.version import Version
 
 
 class NOVAInstance(BaseModel):
@@ -38,9 +39,20 @@ class NOVAInstance(BaseModel):
         raise NotImplementedError("Subclasses must implement the get_api_client method")
 
     @property
+    def is_compatible(self) -> bool:
+        if self.version is None:
+            return False
+        try:
+            return Version(self.version).base_version >= Version("25.8.0").base_version
+        except Exception:
+            return False
+
+    @property
     def status_color(self):
         if not self.is_reachable:
             return NOVAColor.ERROR_MAIN.color
+        elif not self.is_compatible:
+            return NOVAColor.WARNING_MAIN.color
         elif self.cells:
             return NOVAColor.SUCCESS_MAIN.color
         else:
@@ -116,7 +128,7 @@ class NOVACustomInstance(NOVAInstance):
 
 class NOVAMotionGroupData(BaseModel):
     name: str
-    model_name: str
+    motion_group_model_name: str
 
 
 class NOVAControllerData(BaseModel):

@@ -68,6 +68,11 @@ class OgnReadIOState:
             )
         )
 
+    def reset(self):
+        self.io_sub = None
+        self.robot_prim = None
+        self.io_id = None
+
 
 class OgnReadIO:
     """
@@ -90,8 +95,10 @@ class OgnReadIO:
     @staticmethod
     def compute(db: OgnReadIODatabase) -> bool:
         """Compute the outputs from the current input"""
+        state: OgnReadIOState = db.per_instance_state
 
         if not timeline.is_playing():
+            state.reset()
             return
 
         if len(db.inputs.robot) == 0:
@@ -99,8 +106,6 @@ class OgnReadIO:
             return False
 
         try:
-            state: OgnReadIOState = db.per_instance_state
-
             if db.inputs.robot[0] != state.robot_prim or db.inputs.io_id != state.io_id:
                 state.set_metadata(db.inputs.robot, db.inputs.io_id)
 

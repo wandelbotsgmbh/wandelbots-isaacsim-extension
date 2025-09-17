@@ -83,7 +83,7 @@ class MotionStreamConnector:
         self.api_configuration = self._get_api_configuration(get_auth_token())
 
         result = await self.get_motion_group_state()
-        self.stream_joint_count = len(result.joint_position.joints)
+        self.stream_joint_count = len(result.joint_position)
         carb.log_info(
             f"Start {self.configuration.motion_group} jointCount={self.stream_joint_count} externalJoints={self.is_external_joint_stream}"
         )
@@ -207,12 +207,12 @@ class MotionStreamConnector:
             )
 
     def _update_joints(self, motion_response_result: wb_models.MotionGroupState):
-        self._last_joints = motion_response_result.joint_position.joints
+        self._last_joints = motion_response_result.joint_position
 
         if self.timeline.is_stopped():
             return
 
-        self.apply_joints(motion_response_result.joint_position.joints)
+        self.apply_joints(motion_response_result.joint_position)
 
     async def _update_joints_in_external_mode(
         self, motion_response_result: list[wb_models.ExternalJointStreamDatapoint]

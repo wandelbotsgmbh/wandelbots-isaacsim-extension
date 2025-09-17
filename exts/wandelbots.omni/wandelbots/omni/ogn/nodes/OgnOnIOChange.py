@@ -51,16 +51,19 @@ class OgnOnIOChangeState:
         self.robot_config = self.robot_service.get_motion_group_by_prim_path(
             self.robot_prim
         )
-        motion_stream_config = self.robot_config.motion_stream_configuration
         if self.robot_config is None:
             raise ValueError(
                 f"No robot configuration found for {self.robot_prim}. Make sure to create a robot for the selected prim"
             )
+
+        motion_stream_config = self.robot_config.motion_stream_configuration
+
         self.api_configuration = ApiConfiguration(
             host=motion_stream_config.host,
             secure_connection=motion_stream_config.secure_connection,
             access_token=get_auth_token(),
         )
+
         self.io_id = io_id
         self.io_sub = asyncio.get_event_loop().run_until_complete(
             get_io_stream_service().subscribe(
@@ -71,6 +74,11 @@ class OgnOnIOChangeState:
                 on_change=self.on_change,
             )
         )
+
+    def reset(self):
+        self.io_sub = None
+        self.robot_prim = None
+        self.io_id = None
 
 
 class OgnOnIOChange:
@@ -96,8 +104,10 @@ class OgnOnIOChange:
     @staticmethod
     def compute(db: OgnOnIOChangeDatabase) -> bool:
         """Compute the outputs from the current input"""
+        state: OgnOnIOChangeState = db.per_instance_state
 
         if not timeline.is_playing():
+            state.reset()
             return
 
         if len(db.inputs.robot) == 0:
@@ -105,8 +115,6 @@ class OgnOnIOChange:
             return False
 
         try:
-            state: OgnOnIOChangeState = db.per_instance_state
-
             if db.inputs.robot[0] != state.robot_prim or db.inputs.io_id != state.io_id:
                 state.set_metadata(db.inputs.robot, db.inputs.io_id)
 

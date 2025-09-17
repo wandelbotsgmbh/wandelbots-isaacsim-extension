@@ -158,12 +158,14 @@ class CredentialStore(BaseStore):
         super().__init__(file_name="credentials.json")
 
     def store_token(self, host: str, token: str):
+        self.load_data()
         if not host or not token:
             raise ValueError("Host and token must be provided.")
         self._data[host] = token
         self.save_data()
 
     def get_token(self, host: str) -> str:
+        self.load_data()
         if not host:
             raise ValueError("Host must be provided.")
         if host not in self._data:

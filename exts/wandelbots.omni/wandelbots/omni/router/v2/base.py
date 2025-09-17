@@ -27,7 +27,7 @@ import traceback
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="2.3.0",
+    version="2.4.6",
     docs_url=None,
     redoc_url=None,
 )
