@@ -5,7 +5,7 @@ This is the implementation of the OGN node defined in OgnWriteIO.ogn
 import asyncio
 
 import omni.timeline
-import pxr.Sdf
+import usdrt.Sdf
 from omni.graph.action_core import get_interface
 from wandelbots.omni.io import (
     IOValue,
@@ -30,14 +30,14 @@ class OgnWriteIOState:
         self.io_id = None
         self.io_value_type = None
 
-    def set_metadata(self, robot_prim: list[pxr.Sdf.Path], io_id: str):
+    def set_metadata(self, robot_prim: list[usdrt.Sdf.Path], io_id: str):
         if len(robot_prim) == 0:
             raise ValueError("Robot prim is not set")
         if io_id is None:
             raise ValueError("IO is None")
         self.robot_prim = robot_prim[0]
-        self.robot_config = get_motion_group_service().get_motion_group_by_prim_path(
-            self.robot_prim
+        self.robot_config = get_motion_group_service().get_motion_group_configuration(
+            self.robot_prim.pathString
         )
         motion_stream_config = self.robot_config.motion_stream_configuration
         if self.robot_config is None:
@@ -55,7 +55,7 @@ class OgnWriteIOState:
             get_io_stream_service().get_io_type(
                 self.api_configuration,
                 motion_stream_config.cell,
-                motion_stream_config.controller_id,
+                motion_stream_config.controller,
                 self.io_id,
             )
         )
@@ -130,7 +130,7 @@ class OgnWriteIO:
                 get_io_stream_service().set_io_value(
                     state.api_configuration,
                     state.robot_config.motion_stream_configuration.cell,
-                    state.robot_config.motion_stream_configuration.controller_id,
+                    state.robot_config.motion_stream_configuration.controller,
                     state.io_id,
                     input_value,
                 )

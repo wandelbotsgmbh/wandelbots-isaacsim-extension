@@ -10,6 +10,11 @@ class MotionStreamConfiguration(BaseModel):
     )
     cell: str = Field(example="cell")
     motion_group: str = Field(example="0@ur10e")
+    controller: str = Field(
+        default=None,
+        example="ur10e",
+        description="Id of controller. A of <A>@<B> is used if motion group has this format",
+    )
     response_rate: int = Field(default=32, description="Response rate of motion stream")
     use_external_joint_stream: bool = Field(
         default=False,
@@ -19,11 +24,3 @@ class MotionStreamConfiguration(BaseModel):
     @cached_property
     def motion_group_id(self):
         return self.motion_group.split("@")[0]
-
-    @cached_property
-    def controller_id(self):
-        return self.motion_group.split("@")[1]
-
-    @cached_property
-    def identifier(self):
-        return f"{self.host}-{self.cell}-{self.controller_id}-{self.motion_group}"

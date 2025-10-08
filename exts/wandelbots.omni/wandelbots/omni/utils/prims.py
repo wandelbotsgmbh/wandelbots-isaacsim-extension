@@ -50,18 +50,35 @@ class PrimUtils:
                 else camera.get_local_pose()
             )
 
-        else:
+        elif prim.IsA(UsdGeom.Xformable):
             xform = UsdGeom.Xformable(prim)
             time = Usd.TimeCode.Default()
-            transformation = (
+            transformation: Gf.Matrix4d = (
                 xform.ComputeLocalToWorldTransform(time)
                 if coordinate_system == "world"
                 else xform.GetLocalTransformation()
             )
+
+            # Orthnormalize the transformation matrix to avoid scaling issues
+            if not transformation.Orthonormalize():
+                carb.log_warn(
+                    f"Transform for prim {prim.GetPath()} orthonormalize failed."
+                )
             position = np.array(transformation.ExtractTranslation())
             orientation = transformation.ExtractRotation().GetQuaternion()
             w, (x, y, z) = orientation.GetReal(), orientation.GetImaginary()
             quat = np.array([w, x, y, z])
+        else:
+            parent = prim.GetParent()
+            if not parent:
+                raise ValueError(
+                    f"Prim {prim_path} has no transform definition and has no parent to get the pose from."
+                )
+            return PrimUtils.get_prim_pose(
+                parent.GetPrimPath().pathString,
+                coordinate_system=coordinate_system,
+                rotation_type=rotation_type,
+            )
 
         rotation = (
             Rotation.from_quat(quat[[1, 2, 3, 0]]).as_rotvec()
@@ -71,6 +88,7 @@ class PrimUtils:
         pose = (
             (position / SceneUtils.get_stage_units()) * 1000
         ).tolist() + rotation.tolist()
+
         return (
             WSPose(pose=pose) if rotation_type == "cartesian" else QuatPose(pose=pose)
         )
@@ -128,21 +146,28 @@ class PrimUtils:
         rot = Rotation.from_matrix(mat[:3, :3])
         return np.concatenate([trans, rot.as_rotvec()])
 
-    def get_relative_pose(
-        prim_path_1: str,
-        prim_path_2: str,
+    def get_relative_prim_pose(
+        prim_path_a: str,
+        prim_path_b: str,
         mode: RelativePoseMode = RelativePoseMode.NORMAL,
         rotation_type: ROTATION_TYPES = "cartesian",
     ) -> Pose:
-        pose1 = PrimUtils.get_prim_pose(
-            prim_path=prim_path_1, coordinate_system="world"
+        pose_a = PrimUtils.get_prim_pose(
+            prim_path=prim_path_a, coordinate_system="world"
         )
-        pose2 = PrimUtils.get_prim_pose(
-            prim_path=prim_path_2, coordinate_system="world"
+        pose_b = PrimUtils.get_prim_pose(
+            prim_path=prim_path_b, coordinate_system="world"
         )
+        return PrimUtils.get_relative_pose(pose_a, pose_b, mode, rotation_type)
 
-        matrix1 = PrimUtils.pose_to_matrix(pose1.pose)
-        matrix2 = PrimUtils.pose_to_matrix(pose2.pose)
+    def get_relative_pose(
+        pose_a: Pose,
+        pose_b: Pose,
+        mode: RelativePoseMode = RelativePoseMode.NORMAL,
+        rotation_type: ROTATION_TYPES = "cartesian",
+    ) -> Pose:
+        matrix1 = PrimUtils.pose_to_matrix(pose_a.pose)
+        matrix2 = PrimUtils.pose_to_matrix(pose_b.pose)
 
         if mode == RelativePoseMode.NORMAL:
             result_matrix = np.linalg.inv(matrix1) @ matrix2
@@ -206,13 +231,21 @@ class PrimUtils:
         Get the world transform of a prim.
         Returns translation, rotation, and scale.
         """
+
         world_transform: Gf.Matrix4d = omni.usd.get_world_transform_matrix(prim)
-        translation: Gf.Vec3d = world_transform.ExtractTranslation()
-        rotation: Gf.Rotation = world_transform.ExtractRotation()
         scale: Gf.Vec3d = Gf.Vec3d(
             *(
                 cast(Gf.Vec3d, v).GetLength()
                 for v in world_transform.ExtractRotationMatrix()
             )
         )
+
+        if not world_transform.Orthonormalize():
+            carb.log_warn(
+                f"Warning: World transform for prim {prim.GetPath()} is not orthonormal."
+            )
+
+        translation: Gf.Vec3d = world_transform.ExtractTranslation()
+        rotation: Gf.Rotation = world_transform.ExtractRotation()
+
         return translation, rotation, scale

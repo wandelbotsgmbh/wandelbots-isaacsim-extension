@@ -8,7 +8,7 @@ from queue import Queue
 
 import carb
 import omni.timeline
-import pxr.Sdf
+import usdrt.Sdf
 from omni.graph.action_core import get_interface
 from wandelbots.omni.io import (
     IOStreamService,
@@ -31,7 +31,7 @@ class OgnOnIOChangeState:
     def __init__(self):
         self.io_stream_service: IOStreamService = None
         self.robot_service: MotionGroupService = None
-        self.robot_prim = None
+        self.robot_prim: usdrt.Sdf.Path = None
         self.robot_config: MotionGroupConfiguration = None
         self.io_id = None
         self.io_change_queue = Queue()
@@ -40,7 +40,7 @@ class OgnOnIOChangeState:
         carb.log_verbose(f"Change io={io} value={new_value}")
         self.io_change_queue.put(new_value)
 
-    def set_metadata(self, robot_prim: list[pxr.Sdf.Path], io_id: str):
+    def set_metadata(self, robot_prim: list[usdrt.Sdf.Path], io_id: str):
         self.io_stream_service = get_io_stream_service()
         self.robot_service = get_motion_group_service()
         if len(robot_prim) == 0:
@@ -48,8 +48,8 @@ class OgnOnIOChangeState:
         if io_id is None:
             raise ValueError("IO is None")
         self.robot_prim = robot_prim[0]
-        self.robot_config = self.robot_service.get_motion_group_by_prim_path(
-            self.robot_prim
+        self.robot_config = self.robot_service.get_motion_group_configuration(
+            self.robot_prim.pathString
         )
         if self.robot_config is None:
             raise ValueError(
@@ -69,7 +69,7 @@ class OgnOnIOChangeState:
             get_io_stream_service().subscribe(
                 self.api_configuration,
                 self.robot_config.motion_stream_configuration.cell,
-                self.robot_config.motion_stream_configuration.controller_id,
+                self.robot_config.motion_stream_configuration.controller,
                 [self.io_id],
                 on_change=self.on_change,
             )

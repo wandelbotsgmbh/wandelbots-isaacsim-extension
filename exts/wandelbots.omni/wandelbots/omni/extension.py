@@ -17,6 +17,7 @@ from omni.services.core import main
 from wandelbots.omni.utils.dependencies import remove_extension_packages
 from wandelbots.omni.base import omniservice_base_app
 from wandelbots.omni.environment import host_database
+from wandelbots.omni.ui.schema.schema_extension_ui import SchemaExtensionUI
 from wandelbots.omni.io import get_io_stream_service, IOStreamService
 from wandelbots.omni.manipulators import get_motion_group_service, MotionGroupService
 from wandelbots.omni.utils.base import get_current_version
@@ -31,6 +32,7 @@ kit_app = main.get_app()
 
 class OmniService(omni.ext.IExt):
     def on_startup(self, ext_id) -> None:
+        self.schema_extension = SchemaExtensionUI()
         carb.log_info("Mounting /omniservice")
 
         # Collect services to bind them to the timeline state
@@ -123,6 +125,9 @@ class OmniService(omni.ext.IExt):
 
         remove_menu_items(self._menu_items, self.menu_item_name)
 
+        if self.instance_list_window:
+            self.instance_list_window.close()
+
         asyncio.get_event_loop().create_task(
             OmniService._async_shutdown(
                 self.motion_group_service, self.io_stream_service
@@ -135,6 +140,9 @@ class OmniService(omni.ext.IExt):
         if self.timeline.is_playing():
             carb.log_verbose("Stopping timeline")
             self.timeline.stop()
+
+        self.schema_extension.unregister()
+        self.schema_extension = None
 
     def _create_menu(self, ext_id):
         self._menu_items = [

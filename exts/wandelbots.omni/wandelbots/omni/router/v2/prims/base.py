@@ -135,9 +135,9 @@ async def get_relative_pose(
     The coordinate system used depends on the rotation_type parameter: either 'cartesian' or 'quaternion'.
     """
     try:
-        return PrimUtils.get_relative_pose(
-            prim_path_1=prim_path_1,
-            prim_path_2=prim_path_2,
+        return PrimUtils.get_relative_prim_pose(
+            prim_path_a=prim_path_1,
+            prim_path_b=prim_path_2,
             mode=mode,
             rotation_type=rotation_type,
         )

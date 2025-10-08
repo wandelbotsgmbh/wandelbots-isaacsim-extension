@@ -5,8 +5,9 @@ import sys
 
 
 def _get_pip_prebundle_dir():
+    python_dir = f"{sys.version_info.major}.{sys.version_info.minor}"
     return os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../../pip_prebundle")
+        os.path.join(os.path.dirname(__file__), f"../../../pip_prebundle/{python_dir}")
     )
 
 

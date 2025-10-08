@@ -12,16 +12,13 @@ from wandelbots.omni.core.networks import ReconnectingWebsocket
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
 from wandelbots.omni.utils.auth import get_auth_token
 
-from .motion_stream_configuration import MotionStreamConfiguration
-from .motion_group import MotionGroup
+from .motion_group import MotionGroup, MotionStreamConfiguration
 
 
 class MotionStreamConnector:
-    def __init__(
-        self, motion_group: MotionGroup, configuration: MotionStreamConfiguration
-    ):
+    def __init__(self, motion_group: MotionGroup):
+        self.motion_group = motion_group
         self.receive_lock = asyncio.Lock()
-        self.configuration = configuration
 
         # This configuration is updated with every connect/state call which needs a token
         self.api_configuration: ApiConfiguration = self._get_api_configuration(
@@ -31,9 +28,13 @@ class MotionStreamConnector:
         self.stream = ReconnectingWebsocket(
             self._websocket_uri, on_receive=self._receive_data, token=get_auth_token()
         )
-        self.motion_group = motion_group
+
         self.stream_joint_count: int = None
         self.timeline = omni.timeline.get_timeline_interface()
+
+    @property
+    def configuration(self) -> MotionStreamConfiguration:
+        return self.motion_group.configuration.motion_stream_configuration
 
     @property
     def is_external_joint_stream(self) -> bool:
@@ -43,8 +44,8 @@ class MotionStreamConnector:
     def _websocket_uri(self):
         base_url = self.api_configuration.base_url_websocket
         if self.is_external_joint_stream:
-            return f"{base_url}/cells/{self.configuration.cell}/virtual-controllers/{self.configuration.controller_id}/external-joints-stream"
-        return f"{base_url}/cells/{self.configuration.cell}/controllers/{self.configuration.controller_id}/motion-groups/{self.configuration.motion_group}/state-stream?response_rate={self.configuration.response_rate}"
+            return f"{base_url}/cells/{self.configuration.cell}/virtual-controllers/{self.configuration.controller}/external-joints-stream"
+        return f"{base_url}/cells/{self.configuration.cell}/controllers/{self.configuration.controller}/motion-groups/{self.configuration.motion_group}/state-stream?response_rate={self.configuration.response_rate}"
 
     async def check_connection(self, token: str | None):
         """
@@ -67,7 +68,7 @@ class MotionStreamConnector:
                 api_client=api_client
             ).get_current_motion_group_state(
                 self.configuration.cell,
-                self.configuration.controller_id,
+                self.configuration.controller,
                 self.configuration.motion_group,
             )
             return state
@@ -108,7 +109,7 @@ class MotionStreamConnector:
             controller_state = json.loads(
                 (
                     await controller_api.get_current_robot_controller_state_with_http_info(
-                        self.configuration.cell, self.configuration.controller_id
+                        self.configuration.cell, self.configuration.controller
                     )
                 ).raw_data.decode("utf-8")
             )
@@ -130,7 +131,7 @@ class MotionStreamConnector:
                 )
                 await controller_api.set_default_mode(
                     self.configuration.cell,
-                    self.configuration.controller_id,
+                    self.configuration.controller,
                     wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
                 )
             elif controller_mode != "MODE_CONTROL":
@@ -265,13 +266,13 @@ class MotionStreamConnector:
 
         if self.stream_joint_count is None:
             carb.log_error(
-                f'Attempted to set joints for "{self.configuration.controller_id}" but joint count is unknown'
+                f'Attempted to set joints for "{self.configuration.controller}" but joint count is unknown'
             )
             return
 
         if self.stream_joint_count < len(joint_positions):
             carb.log_verbose(
-                f'Attempted to set "{self.configuration.controller_id}" joints with more joint values than known joint count {self.stream_joint_count}'
+                f'Attempted to set "{self.configuration.controller}" joints with more joint values than known joint count {self.stream_joint_count}'
             )
             return
 

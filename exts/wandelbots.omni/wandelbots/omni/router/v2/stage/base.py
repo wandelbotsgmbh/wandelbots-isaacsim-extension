@@ -6,7 +6,7 @@ from pxr import UsdGeom
 import omni.usd
 from pydantic import BaseModel, Field, RootModel
 from wandelbots.omni.datatypes import UsdStageModel
-from wandelbots.omni.manipulators import get_scene_articulation_roots
+from wandelbots.omni.manipulators import get_scene_motion_group_prim_paths
 import omni.timeline
 
 from typing import Annotated
@@ -105,7 +105,7 @@ async def list_stage_motion_groups() -> StageMotionGroupsResponse:
     Returns:
         list of robot prim paths
     """
-    return get_scene_articulation_roots()
+    return get_scene_motion_group_prim_paths()
 
 
 @stage_router.get(

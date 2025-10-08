@@ -62,7 +62,7 @@ class Auth0UIBuilder:
                         clicked_fn=lambda: self._on_copy_to_clipboard(verification_url),
                     )
                     ui.Button(
-                        "Open in Browser",
+                        "Open in browser",
                         height=30,
                         style={
                             "background_color": NOVAColor.PRIMARY_MAIN.color,

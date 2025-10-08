@@ -8,6 +8,13 @@ from wandelbots.omni.manipulators import (
     get_motion_group_service,
     MotionStreamConfiguration,
 )
+from pxr import Usd
+import carb
+
+try:
+    import isaacsim.core.utils.stage as stage_utils
+except ImportError:
+    import omni.isaac.core.utils.stage as stage_utils
 
 motion_groups_router = APIRouter(
     prefix="/manipulators/motion-groups", tags=["Manipulators (Motion-Group)"]
@@ -18,11 +25,34 @@ MotionGroupServiceDep = Annotated[MotionGroupService, Depends(get_motion_group_s
 
 def find_motion_group_or_raise(
     prim_path: str, motion_group_service: MotionGroupServiceDep
-) -> MotionGroupConfiguration | NoReturn:
-    if not motion_group_service.has_motion_group(prim_path):
+) -> str | NoReturn:
+    prim: Usd.Prim = stage_utils.get_current_stage().GetPrimAtPath(prim_path)
+
+    if prim.IsValid():
+        if not motion_group_service.has_motion_group(prim_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Motion-Group for prim_path='{prim_path}' not found",
+            )
+    else:
+        # Find prim by their ID, use first motion_group found
+        # !DEPRECATED!
+        motion_group_prim_configurations = [
+            motion_group_service.get_motion_group_configuration(prim_path)
+            for prim_path in motion_group_service.get_all_motion_group_prim_paths()
+        ]
+        for config in motion_group_prim_configurations:
+            if not config:
+                continue
+            if config.motion_stream_configuration.motion_group == prim_path:
+                carb.log_verbose(
+                    f"Using motion group '{prim_path}' instead of prim_path"
+                )
+                return config.prim_path
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Motion-Group for {prim_path} not found",
+            detail=f"Motion-Group for motion_group='{prim_path}' not found",
         )
     return prim_path
 
@@ -54,10 +84,10 @@ async def create_motion_group(
     """
     Create and link a motion_group to a motion stream
     """
-    if motion_group_service.has_motion_group(configuration.name):
+    if motion_group_service.has_motion_group(configuration.prim_path):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"{configuration.name} is already created. Please delete it first to create a new motion_group",
+            f"{configuration.prim_path} is already created. Please delete it first to create a new motion_group",
         )
 
     try:

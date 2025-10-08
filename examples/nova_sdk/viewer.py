@@ -30,7 +30,11 @@ import wandelbots_isaacsim_api as isaac_sim_api
     viewer=trajectory_utils.TrajectoryViewer(
         trajectory_success=trajectory_utils.TrajectoryPlanResultConfiguration(
             name="PlannedTrajectory",
-            options=isaac_sim_api.models.TrajectoryOptions(color=[0, 255, 0], width=20),
+            parent_prim_path="/World",
+            options=isaac_sim_api.models.TrajectoryOptions(
+                color=isaac_sim_api.models.Color([0, 255, 0]),
+                width=isaac_sim_api.models.Width([20]),
+            ),
             optimization=trajectory_utils.TrajectoryDrawOptimization(
                 min_time_delta_seconds=0.1,
                 min_pose_distance_millimeters=10.0,
@@ -38,7 +42,11 @@ import wandelbots_isaacsim_api as isaac_sim_api
         ),
         trajectory_failure=trajectory_utils.TrajectoryPlanResultConfiguration(
             name="PlanningFailed",
-            options=isaac_sim_api.models.TrajectoryOptions(color=[255, 0, 0], width=20),
+            parent_prim_path="/World",
+            options=isaac_sim_api.models.TrajectoryOptions(
+                color=isaac_sim_api.models.Color([255, 0, 0]),
+                width=isaac_sim_api.models.Width([20]),
+            ),
             optimization=trajectory_utils.TrajectoryDrawOptimization(
                 min_time_delta_seconds=0.1,
                 min_pose_distance_millimeters=10.0,

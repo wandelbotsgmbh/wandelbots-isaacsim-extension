@@ -1,5 +1,29 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.7.1 (2025-09-18)
+
+### Bug Fixes
+
+* Added python version to prebundle path
+
+## 2.7.0 (2025-09-16)
+
+### Features
+
+* Added option to define width/color of individual trajectory points
+
+## 2.6.0 (2025-09-15)
+
+### Features
+
+* **CIS-1948:** Merged ghost objects to single mesh. Materials are now stored next to scene
+
+## 2.5.0 (2025-09-11)
+
+### Features
+
+* **RPS-1733:** Added support for NOVA OpenUSD schema
+
 ## 2.4.6 (2025-09-09)
 
 ### Bug Fixes

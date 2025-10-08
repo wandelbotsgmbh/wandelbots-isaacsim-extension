@@ -7,7 +7,7 @@ import asyncio
 
 import carb
 import omni.timeline
-import pxr.Sdf
+import usdrt.Sdf
 from omni.graph.action_core import get_interface
 from wandelbots.omni.io import (
     IOValue,
@@ -26,7 +26,7 @@ timeline = omni.timeline.get_timeline_interface()
 
 class OgnReadIOState:
     def __init__(self):
-        self.robot_prim = None
+        self.robot_prim: usdrt.Sdf.Path = None
         self.robot_configuration: MotionGroupConfiguration = None
         self.io_id = None
         self.io_value: IOValue = None
@@ -37,14 +37,16 @@ class OgnReadIOState:
     def on_change(self, io: str, new_value: IOValue):
         self.io_value = new_value
 
-    def set_metadata(self, robot_prim: list[pxr.Sdf.Path], io_id: str):
+    def set_metadata(self, robot_prim: list[usdrt.Sdf.Path], io_id: str):
         if len(robot_prim) == 0:
             raise ValueError("Robot prim is not set")
         if io_id is None:
             raise ValueError("IO is None")
-        self.robot_prim = robot_prim[0]
+        self.robot_prim: usdrt.Sdf.Path = robot_prim[0]
         self.robot_configuration = (
-            get_motion_group_service().get_motion_group_by_prim_path(self.robot_prim)
+            get_motion_group_service().get_motion_group_configuration(
+                self.robot_prim.pathString
+            )
         )
         if self.robot_configuration is None:
             raise ValueError(
@@ -61,7 +63,7 @@ class OgnReadIOState:
             get_io_stream_service().subscribe(
                 self.api_configuration,
                 motion_stream_config.cell,
-                motion_stream_config.controller_id,
+                motion_stream_config.controller,
                 [self.io_id],
                 on_change=self.on_change,
                 on_init=self.on_init,

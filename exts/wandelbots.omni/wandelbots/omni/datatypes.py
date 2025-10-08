@@ -20,11 +20,17 @@ class WSPose(BaseModel):
             orientation=self.pose[3:],
         )
 
+    def __str__(self):
+        return "(" + ", ".join([f"{round(x, 3)}" for x in self.pose]) + ")"
+
 
 class QuatPose(BaseModel):
     pose: conlist(float, min_length=7, max_length=7) = Field(
         [0, 0, 0, 1, 0, 0, 0], description="Pose in quaternion vector format (WS)"
     )
+
+    def __str__(self):
+        return "(" + ", ".join([f"{round(x, 3)}" for x in self.pose]) + ")"
 
 
 class Auth0Credentials(BaseModel):
@@ -125,7 +131,12 @@ SYNTHETIC_DATA_CAPTURE_TYPES = Literal[
 COORDINATE_SYSTEM = Literal["world", "local"]
 ROTATION_TYPES = Literal["cartesian", "quaternions"]
 
-GHOST_MATERIAL_MDL_FILE = str(pathlib.Path(__file__).parent / "assets" / "wb_ghost.mdl")
+PROJECT_MDL_DIR = pathlib.Path(".wandelbots") / "mdl"
+
+GHOST_MATERIAL_MDL_EXT_FILE = pathlib.Path(__file__).parent / "assets" / "wb_ghost.mdl"
+GHOST_MATERIAL_MDL_PROJECT_FILE = PROJECT_MDL_DIR / "wb_ghost.mdl"
+
+
 SHADER_IDENTIFIER = "GhostTeaching"
 
 GIZMO_USD_FILE = str(pathlib.Path(__file__).parent / "assets" / "gizmo.usd")

@@ -17,7 +17,7 @@ from wandelbots.omni.instances.models import (
     NOVAMotionGroupData,
 )
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.instances.motion_group import MotionGroupUIBuilder
+from wandelbots.omni.ui.instances.motion_group_ui_builder import MotionGroupUIBuilder
 
 
 class NOVAInstanceUIBuilder:
@@ -201,7 +201,7 @@ class NOVAInstanceUIBuilder:
                 )
         else:
             # Multiple motion groups or no motion groups - use original layout
-            title = f"{motion_group.model_name} ({motion_group.name})"
+            title = f"{motion_group.motion_group_model_name} ({motion_group.name})"
             with ui.CollapsableFrame(title=title, height=0, collapsed=True):
                 with ui.VStack(spacing=2):
                     if controller.motion_groups:
@@ -259,7 +259,8 @@ class NOVAInstanceUIBuilder:
                     )
                     if motion_group_config:
                         self._instances_service.add_to_connected_motion_groups(
-                            motion_group_config.identifier, motion_group_config
+                            motion_group_config.identifier,
+                            motion_group_config,
                         )
                         self._instances_service.set_selected_articulation(
                             motion_group_config.identifier,

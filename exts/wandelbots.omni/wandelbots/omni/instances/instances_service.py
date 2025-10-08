@@ -18,12 +18,18 @@ from wandelbots.omni.instances.models import (
     NOVAControllerData,
 )
 from wandelbots.omni.environment import instance_store
-
-from wandelbots.omni.manipulators.motion_group_service import (
+from wandelbots.omni.manipulators import (
+    is_prim_motion_group,
     get_motion_group_service,
     MotionGroupConfiguration,
     MotionStreamConfiguration,
 )
+from pxr import Usd
+
+try:
+    import isaacsim.core.utils.stage as stage_utils
+except ImportError:
+    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
 
 
 class NOVAInstancesService:
@@ -31,7 +37,7 @@ class NOVAInstancesService:
         self._cloud_instances: list[NOVACloudInstance] = []
         self._custom_instances: list[NOVACustomInstance] = []
         self._instances_api = NOVAInstancesAPI()
-        self._connected_motion_groups: dict[str, MotionStreamConfiguration] = {}
+        self._connected_motion_groups: dict[str, MotionGroupConfiguration] = {}
         self._selected_articulations: dict[str, str] = {}
 
     def get_selected_articulation(self, identifier: str) -> Optional[str]:
@@ -115,22 +121,22 @@ class NOVAInstancesService:
             carb.log_verbose(
                 f"Checking motion group at {prim_path} for instance {instance.host}"
             )
-            motion_group = motion_group_service.get_motion_group(prim_path)
+            motion_group = motion_group_service.get_motion_group_configuration(
+                prim_path
+            )
             if not motion_group:
                 continue
 
             if motion_group.motion_stream_configuration.host == instance.host:
                 carb.log_verbose(
-                    f"Removing motion group {motion_group.name} at {prim_path} for instance {instance.host}"
+                    f"Removing motion group {prim_path} for instance {instance.host}"
                 )
                 try:
                     motion_group_service.remove_motion_group(prim_path)
                     identifier = motion_group.identifier
                     self.remove_from_connected_motion_group(identifier)
                 except Exception as e:
-                    carb.log_error(
-                        f"Failed to remove motion group {motion_group.name} at {prim_path}: {e}"
-                    )
+                    carb.log_error(f"Failed to remove motion group {prim_path}: {e}")
 
     def delete_motion_group(
         self,
@@ -175,6 +181,7 @@ class NOVAInstancesService:
         use_external_joint_stream: bool,
         callback: Optional[callable] = None,
     ):
+        prim: Usd.Prim = stage_utils.get_current_stage().GetPrimAtPath(prim_path)
         try:
             if not prim_path:
                 carb.log_warn("No articulation path provided for motion group creation")
@@ -191,18 +198,16 @@ class NOVAInstancesService:
                 f"Creating motion group '{motion_group_name}' assigned to '{prim_path}'"
             )
 
-            if (
-                motion_group_service.get_motion_group_by_prim_path(prim_path)
-                is not None
-            ):
-                carb.log_warn(f"Articulation at {prim_path} is already connected.")
-                callback(False, "Articulation is already connected.")
-                return
+            if is_prim_motion_group(prim):
+                carb.log_info(
+                    f"Articulation at {prim_path} is already connected. Updating configuration to selected motion group"
+                )
 
             motion_stream_config = MotionStreamConfiguration(
                 host=instance.host,
                 secure_connection=instance.is_secure_connection,
                 cell=controller.cell_name,
+                controller=controller.name,
                 motion_group=motion_group_name,
                 use_external_joint_stream=use_external_joint_stream,
             )
@@ -282,8 +287,36 @@ class NOVAInstancesService:
         return auth_token != "" and auth_token is not None
 
     @property
-    def connected_motion_groups(self) -> dict[str, MotionStreamConfiguration]:
+    def connected_motion_groups(self) -> dict[str, MotionGroupConfiguration]:
         return self._connected_motion_groups
 
     def handle_authentication_error(self):
         invalidate_auth_token()
+
+    def find_connected_motion_group_by(
+        self,
+        prim_path: str = None,
+        host: str = None,
+        secured: bool = None,
+        cell: str = None,
+        controller: str = None,
+        motion_group: str = None,
+    ) -> list[MotionGroupConfiguration]:
+        results = []
+        for connected_motion_group in self._connected_motion_groups.values():
+            if prim_path and connected_motion_group.prim_path != prim_path:
+                continue
+            stream_config = connected_motion_group.motion_stream_configuration
+            if host and stream_config.host != host:
+                continue
+            if secured is not None and stream_config.secure_connection != secured:
+                continue
+            if cell and stream_config.cell != cell:
+                continue
+            if controller and stream_config.controller != controller:
+                continue
+            if motion_group and stream_config.motion_group != motion_group:
+                continue
+            results.append(connected_motion_group)
+
+        return results

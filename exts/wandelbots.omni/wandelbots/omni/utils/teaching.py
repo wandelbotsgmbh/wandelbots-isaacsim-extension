@@ -1,27 +1,69 @@
 import carb
-import omni.isaac.core.utils.prims as prims_utils
-import omni.isaac.core.utils.stage as stage_utils
+import weakref
+
+try:
+    import isaacsim.core.utils.prims as prims_utils
+    import isaacsim.core.utils.stage as stage_utils
+except ImportError:
+    import omni.isaac.core.utils.prims as prims_utils  # type: ignore
+    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
 import omni.usd
-from omni.usd import duplicate_prim
+import omni.usd.commands
 from omni.usd.commands import DeletePrimsCommand
-from pxr import Usd, UsdPhysics, UsdShade
+from pxr import Usd, UsdPhysics, UsdShade, Sdf, UsdGeom, Gf
+import wandelbots.usd as wb_schema
 from wandelbots.omni.datatypes import (
-    GHOST_MATERIAL_MDL_FILE,
+    GHOST_MATERIAL_MDL_EXT_FILE,
+    GHOST_MATERIAL_MDL_PROJECT_FILE,
     SHADER_IDENTIFIER,
     GhostObject,
     GhostObjectSource,
     TCPSource,
     WSPose,
 )
-from wandelbots.omni.utils.prims import PrimUtils
+from wandelbots.omni.utils.prims import PrimUtils, RelativePoseMode
+from wandelbots.omni.usd import SchemaUtils, TcpUtils
+from wandelbots.omni.utils.mesh import MeshUtils
+import omni.kit.commands
+from omni.kit.property.usd import prim_selection_payload
+import omni.client
 
 
 class GhostObjectUtils:
     @staticmethod
-    async def add_material_to_prim(prim: Usd.Prim):
+    def refresh_all_ghost_objects_material():
+        ghost_object: GhostObject
+        for ghost_object in GhostObjectUtils.get_ghost_objects():
+            prim = stage_utils.get_current_stage().GetPrimAtPath(ghost_object.prim_path)
+            if prim:
+                GhostObjectUtils.refresh_ghost_material(prim)
+
+    @staticmethod
+    def refresh_ghost_material(prim: Usd.Prim):
+        omni.usd.commands.DeletePrimsCommand(
+            [prim.GetPath().pathString + "/Looks"], destructive=False
+        ).do()
+        GhostObjectUtils.add_material_to_prim(prim)
+
+    @staticmethod
+    def add_material_to_prim(prim: Usd.Prim):
         """
         Applies ghost material and shader to the prim given its path
         """
+
+        stage_url = omni.usd.get_context().get_stage_url()
+        copy_destination = omni.client.combine_urls(
+            stage_url,
+            str(GHOST_MATERIAL_MDL_PROJECT_FILE),
+        )
+        copy_result = omni.client.copy_file(
+            str(GHOST_MATERIAL_MDL_EXT_FILE),
+            copy_destination,
+            behavior=omni.client.CopyBehavior.ERROR_IF_EXISTS,
+        )
+        relative_url = omni.client.make_relative_url(stage_url, copy_destination)
+        carb.log_verbose(f"Copy ghost material result: {copy_result} at {relative_url}")
+
         stage = prim.GetStage()
         looks_path = prim.GetPath().AppendChild("Looks")
         if not stage.GetPrimAtPath(looks_path):
@@ -32,7 +74,7 @@ class GhostObjectUtils:
 
         shader_path = material_path.AppendChild("Shader")
         shader = UsdShade.Shader.Define(stage, shader_path)
-        shader.SetSourceAsset(GHOST_MATERIAL_MDL_FILE, "mdl")
+        shader.SetSourceAsset(relative_url, "mdl")
         shader.SetSourceAssetSubIdentifier(SHADER_IDENTIFIER)
 
         material.CreateSurfaceOutput().ConnectToSource(
@@ -47,97 +89,136 @@ class GhostObjectUtils:
         )
 
     @staticmethod
-    def register_ghost_object(prim: Usd.Prim, source_ghost: bool):
+    def register_ghost_object(prim: Usd.Prim, tcp_prim: Usd.Prim):
         """
         Registers custom data to ghost object to make them discoverable
         """
-        custom_data = prim.GetCustomData()
-        custom_data.setdefault("metadata", {})
-        custom_data["metadata"].update({"is_ghost": True, "source_ghost": source_ghost})
-        prim.SetCustomData(custom_data)
+        if prim.HasAPI(wb_schema.ToolAPI):
+            if not prim.RemoveAPI(wb_schema.ToolAPI):
+                raise RuntimeError(f"Failed to remove ToolAPI from {prim.GetPath()}")
+        if not prim.ApplyAPI(wb_schema.GhostObjectAPI):
+            raise RuntimeError(f"Failed to apply GhostObjectAPI to {prim.GetPath()}")
+        ghost_object_api = wb_schema.GhostObjectAPI.Get(prim.GetStage(), prim.GetPath())
+        ghost_object_api.GetSourceTcpRel().AddTarget(tcp_prim.GetPath())
 
     @staticmethod
-    def get_ghost_object_sources():
-        ghost_objects = []
-        for prim in stage_utils.traverse_stage():
-            metadata = prim.GetCustomData().get("metadata", {})
-            if metadata.get("is_ghost") and metadata.get("source_ghost"):
-                ghost_objects.append(
-                    GhostObjectSource(
-                        name=prim.GetPrimPath().pathString.split("/")[-1],
-                        prim_path=prim.GetPrimPath().pathString,
-                    )
-                )
-        return ghost_objects
-
-    async def add_ghost_object(prim_path: str, ref_pose: WSPose):
-        carb.log_info(f"Add ghost object {prim_path} ref_pose={ref_pose}")
-        ghost_base_path = "/".join(prim_path.split("/")[:-2])
-        ghost_object_name = prim_path.split("/")[-1]
-        clone_prim_path = f"{ghost_base_path}/poses/{ghost_object_name}"
-        target_path = stage_utils.get_next_free_path(clone_prim_path)
-        stage = omni.usd.get_context().get_stage()
-        source_prim = stage.GetPrimAtPath(prim_path)
-
-        # Find the first available tcp when traversed
-        ghost_object_source_path = next(
-            (
-                ghost.prim_path
-                for ghost in GhostObjectUtils.get_ghost_object_sources()
-                if ghost.prim_path == prim_path
-            ),
-            None,
-        )
-        if ghost_object_source_path is None:
-            raise ValueError("Source ghost object is not created")
-
-        try:
-            if not duplicate_prim(
-                stage,
-                ghost_object_source_path,
-                target_path,
-            ):
-                raise RuntimeError(
-                    f"Failed to duplicate {ghost_object_source_path} to {target_path}"
-                )
-        except Exception:
-            raise ValueError(
-                "Source ghost object is not created. Make sure that the tool is in robot workspace and the robot is created"
+    def get_ghost_object_sources() -> list[GhostObjectSource]:
+        return [
+            GhostObjectSource(
+                prim_path=prim.GetPrimPath().pathString, name=prim.GetName()
             )
-        carb.log_info(
-            f"Ghost object created at {target_path} from {ghost_object_source_path}"
+            for prim in stage_utils.traverse_stage()
+            if prim.HasAPI(wb_schema.ToolAPI)
+        ]
+
+    def add_ghost_object(
+        prim_path: str, tcp_world_pose: WSPose, target_path: str = None
+    ):
+        stage: Usd.Stage = omni.usd.get_context().get_stage()
+        source_prim: Usd.Prim = stage.GetPrimAtPath(prim_path)
+        source_parent_prim = source_prim.GetParent()
+
+        carb.log_info(f"Add ghost object {prim_path} ref_world_pose={tcp_world_pose}")
+
+        clone_prim_path = f"{source_parent_prim.GetPath().pathString}/poses/{source_prim.GetName()}_Pose"
+        if target_path is None:
+            target_path = stage_utils.get_next_free_path(clone_prim_path)
+
+        tcp_sources = GhostObjectUtils.get_all_tcp_sources(source_prim)
+        if len(tcp_sources) == 0:
+            carb.log_error(
+                f"Failed to add ghost object {prim_path} because no TCP source was found."
+            )
+            return
+
+        if len(tcp_sources) > 1:
+            carb.log_warn(
+                f"Found multiple TCP sources {tcp_sources} for ghost object {prim_path}. Using the first one."
+            )
+            return
+        tcp_source: TCPSource = tcp_sources[0]
+        ghost_prim: Usd.Prim = GhostObjectUtils._convert_prim_to_ghost_prim(
+            source_prim=source_prim,
+            tcp_prim_path=tcp_source.prim_path,
+            target_path=target_path,
         )
-
-        # set visibility
-        target_prim = stage.DefinePrim(target_path, source_prim.GetTypeName())
-        target_prim.GetAttribute("visibility").Set("inherited")
-
-        # register prim
-        GhostObjectUtils.register_ghost_object(target_prim, source_ghost=False)
 
         # set ghost object to active TCP pose
-        if ref_pose:
-            PrimUtils.set_prim_pose(target_path, ref_pose)
 
-    def get_ghost_objects() -> list[GhostObject]:
+        if tcp_world_pose:
+            parent = ghost_prim.GetParent()
+            local_pose = PrimUtils.get_relative_pose(
+                PrimUtils.get_prim_pose(
+                    parent.GetPrimPath().pathString, coordinate_system="world"
+                ),
+                tcp_world_pose,
+                mode=RelativePoseMode.NORMAL,
+            )
+            carb.log_verbose(
+                f"Setting ghost object {ghost_prim.GetPath()} local_pose={local_pose} world_pose={tcp_world_pose} parent_pose={PrimUtils.get_prim_pose(parent.GetPrimPath().pathString)}"
+            )
+
+            PrimUtils.set_prim_pose(ghost_prim.GetPrimPath().pathString, local_pose)
+
+    def get_linked_motion_group_to_ghost_object_prim(
+        ghost_prim: Usd.Prim,
+    ) -> Usd.Prim | None:
+        """
+        Get the motion group linked to the ghost object prim.
+        """
+        stage: Usd.Stage = ghost_prim.GetStage()
+        if not ghost_prim.HasAPI(wb_schema.GhostObjectAPI):
+            carb.log_error(
+                f"Ghost prim {ghost_prim.GetPath()} does not have GhostObjectAPI."
+            )
+            return None
+
+        ghost_object_api = wb_schema.GhostObjectAPI.Get(stage, ghost_prim.GetPath())
+        tcp_prim_paths: list[Sdf.Path] = (
+            ghost_object_api.GetSourceTcpRel().GetForwardedTargets()
+        )
+        if len(tcp_prim_paths) == 0:
+            carb.log_error(f"Ghost prim {ghost_prim.GetPath()} has no linked TCP.")
+            return None
+        if len(tcp_prim_paths) > 1:
+            carb.log_warn(
+                f"Ghost prim {ghost_prim.GetPath()} has multiple linked TCPs: {tcp_prim_paths}. Using the first one."
+            )
+        tcp_prim: Usd.Prim = stage.GetPrimAtPath(tcp_prim_paths[0])
+        flange_tcp = GhostObjectUtils.get_flange_tcp_from_tool_tcp(tcp_prim)
+        if not flange_tcp:
+            carb.log_error(
+                f"Failed to find flange TCP for ghost object {ghost_prim.GetPath()} with TCP {tcp_prim.GetPath()}. Cannot find motion group."
+            )
+            return None
+        return SchemaUtils.find_parent_motion_group(flange_tcp)
+
+    def get_ghost_objects(relative_to_prim: str = None) -> list[GhostObject]:
         ghost_objects: list[GhostObject] = []
+        prim: Usd.Prim
         for prim in stage_utils.traverse_stage():
-            metadata = prim.GetCustomData().get("metadata", {})
+            if not prim.HasAPI(wb_schema.GhostObjectAPI):
+                continue
 
-            # Check if the prim has metadata and 'is_ghost' object is present
-            if metadata.get("is_ghost") and not metadata.get("source_ghost"):
-                path = prim.GetPrimPath().pathString
-                name = path.split("/")[-1]
-                ws_pose = PrimUtils.get_prim_pose(path)
-                robot_prim_path = GhostObjectUtils.get_robot_prim_path(prim)
-                ghost_objects.append(
-                    GhostObject(
-                        prim_path=path,
-                        name=name,
-                        robot_prim_path=robot_prim_path,
-                        pose=ws_pose,
-                    )
+            path = prim.GetPrimPath().pathString
+            robot_prim_path = (
+                GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(prim)
+                .GetPath()
+                .pathString
+            )
+
+            ws_pose = PrimUtils.get_relative_prim_pose(
+                relative_to_prim if relative_to_prim else robot_prim_path, path
+            )
+
+            ghost_objects.append(
+                GhostObject(
+                    name=prim.GetName(),
+                    prim_path=prim.GetPath().pathString,
+                    robot_prim_path=robot_prim_path,
+                    pose=ws_pose,
                 )
+            )
         return ghost_objects
 
     def delete_ghost_objects(prim_paths: list[str]) -> None:
@@ -164,71 +245,54 @@ class GhostObjectUtils:
         for child in prim.GetChildren():
             GhostObjectUtils.remove_physics_attributes(child)
 
-    @staticmethod
-    def get_robot_prim_path(prim: Usd.Prim):
-        # get parent prim and fetch first robot from that workspace
-        parent_workspace_prim = prim.GetParent().GetParent()
-        search_prims = prims_utils.get_all_matching_child_prims(
-            parent_workspace_prim.GetPrimPath().pathString,
-            lambda prim_path: "tool_" not in prim_path,
-        )
-        for prim in search_prims:
-            if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
-                return prim.GetPrimPath().pathString
-        carb.log_error("No robot found in the workspace")
-        return None
+    def get_flange_tcp_from_tool_tcp(tool_tcp: Usd.Prim) -> Usd.Prim | None:
+        tool_prim = SchemaUtils.find_parent_tool(tool_tcp)
+        if not tool_prim:
+            carb.log_error(
+                f"Tool prim not found for TCP {tool_tcp.GetPath()}. Cannot find tool. Make sure the tcp prim has a parent with the ToolAPI applied."
+            )
+            return None
+        motion_group_prim = SchemaUtils.find_tool_linked_motion_group(tool_prim)
+        if not motion_group_prim:
+            carb.log_error(
+                f"Motion group not found for tool {tool_prim.GetPath()}. Cannot find motion group. Make sure the tool is physically linked to a configured motion group prim and the tool has its rigid body linked."
+            )
+            return None
+        return SchemaUtils.find_motion_group_tcp(motion_group_prim)
 
-    @staticmethod
-    def get_possible_ghost_object_sources() -> list[GhostObjectSource]:
-        """
-        Return the prim paths of all prims that are sources for ghost objects i.e. tools.
-        These ghost object sources must follow a strict predicate `tool_`.
-        """
-        children_prims = prims_utils.get_all_matching_child_prims(
-            "/", lambda x: "tool_" in x.lower() and "ghost" not in x.lower()
-        )
-        return [
-            GhostObjectSource(name=prim.GetPath().name, prim_path=str(prim.GetPath()))
-            for prim in set(children_prims)
-            if prim.GetPath().name.lower().startswith("tool_")
-        ]
-
-    def get_all_tcp_sources(base_prim_path: str = "/") -> list[TCPSource]:
+    def get_all_tcp_sources(tool_prim: Usd.Prim = None) -> list[TCPSource]:
         """
         Return the prim paths of all tcps that are defined in the scene which follows a strict predicate `tcp_` or 'TCP_'
         """
-        children_prims = prims_utils.get_all_matching_child_prims(
-            base_prim_path, lambda x: x.lower().split("/")[-1].startswith("tcp_")
-        )
-        flange_prims = [
-            prim
-            for prim in children_prims
-            if "flange" in prim.GetPrimPath().pathString.lower()
-        ]
+
+        source_tcp_prims: list[Usd.Prim] = []
+
+        if tool_prim:
+            source_tcp_prims += prims_utils.get_all_matching_child_prims(
+                tool_prim.GetPath().pathString,
+                lambda prim_path: TcpUtils.is_tcp(
+                    tool_prim.GetStage().GetPrimAtPath(prim_path)
+                ),
+            )
+        else:
+            for source_prim in GhostObjectUtils.get_ghost_object_sources():
+                source_tcp_prims += prims_utils.get_all_matching_child_prims(
+                    source_prim.prim_path,
+                    lambda prim_path: TcpUtils.is_tcp(
+                        stage_utils.get_stage().GetPrimAtPath(prim_path)
+                    ),
+                )
+
         tcp_sources = []
-        for prim in set(children_prims):
+        for prim in set(source_tcp_prims):
             name = str(prim.GetPath()).rsplit("/", 1)[-1]
             prim_path = str(prim.GetPath())
-            if prim in flange_prims:
-                tcp_sources.append(
-                    TCPSource(
-                        name=name,
-                        prim_path=prim_path,
-                        value=WSPose(pose=[0, 0, 0, 0, 0, 0]),
-                    )
-                )
-                continue
 
-            # ToDo: optimise this search workspace
-            search_workspace = prim.GetParent().GetParent().GetParent()
-            matching_flange_prims = prims_utils.get_all_matching_child_prims(
-                search_workspace.GetPrimPath().pathString,
-                lambda x: lambda x: x.lower().split("/")[-1].startswith("tcp_flange"),
-            )
-            if not matching_flange_prims:
+            flange_prim: Usd.Prim = GhostObjectUtils.get_flange_tcp_from_tool_tcp(prim)
+            if not flange_prim:
+                carb.log_warn(f"Failed to find flange TCP for {prim_path}. Skipping.")
                 continue
-            flange_prim = matching_flange_prims[0]
-            rel_pose = PrimUtils.get_relative_pose(
+            rel_pose = PrimUtils.get_relative_prim_pose(
                 prim_path, flange_prim.GetPrimPath().pathString
             )
             tcp_sources.append(
@@ -236,58 +300,62 @@ class GhostObjectUtils:
             )
         return tcp_sources
 
-    async def add_source_ghost_object(source_prim_path: str) -> None:
-        """
-        Create a ghost object from the prim under the specified path.
-        This will clone the prim, apply the specified material and shift the origin of the prim.
-        """
-        source_ghost_base_path = "/".join(source_prim_path.split("/")[:-1])
-        source_ghost_object_name = source_prim_path.split("/")[-1]
-        stage = omni.usd.get_context().get_stage()
-        stage.DefinePrim(f"{source_ghost_base_path}/source_ghosts", "Scope")
-        stage.DefinePrim(f"{source_ghost_base_path}/poses", "Scope")
+    def _convert_prim_to_ghost_prim(
+        source_prim: Usd.Prim, tcp_prim_path: str, target_path: str
+    ) -> Usd.Prim:
+        stage: Usd.Stage = source_prim.GetStage()
 
-        clone_prim_path = (
-            f"{source_ghost_base_path}/source_ghosts/{source_ghost_object_name}"
+        tcp_transform: Gf.Matrix4d = omni.usd.get_world_transform_matrix(
+            stage.GetPrimAtPath(tcp_prim_path)
+        ).GetOrthonormalized()
+        source_transform = omni.usd.get_world_transform_matrix(
+            source_prim
+        ).GetOrthonormalized()
+        relative_tcp_transform: Gf.Matrix4d = (
+            source_transform * tcp_transform.GetInverse()
         )
-        tcp_sources = GhostObjectUtils.get_all_tcp_sources(
-            base_prim_path=source_prim_path
+        relative_transform: Gf.Matrix4d = (
+            relative_tcp_transform.GetInverse() * source_transform
         )
-        if not tcp_sources:
-            raise ValueError(
-                "TCP is not configured for the given tool. Source ghost cannot be created"
-            )
 
-        source_prim = stage.GetPrimAtPath(source_prim_path)
-        for tcp_source in tcp_sources:
-            tcp_name = tcp_source.prim_path.split("/")[-1]
-            target_path = (
-                stage_utils.get_next_free_path(clone_prim_path) + f"_{tcp_name}"
-            )
+        ghost_mesh_prim: UsdGeom.Mesh = MeshUtils.merge_prim_meshes(
+            source_prim=source_prim,
+            target_path=target_path,
+            mesh_offset_transform=relative_transform.GetInverse(),
+        )
 
-            if not duplicate_prim(stage, source_prim_path, target_path):
-                raise RuntimeError(
-                    f"Failed to duplicate {source_prim_path} to {target_path}"
-                )
+        omni.kit.commands.execute(
+            "AddXformOp",
+            payload=prim_selection_payload.PrimSelectionPayload(
+                weakref.ref(stage), paths=[ghost_mesh_prim.GetPath()]
+            ),
+            precision=UsdGeom.XformOp.PrecisionDouble,
+            rotation_order="ZYX",
+            add_translate_op=True,
+            add_rotate_xyz_op=False,  # we are using orient_op since this is what set_prim_pose uses
+            add_orient_op=True,
+            add_scale_op=True,
+            add_transform_op=False,
+            add_pivot_op=False,
+        )
 
-            # fix visibility
-            target_prim = stage.DefinePrim(target_path, source_prim.GetTypeName())
-            target_prim.GetAttribute("visibility").Set("invisible")
+        # # add ghost material to object
+        GhostObjectUtils.add_material_to_prim(ghost_mesh_prim.GetPrim())
 
-            # fix transformation
-            for child in target_prim.GetChildren():
-                rel_pose = PrimUtils.get_relative_pose(
-                    child.GetPrimPath().pathString,
-                    tcp_source.prim_path,
-                    mode="inverse_both",
-                )
-                PrimUtils.set_prim_pose(child.GetPrimPath().pathString, rel_pose)
+        # register prim
+        tcp_prim = stage.GetPrimAtPath(tcp_prim_path)
+        GhostObjectUtils.register_ghost_object(ghost_mesh_prim.GetPrim(), tcp_prim)
 
-            # add ghost material to object
-            await GhostObjectUtils.add_material_to_prim(target_prim)
+        return ghost_mesh_prim.GetPrim()
 
-            # Remove all physics attributes from the prim and its children
-            GhostObjectUtils.remove_physics_attributes(target_prim)
 
-            # register prim
-            GhostObjectUtils.register_ghost_object(target_prim, source_ghost=True)
+class RefreshGhostMaterialsCommand(omni.kit.commands.Command):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def do(self) -> None:
+        GhostObjectUtils.refresh_all_ghost_objects_material()
+        return
+
+    def undo(self) -> None:
+        return

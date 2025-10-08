@@ -121,7 +121,7 @@ async def create_ghost_object(ghost_object_data: CreateGhostObject) -> None:
         )
 
     try:
-        await GhostObjectUtils.add_ghost_object(
+        GhostObjectUtils.add_ghost_object(
             ghost_object_data.prim_path, ghost_object_data.ref_pose
         )
     except ValueError as e:
@@ -172,12 +172,16 @@ async def clear_ghost_objects(prim_path: str = None) -> None:
         500: {"description": "Unable to fetch all the ghost objects in the scene"},
     },
 )
-def list_ghost_objects() -> list[GhostObject]:
+def list_ghost_objects(
+    relative_to_prim: str = Query(
+        None, description="Prim path to which the ghost object poses are relative"
+    ),
+) -> list[GhostObject]:
     """
     Fetches all ghost objects defined in the scene
     """
     try:
-        return GhostObjectUtils.get_ghost_objects()
+        return GhostObjectUtils.get_ghost_objects(relative_to_prim)
     except Exception as e:
         raise HTTPException(500, f"Unable to fetch ghost objects from the scene: {e}")
 
@@ -192,6 +196,9 @@ async def pose_tracker_websocket(
     interval: float = Query(
         1.0, ge=0.05, le=5.0, description="Time delay in seconds between updates"
     ),
+    relative_to_prim: str = Query(
+        None, description="Prim path to which the ghost object poses are relative"
+    ),
 ) -> GhostObjectsMessage:
     """
     WebSocket endpoint that streams ghost object poses to connected clients.
@@ -201,7 +208,7 @@ async def pose_tracker_websocket(
     try:
         while True:
             ghost_objects_data = GhostObjectsMessage(
-                ghost_objects=GhostObjectUtils.get_ghost_objects()
+                ghost_objects=GhostObjectUtils.get_ghost_objects(relative_to_prim)
             )
             if websocket.client_state != WebSocketState.CONNECTED:
                 carb.log_info("WebSocket connection closed")

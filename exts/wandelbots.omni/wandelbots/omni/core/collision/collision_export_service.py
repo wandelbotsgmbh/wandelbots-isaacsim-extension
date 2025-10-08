@@ -8,6 +8,7 @@ import pydantic
 import omni.timeline
 from pxr import Sdf
 import wandelbots.omni.core.collision.shapes as collision_shapes
+from wandelbots.omni.utils.prims import Pose, PrimUtils, WSPose
 
 
 class SphereSweepParameters(pydantic.BaseModel):
@@ -80,7 +81,10 @@ class CollisionExportService:
         physx_bindings.release_physx_property_query_interface(self._physx_query)
 
     def collision_sweep(
-        self, sweep_args: SweepParameters, stage: Usd.Stage = None
+        self,
+        sweep_args: SweepParameters,
+        stage: Usd.Stage = None,
+        reference_prim_pose: Pose = None,
     ) -> dict[str, collision_shapes.Collider]:
         if not omni.timeline.get_timeline_interface().is_playing():
             raise RuntimeError(
@@ -199,8 +203,19 @@ class CollisionExportService:
             )
         else:
             raise ValueError(f"Unknown sweep type: {sweep_args.sweep_type}")
-
-        return colliders
+        return {
+            prim_path: collision_shapes.Collider(
+                shape=collider.shape,
+                pose=PrimUtils.get_relative_pose(
+                    reference_prim_pose,
+                    WSPose(pose=collider.pose.position + collider.pose.orientation),
+                ).to_nova_pose()
+                if reference_prim_pose
+                else collider.pose,
+            )
+            for prim_path, collider in colliders.items()
+            if collider is not None
+        }
 
 
 _collision_export_service = CollisionExportService()

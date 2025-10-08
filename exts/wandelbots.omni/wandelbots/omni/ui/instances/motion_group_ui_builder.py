@@ -1,10 +1,12 @@
+import asyncio
 import carb
 import omni.ui as ui
 from typing import Optional
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
-from wandelbots.omni.manipulators.utils import get_scene_articulation_roots
+from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
 from wandelbots.omni.manipulators import (
     MotionGroupConfiguration,
+    get_motion_group_service,
 )
 from wandelbots.omni.instances.models import (
     NOVAInstance,
@@ -30,16 +32,13 @@ class MotionGroupUIBuilder:
         self._connect_button: ui.Button = None
         self._connection_error_label: ui.Label = None
         self._container = ui.VStack(spacing=10)
-        self._use_external_joint_stream: bool = False
         self._articulations = []
+        self._input_use_external_joint_stream = False
+
+        self.connected_motion_group = self.motion_group_config
 
     def build_ui(self):
-        self._use_external_joint_stream = (
-            self.motion_group_config.motion_stream_configuration.use_external_joint_stream
-            if self.motion_group_config
-            else False
-        )
-        self._articulations = get_scene_articulation_roots()
+        self._articulations = get_scene_motion_group_prim_paths()
         self._container.clear()
         with self._container:
             with ui.VStack(alignment=ui.Alignment.LEFT, spacing=10):
@@ -66,7 +65,7 @@ class MotionGroupUIBuilder:
             ui.Label("Sync with simulation:", width=150)
 
             model = ui.SimpleBoolModel(
-                self._use_external_joint_stream,
+                self.use_external_joint_stream,
                 read_only=self.motion_group_config is not None,
             )
             checkbox = ui.CheckBox(
@@ -80,16 +79,38 @@ class MotionGroupUIBuilder:
                 tooltip="Enable to sync this motion group with the simulation.",
             )
 
-            def on_checkbox_changed(model):
-                self._use_external_joint_stream = model.get_value_as_bool()
+            def on_checkbox_changed(model: ui.SimpleBoolModel):
+                self.use_external_joint_stream = model.get_value_as_bool()
                 carb.log_info(
-                    f"use_external_joint_stream changed to: {self._use_external_joint_stream}"
+                    f"use_external_joint_stream changed to: {self.use_external_joint_stream}"
                 )
+
+                if self.motion_group_config:
+                    asyncio.get_event_loop().create_task(
+                        get_motion_group_service().update_motion_group_stream_configuration(
+                            motion_group_prim_path=self.motion_group_config.prim_path,
+                            motion_stream_configuration=self.motion_group_config.motion_stream_configuration,
+                        )
+                    )
 
             checkbox.model.add_value_changed_fn(on_checkbox_changed)
             carb.log_info(
-                f"Using external joint stream: {self._use_external_joint_stream}"
+                f"Using external joint stream: {self.use_external_joint_stream}"
             )
+
+    @property
+    def use_external_joint_stream(self) -> bool:
+        return (
+            self.motion_group_config.motion_stream_configuration.use_external_joint_stream
+            if self.motion_group_config
+            else self._input_use_external_joint_stream
+        )
+
+    @use_external_joint_stream.setter
+    def use_external_joint_stream(self, value: bool):
+        self._input_use_external_joint_stream = value
+        if self.motion_group_config:
+            self.motion_group_config.motion_stream_configuration.use_external_joint_stream = value
 
     def _display_articulation_selector(self):
         """Display articulation selector for connecting motion group to an articulation."""
@@ -116,7 +137,7 @@ class MotionGroupUIBuilder:
             ui.Spacer(width=10)
 
             # Update selection and button state when dropdown changes
-            def on_selection_changed(model, _):
+            def on_selection_changed(model: ui.AbstractItemModel, _):
                 try:
                     current_index = model.get_item_value_model().as_int
 
@@ -126,26 +147,23 @@ class MotionGroupUIBuilder:
                             current_index - 1
                         ]
                         self._instances_service.set_selected_articulation(
-                            self.identifier, self._selected_articulation
+                            self._selected_articulation, self._selected_articulation
                         )
                     else:
                         self._selected_articulation = None
-                        self._instances_service.remove_selected_articulation(
-                            self.identifier
-                        )
 
                     self._update_connect_button()
                     self._update_connection_error_message("")
                 except Exception as e:
                     carb.log_error(f"Error getting selection from model: {e}")
-                    self._instances_service.remove_from_connected_motion_groups(
+                    self._instances_service.remove_from_connected_motion_group(
                         self.identifier
                     )
 
             combo.model.add_item_changed_fn(on_selection_changed)
             # set initial selection based on stored articulation
             self._selected_articulation = (
-                self._instances_service.get_selected_articulation(self.identifier)
+                self._instances_service.get_selected_articulation(self)
             )
             selected_index = (
                 self._articulations.index(self._selected_articulation) + 1
@@ -233,7 +251,7 @@ class MotionGroupUIBuilder:
                 controller=self._controller,
                 motion_group_name=self._motion_group.name,
                 prim_path=self._selected_articulation,
-                use_external_joint_stream=self._use_external_joint_stream,
+                use_external_joint_stream=self.use_external_joint_stream,
                 callback=on_complete,
             )
         except Exception as e:
@@ -258,9 +276,17 @@ class MotionGroupUIBuilder:
 
     @property
     def motion_group_config(self) -> Optional[MotionGroupConfiguration]:
-        return self._instances_service.get_connected_motion_group(self.identifier)
-
-    @property
-    def identifier(self) -> str:
-        """Get the unique identifier for this motion group."""
-        return f"{self._instance.host}-{self._controller.cell_name}-{self._controller.name}-{self._motion_group.name}"
+        connected_motion_groups = (
+            self._instances_service.find_connected_motion_group_by(
+                host=self._instance.host,
+                secured=self._instance.is_secure_connection,
+                controller=self._controller.name,
+                cell=self._controller.cell_name,
+                motion_group=self._motion_group.name,
+            )
+        )
+        if len(connected_motion_groups) > 1:
+            carb.log_warn(
+                f"Multiple connected motion groups found, using the first one. {connected_motion_groups}"
+            )
+        return connected_motion_groups[0] if len(connected_motion_groups) > 0 else None

@@ -3,7 +3,7 @@ reloadable = true
 order = 1000      # Make sure all .dlls are loaded before this extension
 
 [package]
-version = "2.4.6"
+version = "2.7.1"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -42,6 +42,7 @@ icon = "data/icon.png"
 "omni.services.transport.client.http_async" = {}
 "omni.kit.test" = {}
 "omni.graph" = {}
+"wandelbots.usd" = { version = "1.1.3" }
 "omni.kit.clipboard" = {}
 
 
