@@ -33,6 +33,10 @@ jobs:
       - name: Prepare public directory
         run: |
           # Copy the OpenAPI spec to public directory
+          if [ ! -f exts/wandelbots.omni/wandelbots/omni/openapi.json ]; then
+            echo "Error: OpenAPI spec 'exts/wandelbots.omni/wandelbots/omni/openapi.json' not found."
+            exit 1
+          fi
           cp exts/wandelbots.omni/wandelbots/omni/openapi.json public/
 
       - name: Upload artifact
