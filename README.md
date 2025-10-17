@@ -1,5 +1,14 @@
 # Wandelbots NOVA x NVIDIA Isaac Sim&trade; Extension
 
+[![Isaac Sim 5.0](https://img.shields.io/badge/Isaac_Sim-5.0-green)](https://docs.isaacsim.omniverse.nvidia.com/5.0.0/installation/download.html)
+[![Isaac Sim 4.5](https://img.shields.io/badge/Isaac_Sim-4.5-green)](https://docs.isaacsim.omniverse.nvidia.com/4.5.0/installation/download.html)
+[![Linux platform](https://img.shields.io/badge/platform-linux--64-orange.svg)](https://releases.ubuntu.com/22.04/)
+[![Windows platform](https://img.shields.io/badge/platform-windows--64-orange.svg)](https://www.microsoft.com/en-us/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-yellow.svg)](https://opensource.org/license/apache-2-0)
+
+> [!Note]
+> This extension requires our [Wandelbots USD Schema extension](https://github.com/wandelbotsgmbh/wandelbots-openusd-schema-extension) as well.
+
 This extension enables seamless connection between NVIDIA Isaac Sim&trade; and Wandelbots NOVA.
 
 Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands. Users can easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs.
