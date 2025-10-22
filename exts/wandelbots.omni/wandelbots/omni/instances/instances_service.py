@@ -26,10 +26,7 @@ from wandelbots.omni.manipulators import (
 )
 from pxr import Usd
 
-try:
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError:
-    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
+import isaacsim.core.utils.stage as stage_utils
 
 
 class NOVAInstancesService:

@@ -7,7 +7,7 @@ import numpy as np
 import omni.timeline
 import wandelbots_api_client.v2 as wb
 import wandelbots_api_client.v2.models as wb_models
-from omni.isaac.core.utils.types import ArticulationAction
+from isaacsim.core.utils.types import ArticulationAction
 from wandelbots.omni.core.networks import ReconnectingWebsocket
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
 from wandelbots.omni.utils.auth import get_auth_token
@@ -21,8 +21,11 @@ class MotionStreamConnector:
         self.receive_lock = asyncio.Lock()
 
         # This configuration is updated with every connect/state call which needs a token
-        self.api_configuration: ApiConfiguration = self._get_api_configuration(
-            token=None
+        self.api_configuration: ApiConfiguration = (
+            self.configuration.get_api_configuration(
+                token=None,
+                version="v2",
+            )
         )
 
         self.stream = ReconnectingWebsocket(
@@ -51,16 +54,10 @@ class MotionStreamConnector:
         """
         Tests if a connection can be established. Will throw an error if check failed
         """
-        self.api_configuration = self._get_api_configuration(token)
-        await self.get_motion_group_state()
-
-    def _get_api_configuration(self, token: str | None) -> ApiConfiguration:
-        return ApiConfiguration(
-            host=self.configuration.host,
-            secure_connection=self.configuration.secure_connection,
-            access_token=token,
-            version="v2",
+        self.api_configuration = self.configuration.get_api_configuration(
+            token=token, version="v2"
         )
+        await self.get_motion_group_state()
 
     async def get_motion_group_state(self) -> wb_models.MotionGroupState:
         async with get_api_client_from_config(self.api_configuration) as api_client:
@@ -81,7 +78,9 @@ class MotionStreamConnector:
             return await self._parse(json.loads(data))
 
     async def open(self):
-        self.api_configuration = self._get_api_configuration(get_auth_token())
+        self.api_configuration = self.configuration.get_api_configuration(
+            token=get_auth_token(), version="v2"
+        )
 
         result = await self.get_motion_group_state()
         self.stream_joint_count = len(result.joint_position)
@@ -278,7 +277,6 @@ class MotionStreamConnector:
 
         motion_group_action = ArticulationAction(
             joint_positions=np.array(joint_positions),
-            joint_velocities=None,
             joint_indices=np.array(range(len(joint_positions))),
         )
 

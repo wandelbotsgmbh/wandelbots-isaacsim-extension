@@ -58,44 +58,6 @@ class RelativePoseMode(str, Enum):
     INVERSE_BOTH = "inverse_both"
 
 
-class ArticulationChainState(BaseModel):
-    mode: str
-    signals_mapping: dict[str, Union[bool, float]]
-    joint_positions: list[float]
-    joint_velocities: list[float]
-
-    class Config:
-        title = "Articulation Chain State"
-
-
-class ConveyorState(BaseModel):
-    mode: str
-    signals_mapping: dict[str, Union[bool, float]]
-    velocity: float
-    direction: Optional[list[float]]
-
-    class Config:
-        title = "Conveyor State"
-
-
-class SurfaceGripperState(BaseModel):
-    mode: Literal["open", "close"]
-    signals_mapping: dict[str, Union[bool, float]]
-
-    class Config:
-        title = "Surface Gripper State"
-
-
-class AnalogSignal(BaseModel):
-    id: str
-    range: list[float]
-
-
-class MockAnalogSignal(BaseModel):
-    io: str = Field(example="analog_out[0]")
-    io_value: Union[bool, float] = Field(example=0.2)
-
-
 class GhostObjectSource(BaseModel):
     name: str
     prim_path: str

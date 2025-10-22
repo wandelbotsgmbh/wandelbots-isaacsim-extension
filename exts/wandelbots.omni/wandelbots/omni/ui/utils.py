@@ -6,7 +6,7 @@ import os
 
 def get_icon(icon_name: str) -> str:
     path = f"{os.path.dirname(__file__)}/../assets/icons/{icon_name}"
-    carb.log_info(f"Loading icon from: {path}")
+    carb.log_verbose(f"Loading icon from: {path}")
     return path
 
 

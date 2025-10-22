@@ -11,10 +11,7 @@ from wandelbots.omni.manipulators import (
 from pxr import Usd
 import carb
 
-try:
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError:
-    import omni.isaac.core.utils.stage as stage_utils
+import isaacsim.core.utils.stage as stage_utils
 
 motion_groups_router = APIRouter(
     prefix="/manipulators/motion-groups", tags=["Manipulators (Motion-Group)"]

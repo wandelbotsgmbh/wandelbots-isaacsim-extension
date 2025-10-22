@@ -21,10 +21,7 @@ import omni.kit.viewport.utility
 import io
 from PIL import Image
 
-try:
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError as _:
-    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
+import isaacsim.core.utils.stage as stage_utils
 
 cameras_router = APIRouter(prefix="/periphery/cameras", tags=["Periphery (Camera)"])
 

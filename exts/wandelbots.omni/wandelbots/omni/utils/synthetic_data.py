@@ -1,14 +1,8 @@
-import carb
 import numpy as np
 
-try:
-    import isaacsim.core.utils.semantics as semantic_utils
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError:
-    import omni.isaac.core.utils.semantics as semantic_utils
-    import omni.isaac.core.utils.stage as stage_utils
+import isaacsim.core.utils.semantics as semantic_utils
+import isaacsim.core.utils.stage as stage_utils
 
-    carb.log_warn("snythetic_data is using legacy isaac sim imports")
 from wandelbots.omni.utils.prims import PrimUtils
 from omni.replicator.core.scripts.writers_default.tools import data_to_colour
 from PIL import Image, ImageDraw

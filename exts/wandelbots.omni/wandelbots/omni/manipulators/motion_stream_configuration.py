@@ -1,5 +1,6 @@
 from functools import cached_property
-
+from typing import Literal
+from wandelbots.omni.utils.api import ApiConfiguration
 from pydantic import BaseModel, Field
 
 
@@ -24,3 +25,13 @@ class MotionStreamConfiguration(BaseModel):
     @cached_property
     def motion_group_id(self):
         return self.motion_group.split("@")[0]
+
+    def get_api_configuration(
+        self, token: str | None, version: Literal["v1", "v2"] = "v2"
+    ) -> ApiConfiguration:
+        return ApiConfiguration(
+            host=self.host,
+            secure_connection=self.secure_connection,
+            access_token=token,
+            version=version,
+        )

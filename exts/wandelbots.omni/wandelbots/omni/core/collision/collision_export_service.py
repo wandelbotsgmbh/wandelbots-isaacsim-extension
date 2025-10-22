@@ -1,4 +1,5 @@
-from typing import Literal, cast
+from typing import Callable, Literal, cast
+import asyncio
 
 import carb
 import omni.physx.bindings._physx as physx_bindings
@@ -9,6 +10,13 @@ import omni.timeline
 from pxr import Sdf
 import wandelbots.omni.core.collision.shapes as collision_shapes
 from wandelbots.omni.utils.prims import Pose, PrimUtils, WSPose
+import wandelbots_api_client.v2 as wb
+import wandelbots_api_client.v2.models as wb_models
+from wandelbots.omni.utils.api import get_api_client_from_config
+from wandelbots.omni.utils.auth import get_auth_token
+from wandelbots.omni.utils.scene import SceneUtils
+from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
+from .utils import to_nova_collider
 
 
 class SphereSweepParameters(pydantic.BaseModel):
@@ -216,6 +224,107 @@ class CollisionExportService:
             for prim_path, collider in colliders.items()
             if collider is not None
         }
+
+    async def export_collision_sweep_to_nova(
+        self,
+        reference_prim: Usd.Prim,
+        motion_group_prim: Usd.Prim,
+        sweep_parameters: SweepParameters,
+        collision_setup_id: str,
+        tcp_id: str,
+        tcp_sphere_radius: float,
+        progress_callback_fn: Callable[[float], None],
+        self_collision: bool = True,
+    ) -> dict[str, wb_models.Collider]:
+        reference_pose = PrimUtils.get_prim_pose(
+            reference_prim.GetPath().pathString, coordinate_system="world"
+        )
+
+        motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
+        if progress_callback_fn:
+            progress_callback_fn(0.1)
+
+        timeline, _ = SceneUtils.check_simulation()
+        if not timeline.is_playing():
+            timeline.play()
+
+        while timeline.is_stopped():
+            # waiting for the timeline to start
+            await asyncio.sleep(0.1)
+
+        colliders = get_collision_export_service().collision_sweep(
+            stage=motion_group_prim.GetStage(),
+            sweep_args=sweep_parameters,
+            reference_prim_pose=reference_pose,
+        )
+        colliders = {
+            shape_id: to_nova_collider(shape) for shape_id, shape in colliders.items()
+        }
+        carb.log_info(f"Found {len(colliders)} colliders.")
+        if progress_callback_fn:
+            progress_callback_fn(0.5)
+
+        stream_config = motion_group.motion_stream_configuration
+        async with get_api_client_from_config(
+            stream_config.get_api_configuration(token=get_auth_token(), version="v2")
+        ) as api:
+            collision_setup_api = wb.StoreCollisionSetupsApi(api)
+
+            motion_group_description: wb_models.MotionGroupDescription = (
+                await wb.MotionGroupApi(api).get_motion_group_description(
+                    cell=stream_config.cell,
+                    controller=stream_config.controller,
+                    motion_group=stream_config.motion_group,
+                )
+            )
+
+            link_chain = await wb.MotionGroupModelsApi(
+                api
+            ).get_motion_group_collision_model(
+                motion_group_model=motion_group_description.motion_group_model,
+            )
+
+            tcps = await wb.VirtualControllerApi(api).list_virtual_controller_tcps(
+                cell=stream_config.cell,
+                controller=stream_config.controller,
+                motion_group=stream_config.motion_group,
+            )
+
+            tcp: wb_models.RobotTcp = None
+            for virtual_tcp in tcps:
+                if virtual_tcp.id == tcp_id:
+                    tcp = virtual_tcp
+                    break
+
+            await collision_setup_api.store_collision_setup(
+                cell=stream_config.cell,
+                setup=collision_setup_id,
+                collision_setup=wb_models.CollisionSetup(
+                    colliders=colliders,
+                    link_chain=link_chain,
+                    tool={
+                        "TCPSphere": wb_models.Collider(
+                            shape=wb_models.ColliderShape(
+                                wb_models.Sphere(
+                                    radius=SceneUtils.value_to_millimeters(
+                                        tcp_sphere_radius
+                                    ),
+                                    shape_type="sphere",
+                                )
+                            ),
+                            pose=wb_models.Pose(
+                                position=tcp.position,
+                                orientation=tcp.orientation,
+                            ),
+                        ),
+                    },
+                    self_collision_detection=self_collision,
+                ),
+            )
+
+        if progress_callback_fn:
+            progress_callback_fn(1.0)
+        return colliders
 
 
 _collision_export_service = CollisionExportService()

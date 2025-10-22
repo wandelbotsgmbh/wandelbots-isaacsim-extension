@@ -13,7 +13,7 @@ from fastapi import (
 )
 from fastapi.websockets import WebSocketState
 
-import omni.isaac.core.utils.prims as prims_utils
+import isaacsim.core.utils.prims as prims_utils
 from pydantic import BaseModel, Field
 from wandelbots.omni.datatypes import (
     GhostObjectSource,

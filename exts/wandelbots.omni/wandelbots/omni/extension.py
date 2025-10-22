@@ -26,6 +26,8 @@ import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
 from wandelbots.omni.environment import credential_store
 from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
+import wandelbots.omni.ui.tool
+import weakref
 
 kit_app = main.get_app()
 
@@ -65,6 +67,9 @@ class OmniService(omni.ext.IExt):
         self._load_data()
 
         self.register_snippets(ext_id)
+        self._tools_subscription = wandelbots.omni.ui.tool.register_tools()
+
+        self._tools_subscription = wandelbots.omni.ui.tool.register_tools()
 
     def register_snippets(self, ext_id: str):
         carb.log_verbose(f"Registering {ext_id} snippets")
@@ -143,6 +148,7 @@ class OmniService(omni.ext.IExt):
 
         self.schema_extension.unregister()
         self.schema_extension = None
+        self._tools_subscription = None
 
     def _create_menu(self, ext_id):
         self._menu_items = [
@@ -150,29 +156,31 @@ class OmniService(omni.ext.IExt):
                 ext_id=ext_id,
                 header="",
                 name="Connected Instances",
-                onclick_fun=lambda: self._open_connect_to_nova(),
+                onclick_fun=lambda ext=weakref.proxy(self): ext._open_connect_to_nova(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
                 header="",
                 name="Omniservice API ...",
-                onclick_fun=lambda: self._open_omniservice_api(),
+                onclick_fun=lambda ext=weakref.proxy(self): ext._open_omniservice_api(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
                 name="Documentation ...",
-                onclick_fun=lambda: self._open_documentation(),
+                onclick_fun=lambda ext=weakref.proxy(self): ext._open_documentation(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
                 name="Developer Portal ...",
-                onclick_fun=lambda: self._open_developer_portal(),
+                onclick_fun=lambda ext=weakref.proxy(
+                    self
+                ): ext._open_developer_portal(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
                 header="",
                 name="About",
-                onclick_fun=lambda: self._open_about(),
+                onclick_fun=lambda ext=weakref.proxy(self): ext._open_about(),
             ),
         ]
         add_menu_items(self._menu_items, self.menu_item_name)
@@ -227,6 +235,7 @@ class OmniService(omni.ext.IExt):
                     routes=v2.omniservice_app.routes,
                 ),
                 json_file,
+                indent=4,
             )
 
     @staticmethod

@@ -1,12 +1,8 @@
 import carb
 import weakref
 
-try:
-    import isaacsim.core.utils.prims as prims_utils
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError:
-    import omni.isaac.core.utils.prims as prims_utils  # type: ignore
-    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
+import isaacsim.core.utils.prims as prims_utils
+import isaacsim.core.utils.stage as stage_utils
 import omni.usd
 import omni.usd.commands
 from omni.usd.commands import DeletePrimsCommand
@@ -185,7 +181,7 @@ class GhostObjectUtils:
                 f"Ghost prim {ghost_prim.GetPath()} has multiple linked TCPs: {tcp_prim_paths}. Using the first one."
             )
         tcp_prim: Usd.Prim = stage.GetPrimAtPath(tcp_prim_paths[0])
-        flange_tcp = GhostObjectUtils.get_flange_tcp_from_tool_tcp(tcp_prim)
+        flange_tcp = SchemaUtils.get_flange_tcp_from_tool_tcp(tcp_prim)
         if not flange_tcp:
             carb.log_error(
                 f"Failed to find flange TCP for ghost object {ghost_prim.GetPath()} with TCP {tcp_prim.GetPath()}. Cannot find motion group."
@@ -245,21 +241,6 @@ class GhostObjectUtils:
         for child in prim.GetChildren():
             GhostObjectUtils.remove_physics_attributes(child)
 
-    def get_flange_tcp_from_tool_tcp(tool_tcp: Usd.Prim) -> Usd.Prim | None:
-        tool_prim = SchemaUtils.find_parent_tool(tool_tcp)
-        if not tool_prim:
-            carb.log_error(
-                f"Tool prim not found for TCP {tool_tcp.GetPath()}. Cannot find tool. Make sure the tcp prim has a parent with the ToolAPI applied."
-            )
-            return None
-        motion_group_prim = SchemaUtils.find_tool_linked_motion_group(tool_prim)
-        if not motion_group_prim:
-            carb.log_error(
-                f"Motion group not found for tool {tool_prim.GetPath()}. Cannot find motion group. Make sure the tool is physically linked to a configured motion group prim and the tool has its rigid body linked."
-            )
-            return None
-        return SchemaUtils.find_motion_group_tcp(motion_group_prim)
-
     def get_all_tcp_sources(tool_prim: Usd.Prim = None) -> list[TCPSource]:
         """
         Return the prim paths of all tcps that are defined in the scene which follows a strict predicate `tcp_` or 'TCP_'
@@ -288,7 +269,7 @@ class GhostObjectUtils:
             name = str(prim.GetPath()).rsplit("/", 1)[-1]
             prim_path = str(prim.GetPath())
 
-            flange_prim: Usd.Prim = GhostObjectUtils.get_flange_tcp_from_tool_tcp(prim)
+            flange_prim: Usd.Prim = SchemaUtils.get_flange_tcp_from_tool_tcp(prim)
             if not flange_prim:
                 carb.log_warn(f"Failed to find flange TCP for {prim_path}. Skipping.")
                 continue

@@ -157,3 +157,19 @@ class SchemaUtils:
             current_prim = root_prim
 
         return prim_chains
+
+    @staticmethod
+    def get_flange_tcp_from_tool_tcp(tool_tcp: Usd.Prim) -> Usd.Prim | None:
+        tool_prim = SchemaUtils.find_parent_tool(tool_tcp)
+        if not tool_prim:
+            carb.log_error(
+                f"Tool prim not found for TCP {tool_tcp.GetPath()}. Cannot find tool. Make sure the tcp prim has a parent with the ToolAPI applied."
+            )
+            return None
+        motion_group_prim = SchemaUtils.find_tool_linked_motion_group(tool_prim)
+        if not motion_group_prim:
+            carb.log_error(
+                f"Motion group not found for tool {tool_prim.GetPath()}. Cannot find motion group. Make sure the tool is physically linked to a configured motion group prim and the tool has its rigid body linked."
+            )
+            return None
+        return SchemaUtils.find_motion_group_tcp(motion_group_prim)

@@ -22,7 +22,7 @@ def get_auth_token():
     token = credential_store.get_token(host)
 
     if token is None:
-        carb.log_warn(f"No stored token found for {host}.")
+        carb.log_verbose(f"No stored token found for {host}.")
         return None
 
     carb.log_verbose(f"Retrieved stored token for {host}.")
@@ -61,9 +61,9 @@ def invalidate_auth_token():
         config = get_auth_config()
         host = config.get_validated_config()[0]
         credential_store.remove_token(host)
-        carb.log_info(f"Authentication token invalidated for {host}")
+        carb.log_verbose(f"Authentication token invalidated for {host}")
     except KeyError:
-        carb.log_warn("No token found to invalidate")
+        carb.log_verbose("No token found to invalidate")
     except Exception as e:
         carb.log_error(f"Failed to invalidate token: {e}")
 
@@ -75,13 +75,13 @@ def get_auth_config() -> Auth0Config:
     if not environments:
         return Auth0Config().default()
 
-    if len(environments) > 1:
+    if len(environments) >= 1:
         name = environments[0]["name"]
         domain = environments[0]["domain"]
         client_id = environments[0]["client_id"]
         audience = environments[0]["audience"]
 
-        carb.log_warn(
+        carb.log_verbose(
             f"Multiple environments found in configuration. Using the first one: {name}"
         )
         return Auth0Config(
@@ -107,7 +107,7 @@ async def validate_request(token: str | None, base_url: str):
                         400,
                         "Unable to ping server after successfully after establishing connection",
                     )
-                carb.log_info("Authentication successful")
+                carb.log_verbose("Authentication successful")
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 raise HTTPException(

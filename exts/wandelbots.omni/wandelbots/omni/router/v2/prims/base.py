@@ -1,7 +1,7 @@
 from typing import Annotated, Literal, Union
 
 
-import omni.isaac.core.utils.prims as prims_utils
+import isaacsim.core.utils.prims as prims_utils
 from pydantic import RootModel, BaseModel, Field
 from wandelbots.omni.datatypes import (
     COORDINATE_SYSTEM,
@@ -11,11 +11,11 @@ from wandelbots.omni.datatypes import (
     WSPose,
     RelativePoseMode,
 )
-import omni.isaac.core.utils.semantics as semantic_utils
+import isaacsim.core.utils.semantics as semantic_utils
 from wandelbots.omni.environment import host_database
 from wandelbots.omni.utils.prims import PrimUtils
 import omni.usd
-import omni.isaac.core.utils.stage as stage_utils
+import isaacsim.core.utils.stage as stage_utils
 from fastapi import APIRouter, status, Query, Body, Depends
 from fastapi.exceptions import HTTPException
 

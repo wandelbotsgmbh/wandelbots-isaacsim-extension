@@ -3,7 +3,7 @@ from typing import Any
 
 import carb
 import pydantic
-from omni.isaac.core.articulations import Articulation  # type: ignore
+from isaacsim.core.prims import SingleArticulation
 from wandelbots.omni.manipulators.motion_stream_configuration import (
     MotionStreamConfiguration,
 )
@@ -113,7 +113,7 @@ class MotionGroup:
 
         self._validate(stage)
         try:
-            self._articulation = Articulation(self._configuration.prim_path)
+            self._articulation = SingleArticulation(self._configuration.prim_path)
         except Exception as e:
             raise ValueError(
                 f"Articulation cannot be applied to motion-group at path {self._configuration.prim_path}"
@@ -124,7 +124,7 @@ class MotionGroup:
         return self._configuration.prim_path
 
     @property
-    def articulation(self) -> Articulation:
+    def articulation(self) -> SingleArticulation:
         return self._articulation
 
     @property

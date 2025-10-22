@@ -1,5 +1,47 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.10.1 (2025-10-22)
+
+### Bug Fixes
+
+* Fixed fetch of rigid body pose
+
+## 2.10.0 (2025-10-22)
+
+### Features
+
+* **CSI-2113:** Added context menu for nova tcp creation
+
+## 2.9.0 (2025-10-22)
+
+### Features
+
+* **CSI-2110:** Added collision export and action planner ui (beta)
+
+## 2.8.1 (2025-10-21)
+
+### Bug Fixes
+
+* Copy examples to new location.
+
+## 2.8.0 (2025-10-20)
+
+### Features
+
+* Remove deprecated dependencies from omni.isaac and drop support for 4.2.0
+
+## 2.7.3 (2025-10-14)
+
+### Bug Fixes
+
+* Fixed version check for minimal nova version
+
+## 2.7.2 (2025-10-13)
+
+### Bug Fixes
+
+* Fixed blocking extension ref on shutdown (warning)
+
 ## 2.7.1 (2025-09-18)
 
 ### Bug Fixes

@@ -1,6 +1,6 @@
 from typing import cast
 import numpy as np
-import omni.isaac.core.utils.prims as prims_utils
+import isaacsim.core.utils.prims as prims_utils
 from wandelbots.omni.datatypes import (
     COORDINATE_SYSTEM,
     ROTATION_TYPES,
@@ -10,8 +10,8 @@ from wandelbots.omni.datatypes import (
     RelativePoseMode,
 )
 from wandelbots.omni.environment import host_database
-from omni.isaac.core.prims import RigidPrim
-from omni.isaac.sensor import Camera
+from isaacsim.core.prims import RigidPrim
+from isaacsim.sensors.camera import Camera
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 from scipy.spatial.transform import Rotation
 import carb
@@ -28,6 +28,15 @@ class PrimUtils:
     def is_prim_valid(prim_path: str) -> bool:
         return prims_utils.is_prim_path_valid(prim_path)
 
+    def prim_has_transform(prim: Usd.Prim) -> bool:
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            return True
+        if prim.GetTypeName() == "Camera":
+            return True
+        return prim.HasAttribute("xformOp:translate") and (
+            prim.HasAttribute("xformOp:orient") or prim.HasAttribute("xformOp:rotate")
+        )
+
     def get_prim_pose(
         prim_path: str,
         coordinate_system: COORDINATE_SYSTEM = "local",
@@ -36,11 +45,13 @@ class PrimUtils:
         prim = PrimUtils.get_prim(prim_path)
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             prim = RigidPrim(prim_path)
-            position, quat = (
-                prim.get_world_pose()
+            poses = (
+                prim.get_world_poses()
                 if coordinate_system == "world"
-                else prim.get_local_pose()
+                else prim.get_local_poses()
             )
+            position = poses[0][0]
+            quat = poses[1][0]
 
         elif prim.GetTypeName() == "Camera":
             camera = Camera(prim.GetPrimPath().pathString)

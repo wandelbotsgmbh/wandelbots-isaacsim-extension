@@ -8,6 +8,8 @@ from wandelbots.omni.utils.api import get_api_client
 from wandelbots.omni.ui.colors import NOVAColor
 from packaging.version import Version
 
+MIN_VERSION = Version("25.8.0")
+
 
 class NOVAInstance(BaseModel):
     host: str
@@ -43,7 +45,7 @@ class NOVAInstance(BaseModel):
         if self.version is None:
             return False
         try:
-            return Version(self.version).base_version >= Version("25.8.0").base_version
+            return Version(self.version) >= MIN_VERSION
         except Exception:
             return False
 

@@ -1,7 +1,4 @@
-try:
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError:
-    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
+import isaacsim.core.utils.stage as stage_utils
 import wandelbots.usd as wb_schema
 from pxr import UsdPhysics, Usd
 

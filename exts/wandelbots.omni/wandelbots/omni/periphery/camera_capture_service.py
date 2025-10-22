@@ -10,12 +10,7 @@ from PIL import Image
 
 from omni.syntheticdata import SyntheticData
 
-try:
-    import isaacsim.core.utils.stage as stage_utils
-except ImportError as _:
-    import omni.isaac.core.utils.stage as stage_utils  # type: ignore
-
-    carb.log_warn("camera is using legacy isaac sim imports")
+import isaacsim.core.utils.stage as stage_utils
 
 from pydantic import confloat
 from wandelbots.omni.utils.scene import SceneUtils
