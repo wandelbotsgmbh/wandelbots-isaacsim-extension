@@ -100,7 +100,7 @@ async def create_motion_group(
 
 
 @motion_groups_router.put(
-    path="/{prim_path}",
+    path="/{prim_path:path}",
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="update_motion_group_stream",
     response_model=None,
@@ -152,7 +152,7 @@ async def list_motion_groups(
 
 
 @motion_groups_router.get(
-    path="/{prim_path}",
+    path="/{prim_path:path}",
     operation_id="get_motion_group",
     response_model=MotionGroupConfiguration,
     responses={status.HTTP_404_NOT_FOUND: {"description": "Motion-Group not found"}},
@@ -167,7 +167,7 @@ async def get_motion_group(
 
 
 @motion_groups_router.delete(
-    path="/{prim_path}",
+    path="/{prim_path:path}",
     status_code=status.HTTP_204_NO_CONTENT,
     operation_id="remove_motion_group",
     response_model=None,
@@ -197,5 +197,5 @@ async def clear_motion_groups(motion_group_service: MotionGroupServiceDep) -> No
     Removes all motion_groups
     """
 
-    for prim_path in list(motion_group_service.get_all_prim_paths()):
+    for prim_path in list(motion_group_service.get_all_motion_group_prim_paths()):
         await motion_group_service.remove_motion_group(prim_path)

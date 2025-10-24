@@ -1,5 +1,11 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.10.2 (2025-10-23)
+
+### Bug Fixes
+
+* **CSI-2142:** Fixed clear and get motion group endpoints
+
 ## 2.10.1 (2025-10-22)
 
 ### Bug Fixes
