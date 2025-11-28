@@ -1,0 +1,84 @@
+{
+    "OgnWriteBusIO": {
+        "version": 1,
+        "description": "Write a Bus IO value to a cell.",
+        "language": "Python",
+        "categories": {
+            "Wandelbots NOVA": "Wandelbots NOVA"
+        },
+        "metadata": {
+            "uiName": "Write Bus IO"
+        },
+        "inputs": {
+            "exec_in": {
+                "type": "execution",
+                "description": "Execution Input",
+                "default": 0
+            },
+            "robot": {
+                "type": "target",
+                "description": "The root prim of the robot",
+                "metadata": {
+                    "uiName": "Robot"
+                }
+            },
+            "io_id": {
+                "type": "string",
+                "description": "Identifier of Bus IO",
+                "metadata": {
+                    "uiName": "Bus IO"
+                },
+                "default": ""
+            },
+            "value_bool": {
+                "type": "bool",
+                "description": "Value if the Bus IO consumes boolean values.",
+                "metadata": {
+                    "uiName": "Boolean"
+                }
+            },
+            "value_int": {
+                "type": "int",
+                "description": "Value if the Bus IO consumes integer values.",
+                "metadata": {
+                    "uiName": "Integer"
+                }
+            },
+            "value_float": {
+                "type": "float",
+                "description": "Value if the Bus IO consumes float values.",
+                "metadata": {
+                    "uiName": "Float"
+                }
+            }
+        },
+        "outputs": {
+            "exec_out": {
+                "type": "execution",
+                "description": "Execution Out"
+            },
+            "value_bool": {
+                "type": "bool",
+                "description": "Updated value if the Bus IO consumes boolean values.",
+                "metadata": {
+                    "uiName": "Boolean"
+                }
+            },
+            "value_int": {
+                "type": "int",
+                "description": "Updated value if the Bus IO consumes integer values.",
+                "metadata": {
+                    "uiName": "Integer"
+                }
+            },
+            "value_float": {
+                "type": "float",
+                "description": "Updated value if the Bus IO consumes float values.",
+                "metadata": {
+                    "uiName": "Float"
+                }
+            }
+
+        }
+    }
+}

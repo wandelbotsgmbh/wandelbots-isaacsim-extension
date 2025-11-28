@@ -1,0 +1,62 @@
+{
+    "OgnOnIOChange": {
+        "version": 1,
+        "description": "Triggers once the selected IO value changes.",
+        "language": "Python",
+        "categories": {
+            "Wandelbots NOVA": "Wandelbots NOVA"
+        },
+        "icon": "logo.svg",
+        "metadata": {
+            "uiName": "On IO Change"
+        },
+        "inputs": {
+            "robot": {
+                "type": "target",
+                "description": "The root prim of the robot",
+                "metadata": {
+                    "uiName": "Robot"
+                }
+            },
+            "io_id": {
+                "type": "string",
+                "description": "Identifier of controller io",
+                "metadata": {
+                    "uiName": "IO"
+                },
+                "default": ""
+            }
+        },
+        "outputs": {
+            "exec_out": {
+                "type": "execution",
+                "description": "Executes if the entered io changes",
+                "metadata": {
+                    "uiName": "Change"
+                }
+            },
+            "value_bool": {
+                "type": "bool",
+                "description": "Updated value if the IO consumes boolean values.",
+                "metadata": {
+                    "uiName": "Boolean"
+                }
+            },
+            "value_int": {
+                "type": "int",
+                "description": "Updated value if the IO consumes integer values.",
+                "metadata": {
+                    "uiName": "Integer"
+                }
+            },
+            "value_float": {
+                "type": "float",
+                "description": "Updated value if the IO consumes float values.",
+                "metadata": {
+                    "uiName": "Float"
+                }
+            }
+
+        }
+    }
+}

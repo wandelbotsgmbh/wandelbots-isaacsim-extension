@@ -1,0 +1,63 @@
+{
+    "OgnReadIO": {
+        "version": 1,
+        "description": "Read an IO value from a controller.",
+        "language": "Python",
+        "categories": {
+            "Wandelbots NOVA": "Wandelbots NOVA"
+        },
+        "metadata": {
+            "uiName": "Read IO"
+        },
+        "inputs": {
+            "exec_in": {
+                "type": "execution",
+                "description": "Execution input",
+                "default": 0
+            },
+            "robot": {
+                "type": "target",
+                "description": "The root prim of the robot",
+                "metadata": {
+                    "uiName": "Robot"
+                }
+            },
+            "io_id": {
+                "type": "string",
+                "description": "Identifier of controller io",
+                "metadata": {
+                    "uiName": "IO"
+                },
+                "default": ""
+            }
+        },
+        "outputs": {
+            "exec_out": {
+                "type": "execution",
+                "description": "Execution out"
+            },
+            "value_bool": {
+                "type": "bool",
+                "description": "Updated value if the IO consumes boolean values.",
+                "metadata": {
+                    "uiName": "Boolean"
+                }
+            },
+            "value_int": {
+                "type": "int",
+                "description": "Updated value if the IO consumes integer values.",
+                "metadata": {
+                    "uiName": "Integer"
+                }
+            },
+            "value_float": {
+                "type": "float",
+                "description": "Updated value if the IO consumes float values.",
+                "metadata": {
+                    "uiName": "Float"
+                }
+            }
+
+        }
+    }
+}

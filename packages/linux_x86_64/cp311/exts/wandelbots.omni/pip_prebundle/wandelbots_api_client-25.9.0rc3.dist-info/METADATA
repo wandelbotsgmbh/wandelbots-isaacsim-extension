@@ -1,0 +1,61 @@
+Metadata-Version: 2.4
+Name: wandelbots_api_client
+Version: 25.9.0rc3
+Summary: Wandelbots Python Client: Interact with robots in an easy and intuitive way. 
+Home-page: 
+Author: Copyright (c) 2025 Wandelbots GmbH
+Author-email: "Copyright (c) 2025 Wandelbots GmbH" <contact@wandelbots.com>
+License-Expression: Apache-2.0
+Project-URL: homepage, https://wandelbots.com/
+Classifier: Typing :: Typed
+Classifier: Topic :: Software Development
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Unix
+Classifier: Operating System :: MacOS
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: urllib3>=1.25.3
+Requires-Dist: python-dateutil>=2.8.2
+Requires-Dist: aiohttp>=3.8.4
+Requires-Dist: aiohttp-retry>=2.8.3
+Requires-Dist: pydantic>=2
+Requires-Dist: websockets
+Requires-Dist: typing-extensions>=4.7.1
+Requires-Dist: furl
+Requires-Dist: pyhumps
+Requires-Dist: pydantic_core
+Requires-Dist: annotated-types
+Dynamic: author
+Dynamic: license-file
+
+# wandelbots-api-client
+Interact with robots in an easy and intuitive way.
+
+- Compatible API version: 1.0.0 (can be found at the home screen of your instance -> API)
+- Package version: 25.9.0rc3
+
+Sign up for our [Wandelbots Developers Beta program](https://www.wandelbots.com/developers-beta) to get access to the Wandelbots API.
+
+The documentation can be found here: [https://docs.wandelbots.io/24.3/fastapi/quickstart](https://docs.wandelbots.io/24.3/fastapi/quickstart)
+
+For more information, please visit [https://www.wandelbots.com](https://www.wandelbots.com)
+
+## Requirements.
+Python >=3.9, Python < 4.0
+
+## Installation
+```
+pip install wandelbots-api-client
+```
+
+OR
+
+pyproject.toml:
+```
+[tool.poetry.dependencies]
+wandelbots-api-client = "*"
+```
+
+

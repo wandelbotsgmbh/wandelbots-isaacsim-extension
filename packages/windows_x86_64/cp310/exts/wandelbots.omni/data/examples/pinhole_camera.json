@@ -1,0 +1,11 @@
+{
+  "resolution": [1280, 720],
+  "cameraModel": "pinhole",
+  "cameraMatrix": [[938.8, 0.0, 657.8],
+    [0.0, 873.7, 539.5],
+    [0.0, 0.0, 1.0]],
+  "pixelSize": 0.002,
+  "focusDistance": 0.6,
+  "fStop": 0.0,
+  "clippingRange": [1.0, 1000000.0]
+}

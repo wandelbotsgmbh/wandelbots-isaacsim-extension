@@ -1,0 +1,62 @@
+{
+    "OgnOnBusIOChange": {
+        "version": 1,
+        "description": "Triggers once the selected Bus IO value changes.",
+        "language": "Python",
+        "categories": {
+            "Wandelbots NOVA": "Wandelbots NOVA"
+        },
+        "icon": "logo.svg",
+        "metadata": {
+            "uiName": "On Bus IO Change"
+        },
+        "inputs": {
+            "robot": {
+                "type": "target",
+                "description": "The root prim of the robot",
+                "metadata": {
+                    "uiName": "Robot"
+                }
+            },
+            "io_id": {
+                "type": "string",
+                "description": "Identifier of Bus IO",
+                "metadata": {
+                    "uiName": "Bus IO"
+                },
+                "default": ""
+            }
+        },
+        "outputs": {
+            "exec_out": {
+                "type": "execution",
+                "description": "Executes if the entered Bus IO changes",
+                "metadata": {
+                    "uiName": "Change"
+                }
+            },
+            "value_bool": {
+                "type": "bool",
+                "description": "Updated value if the Bus IO consumes boolean values.",
+                "metadata": {
+                    "uiName": "Boolean"
+                }
+            },
+            "value_int": {
+                "type": "int",
+                "description": "Updated value if the Bus IO consumes integer values.",
+                "metadata": {
+                    "uiName": "Integer"
+                }
+            },
+            "value_float": {
+                "type": "float",
+                "description": "Updated value if the Bus IO consumes float values.",
+                "metadata": {
+                    "uiName": "Float"
+                }
+            }
+
+        }
+    }
+}
