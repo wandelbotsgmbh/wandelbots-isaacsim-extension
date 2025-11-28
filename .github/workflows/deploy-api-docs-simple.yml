@@ -32,12 +32,19 @@ jobs:
 
       - name: Prepare public directory
         run: |
-          # Copy the OpenAPI spec to public directory
-          if [ ! -f exts/wandelbots.omni/wandelbots/omni/openapi.json ]; then
-            echo "Error: OpenAPI spec 'exts/wandelbots.omni/wandelbots/omni/openapi.json' not found."
+          # Ensure public directory exists
+          mkdir -p public
+
+          # Find all openapi.json files under packages/ and pick the first one
+          OPENAPI_FILE=$(find packages -type f -iname 'openapi.json' 2>/dev/null | head -n 1)
+
+          if [ -z "$OPENAPI_FILE" ]; then
+            echo "Error: No openapi.json file found in the repository."
             exit 1
           fi
-          cp exts/wandelbots.omni/wandelbots/omni/openapi.json public/
+
+          echo "Using OpenAPI spec: $OPENAPI_FILE"
+          cp "$OPENAPI_FILE" public/openapi.json
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
