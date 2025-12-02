@@ -1,5 +1,23 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.15.4 (2025-12-02)
+
+### Bug Fixes
+
+* **CSI-2233:** Include openapi spec into release
+
+## 2.15.3 (2025-12-02)
+
+### Bug Fixes
+
+* Fixed missing icon and snippets
+
+## 2.15.2 (2025-11-28)
+
+### Bug Fixes
+
+* **CSI-2233:** Added openapi.json to github release
+
 ## 2.15.1 (2025-11-27)
 
 ### Bug Fixes

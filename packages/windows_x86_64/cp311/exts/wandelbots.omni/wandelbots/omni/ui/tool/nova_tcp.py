@@ -2,7 +2,7 @@ import omni.kit.context_menu
 from ..schema.schema_components import (
     GhostObjectApiSchema,
 )
-import wandelbots.omni.ui.icons as icons
+from wandelbots.omni.ui.utils import get_icon
 import asyncio
 
 
@@ -26,7 +26,7 @@ def register_nova_tcp_menu():
                 },
             ]
         },
-        "glyph": icons.get_icon_path(icons.WANDELBOTS_NOVA_ICON),
+        "glyph": get_icon("wandelbots.png"),
     }
 
     stage_create_menu_subscription = (
