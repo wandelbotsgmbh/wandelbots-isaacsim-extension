@@ -29,23 +29,7 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
-
-      - name: Prepare public directory
-        run: |
-          # Ensure public directory exists
-          mkdir -p public
-
-          # Find all openapi.json files under packages/ and pick the first one
-          OPENAPI_FILE=$(find packages -type f -iname 'openapi.json' 2>/dev/null | head -n 1)
-
-          if [ -z "$OPENAPI_FILE" ]; then
-            echo "Error: No openapi.json file found in the repository."
-            exit 1
-          fi
-
-          echo "Using OpenAPI spec: $OPENAPI_FILE"
-          cp "$OPENAPI_FILE" public/openapi.json
-
+        
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
