@@ -11,8 +11,8 @@ from .schema_components import (
 )
 import omni.usd
 import omni.kit.context_menu
-import wandelbots.omni.ui.icons as icons
 from wandelbots.omni.usd import TcpUtils
+from wandelbots.omni.ui.utils import get_icon
 
 
 class SchemaExtensionUI:
@@ -61,7 +61,7 @@ class SchemaExtensionUI:
                     },
                 ]
             },
-            "glyph": icons.get_icon_path(icons.WANDELBOTS_NOVA_ICON),
+            "glyph": get_icon("wandelbots.png"),
         }
 
         self._stage_create_menu_subscription = omni.kit.context_menu.add_menu(
