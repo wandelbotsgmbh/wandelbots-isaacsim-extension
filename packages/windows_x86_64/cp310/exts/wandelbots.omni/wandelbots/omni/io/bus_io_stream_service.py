@@ -42,9 +42,9 @@ def get_io_value_from_dict(io_value_dict: dict) -> IOValue | None:
         if value_type == "boolean":
             # Handle both boolean and string representations
             if isinstance(value, bool):
-                return value
+                return IOBooleanValue(io=io, value=value)
             elif isinstance(value, str):
-                return value.lower() in ("true", "1", "yes")
+                return IOBooleanValue(io=io, value=value.lower() in ("true", "1"))
             else:
                 return IOBooleanValue(io=io, value=bool(value))
         elif value_type == "integer":

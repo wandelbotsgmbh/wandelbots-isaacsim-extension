@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots Omniservice",
         "description": "A microservice-based framework for managing Omniverse functionalities",
-        "version": "2.15.4"
+        "version": "2.15.5"
     },
     "paths": {
         "/stage/scene": {

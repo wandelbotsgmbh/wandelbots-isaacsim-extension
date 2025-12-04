@@ -1,5 +1,11 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.15.5 (2025-12-03)
+
+### Bug Fixes
+
+* Missing conversion to IOBooleanValue in BusIO Stream
+
 ## 2.15.4 (2025-12-02)
 
 ### Bug Fixes

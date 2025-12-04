@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp311"]
 target.platform = ["windows-x86_64"]
-version = "2.15.4"
+version = "2.15.5"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
