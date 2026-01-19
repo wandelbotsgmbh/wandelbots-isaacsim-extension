@@ -7,7 +7,6 @@ from isaacsim.core.prims import SingleArticulation
 from wandelbots.omni.manipulators.motion_stream_configuration import (
     MotionStreamConfiguration,
 )
-from wandelbots.omni.utils.api import ApiConfiguration
 from wandelbots.omni.utils.auth import validate_request
 from pxr import Usd, Sdf
 import wandelbots.usd as wb_schema
@@ -93,15 +92,12 @@ class MotionGroupConfiguration(pydantic.BaseModel):
     def identifier(self) -> str:
         return self.prim_path
 
-    async def check_connection(self, token: str | None):
-        self._api_configuration = ApiConfiguration(
-            host=self.motion_stream_configuration.host,
-            secure_connection=self.motion_stream_configuration.secure_connection,
-            access_token=token,
-            version="v1",
+    async def check_connection(self):
+        self._api_configuration = (
+            self.motion_stream_configuration.get_api_configuration()
         )
-        request_url = f"{self._api_configuration.base_url}/cells/{self.motion_stream_configuration.cell}/controllers/{self.motion_stream_configuration.controller}/state"
-        await validate_request(token, request_url)
+        request_url = f"{self._api_configuration.base_url}/cells/{self.motion_stream_configuration.cell}/controllers/{self.motion_stream_configuration.controller}/motion-groups/{self.motion_stream_configuration.motion_group}/state"
+        await validate_request(self._api_configuration.access_token, request_url)
 
 
 @dataclass

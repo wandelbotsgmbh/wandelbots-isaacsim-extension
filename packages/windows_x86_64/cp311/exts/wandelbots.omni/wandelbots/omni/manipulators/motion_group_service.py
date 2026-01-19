@@ -10,8 +10,6 @@ from wandelbots.omni.manipulators import (
     is_prim_motion_group,
     get_motion_group_configuration_from_prim,
 )
-from wandelbots.omni.utils.auth import get_auth_token
-
 from .motion_stream_configuration import MotionStreamConfiguration
 from .motion_stream_connector import MotionStreamConnector
 from .utils import get_scene_motion_group_prim_paths
@@ -61,7 +59,7 @@ class MotionGroupService:
     async def create_motion_group(self, configuration: MotionGroupConfiguration):
         async with self.motion_group_lock:
             try:
-                await configuration.check_connection(get_auth_token())
+                await configuration.check_connection()
             except Exception as ex:
                 raise RuntimeError(
                     f"Connection validation failed {ex} ({ex.__class__.__name__})"
@@ -88,7 +86,7 @@ class MotionGroupService:
                 motion_stream_configuration
             )
             try:
-                await updated_configuration.check_connection(get_auth_token())
+                await updated_configuration.check_connection()
             except Exception as ex:
                 f"Connection validation failed ({ex.__class__.__name__})"
 
@@ -140,6 +138,9 @@ class MotionGroupService:
                         continue
                     await self._start_stream(stream)
                 except Exception as ex:
+                    import traceback
+
+                    traceback.print_exc()
                     carb.log_error(f"Failed to stream {motion_group_prim_path}. {ex}")
 
     async def stop_streams(self):
@@ -167,7 +168,7 @@ class MotionGroupService:
                     self.get_motion_group_configuration(motion_group_prim_path),
                 )
             )
-            await stream.check_connection(get_auth_token())
+            await stream.check_connection()
         except Exception as e:
             raise RuntimeError(f"Unable to connect stream: {str(e)}")
         self._streams[motion_group_prim_path] = stream
@@ -191,6 +192,11 @@ class MotionGroupService:
     async def _stop_stream(self, stream_connector: MotionStreamConnector):
         try:
             stream = stream_connector.stream
+            if not stream:
+                carb.log_verbose(
+                    f"Stream for {stream_connector.motion_group.identifier} was never created"
+                )
+                return
             if stream.streaming:
                 await stream.close()
         except Exception as e:

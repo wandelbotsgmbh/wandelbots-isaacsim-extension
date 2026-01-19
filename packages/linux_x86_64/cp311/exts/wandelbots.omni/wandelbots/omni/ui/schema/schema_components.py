@@ -1,6 +1,6 @@
 import carb
 from .widgets import SchemaComponent
-import wandelbots.usd as wb_schema
+import wandelbots.usd as wb_schema  # type: ignore
 from pxr import UsdPhysics, Usd, Sdf
 from wandelbots.omni.utils.teaching import GhostObjectUtils, TCPSource
 from wandelbots.omni.utils.prims import PrimUtils
@@ -13,9 +13,13 @@ import omni.kit.window.popup_dialog
 import omni.ui
 import asyncio
 import omni.kit.notification_manager as nm
-from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
+from wandelbots.omni.manipulators import (
+    get_motion_group_configuration_from_prim,
+    MotionGroupConfiguration,
+)
 from wandelbots.omni.utils.api import get_api_client_from_config
-from wandelbots.omni.utils.auth import get_auth_token
+from wandelbots.omni.ui.dialogs import PrimSelectDialog
+from omni.kit.async_engine import run_coroutine
 
 
 class ToolApiSchema(SchemaComponent):
@@ -69,12 +73,12 @@ class GhostObjectApiSchema(SchemaComponent):
         return False
 
     @staticmethod
-    async def _get_existing_tcps(motion_group_config) -> list[str]:
+    async def _get_existing_tcps(
+        motion_group_config: MotionGroupConfiguration,
+    ) -> list[str]:
         """Get list of all existing TCP names for the motion group."""
         async with get_api_client_from_config(
-            motion_group_config.motion_stream_configuration.get_api_configuration(
-                get_auth_token()
-            )
+            motion_group_config.motion_stream_configuration.get_api_configuration()
         ) as api_client:
             motion_group_api = wb_v2.MotionGroupApi(api_client)
 
@@ -95,7 +99,9 @@ class GhostObjectApiSchema(SchemaComponent):
                 return []
 
     @staticmethod
-    async def _create_tcp_on_nova(tcp_name: str, tcp_pose, motion_group_config):
+    async def _create_tcp_on_nova(
+        tcp_name: str, tcp_pose, motion_group_config: MotionGroupConfiguration
+    ):
         """Create TCP on NOVA controller"""
         # First, check if TCP name already exists
         existing_tcps = await GhostObjectApiSchema._get_existing_tcps(
@@ -110,9 +116,7 @@ class GhostObjectApiSchema(SchemaComponent):
             return None
         # if TCP name is available, proceed to create it
         async with get_api_client_from_config(
-            motion_group_config.motion_stream_configuration.get_api_configuration(
-                get_auth_token()
-            )
+            motion_group_config.motion_stream_configuration.get_api_configuration()
         ) as api_client:
             # Get robot controller to check if it is virtual
             controller_api = wb_v2.ControllerApi(api_client)
@@ -151,26 +155,6 @@ class GhostObjectApiSchema(SchemaComponent):
             )
             return result
 
-    @staticmethod
-    def _on_ok_clicked(dialog, tcp_pose, motion_group_config):
-        """Handler function to process the form data when user clicks OK"""
-        tcp_name = dialog.get_value("name")
-        carb.log_info(f"Creating NOVA TCP with name: {tcp_name}")
-
-        # Create async task to call the API using the event loop
-        asyncio.get_event_loop().create_task(
-            GhostObjectApiSchema._create_tcp_on_nova(
-                tcp_name, tcp_pose, motion_group_config
-            )
-        )
-        dialog.destroy()
-
-    @staticmethod
-    def _on_cancel_clicked(dialog):
-        """Handler function when user cancels"""
-        carb.log_warn("TCP creation cancelled by user")
-        dialog.destroy()
-
     def can_create_ghost_object(payload: dict) -> bool:
         prim_list: list[Usd.Prim] = payload.get("prim_list", [])
         if len(prim_list) == 0 or len(prim_list) > 1:
@@ -195,28 +179,68 @@ class GhostObjectApiSchema(SchemaComponent):
             carb.log_warn("Cannot create a ghost object for multiple prims")
             return False
 
-        GhostObjectApiSchema.create_ghost_object_from_prim(prim_list[0])
+        run_coroutine(
+            GhostObjectApiSchema.create_ghost_object_from_prim(prim_list[0])
+        ).add_done_callback(
+            lambda fut: carb.log_error(
+                f"Error creating ghost object: {fut.exception()}"
+            )
+            if fut.exception()
+            else None
+        )
 
-    def create_ghost_object_from_prim(tool_prim: Usd.Prim) -> bool:
-        tcp_sources: TCPSource = GhostObjectUtils.get_all_tcp_sources(tool_prim)
+    async def create_ghost_object_from_prim(tool_prim: Usd.Prim) -> bool:
+        tcp_sources: list[TCPSource] = GhostObjectUtils.get_all_tcp_sources(tool_prim)
         if len(tcp_sources) == 0:
             carb.log_warn(
                 f"Cannot create ghost object for {tool_prim.GetPath().pathString} because no TCP source found"
             )
             return False
 
+        # Default to first tcp but offer user to select if multiple available
         selected_tcp: TCPSource = tcp_sources[0]
+
         if len(tcp_sources) > 1:
-            carb.log_warn(
-                f"Multiple TCP sources found for {tool_prim.GetPath().pathString}, using {selected_tcp.prim_path}"
+
+            def _filter_fn(prim: Usd.Prim) -> bool:
+                return prim.GetPath().pathString in [
+                    prim.prim_path for prim in tcp_sources
+                ]
+
+            dialog = PrimSelectDialog(
+                stage=tool_prim.GetStage(),
+                window_title="Select TCP Source for Ghost Object",
+                modal_window=True,
             )
+
+            selected_prims = await dialog.show(1, _filter_fn)
+            if selected_prims is None:
+                carb.log_verbose("Ghost object creation cancelled by user")
+                return False
+
+            if selected_prims and len(selected_prims) > 0:
+                # Find the matching TCP source
+                selected_tcp = next(
+                    (
+                        tcp
+                        for tcp in tcp_sources
+                        if tcp.prim_path == selected_prims[0].GetPath().pathString
+                    ),
+                    tcp_sources[0],
+                )
+            else:
+                carb.log_warn("No TCP source selected, using first available")
 
         pose = PrimUtils.get_prim_pose(
             selected_tcp.prim_path,
             coordinate_system="world",
         )
 
-        GhostObjectUtils.add_ghost_object(tool_prim.GetPath().pathString, pose)
+        GhostObjectUtils.add_ghost_object(
+            source_prim=tool_prim,
+            tcp_world_pose=pose,
+            tcp_prim=tool_prim.GetStage().GetPrimAtPath(selected_tcp.prim_path),
+        )
         return True
 
     async def create_nova_tcp_from_payload(payload: dict) -> bool:
@@ -255,15 +279,35 @@ class GhostObjectApiSchema(SchemaComponent):
             motion_group_prim
         )  # Extract motion group properties
 
+        def _on_ok_clicked(
+            dialog: omni.kit.window.popup_dialog.FormDialog,
+            tcp_pose,
+            motion_group_config,
+        ):
+            """Handler function to process the form data when user clicks OK"""
+            tcp_name = dialog.get_value("name")
+            carb.log_info(f"Creating NOVA TCP with name: {tcp_name}")
+
+            # Create async task to call the API using the event loop
+            asyncio.get_event_loop().create_task(
+                GhostObjectApiSchema._create_tcp_on_nova(
+                    tcp_name, tcp_pose, motion_group_config
+                )
+            )
+            dialog.destroy()
+
+        def _on_cancel_clicked(dialog: omni.kit.window.popup_dialog.FormDialog):
+            """Handler function when user cancels"""
+            carb.log_warn("TCP creation cancelled by user")
+            dialog.destroy()
+
         # Create and show the dialog - store reference to prevent garbage collection
         dialog = omni.kit.window.popup_dialog.FormDialog(
             width=400,
             message="Please enter the name for the new NOVA TCP:",
             title="Create NOVA TCP",
-            ok_handler=lambda d: GhostObjectApiSchema._on_ok_clicked(
-                d, tcp_pose, motion_group_config
-            ),
-            cancel_handler=GhostObjectApiSchema._on_cancel_clicked,
+            ok_handler=lambda d: _on_ok_clicked(d, tcp_pose, motion_group_config),
+            cancel_handler=_on_cancel_clicked,
             ok_label="Create",
             cancel_label="Cancel",
             field_defs=[

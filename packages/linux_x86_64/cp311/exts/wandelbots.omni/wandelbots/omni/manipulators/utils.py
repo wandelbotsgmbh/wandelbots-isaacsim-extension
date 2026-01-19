@@ -14,9 +14,13 @@ def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[st
     if stage is None:
         return []
 
-    return [
-        prim.GetPrimPath().pathString
-        for prim in stage.Traverse()
-        if prim.HasAPI(wb_schema.MotionGroupAPI)
-        or (include_prims_without_api and prim.HasAPI(UsdPhysics.ArticulationRootAPI))
-    ]
+    def _filter(prim: Usd.Prim) -> bool:
+        if prim.HasAPI(wb_schema.MotionGroupAPI):
+            return True
+        if prim.HasAPI(wb_schema.ToolAPI):
+            return False
+        if include_prims_without_api and prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return True
+        return False
+
+    return [prim.GetPrimPath().pathString for prim in stage.Traverse() if _filter(prim)]

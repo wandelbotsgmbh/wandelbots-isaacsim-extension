@@ -1,6 +1,6 @@
 {
     "OgnWriteIO": {
-        "version": 1,
+        "version": 2,
         "description": "Write an IO value to a controller.",
         "language": "Python",
         "categories": {

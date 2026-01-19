@@ -31,7 +31,7 @@ def register_nova_tcp_menu():
 
     stage_create_menu_subscription = (
         omni.kit.context_menu.add_menu(  # Add the custom context menu
-            create_menu_dict, "CREATE", "omni.kit.widget.stage"
+            create_menu_dict, "CREATE"
         )
     )
 

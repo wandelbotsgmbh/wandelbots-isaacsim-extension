@@ -63,7 +63,7 @@ class NOVAInstance(BaseModel):
 
 class NOVACloudInstance(NOVAInstance):
     model_config = {"populate_by_name": True}
-
+    auth_config_name: str
     expires_at: int
     id: str = Field(alias="instance_id")
     obsolete_at: int
@@ -96,7 +96,9 @@ class NOVACloudInstance(NOVAInstance):
                 f"Creating API client for cloud instance {self.display_name} at {self.host}"
             )
             return get_api_client(
-                host=self.host, secure=True, token=token, version="v2"
+                host=self.host,
+                secure=True,
+                token=token,
             )
         except Exception:
             return None
@@ -122,7 +124,6 @@ class NOVACustomInstance(NOVAInstance):
             return get_api_client(
                 host=self.host,
                 secure=self.is_secure_connection,
-                version="v2",
             )
         except Exception:
             return None

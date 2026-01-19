@@ -1,6 +1,6 @@
 import omni.timeline
 import omni.usd
-from pxr import UsdGeom
+from pxr import UsdGeom, Usd
 
 
 class SceneUtils:
@@ -16,8 +16,9 @@ class SceneUtils:
         return timeline, is_playing
 
     @staticmethod
-    def get_stage_units() -> float:
-        stage = omni.usd.get_context().get_stage()
+    def get_stage_units(stage: Usd.Stage = None) -> float:
+        if stage is None:
+            stage = omni.usd.get_context().get_stage()
         stage_unit = UsdGeom.GetStageMetersPerUnit(stage)
         return stage_unit
 

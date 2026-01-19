@@ -1,7 +1,7 @@
 import asyncio
 import carb
 import omni.ui as ui
-from typing import Optional
+from typing import Callable, Optional
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
 from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
 from wandelbots.omni.manipulators import (
@@ -14,6 +14,7 @@ from wandelbots.omni.instances.models import (
     NOVAMotionGroupData,
 )
 from wandelbots.omni.ui.colors import NOVAColor
+from .models.external_joint_stream_model import ExternalJointStreamModel
 
 
 class MotionGroupUIBuilder:
@@ -23,6 +24,7 @@ class MotionGroupUIBuilder:
         instance: NOVAInstance,
         controller: NOVAControllerData,
         motion_group: NOVAMotionGroupData,
+        motion_group_connection_changed_fn: Optional[Callable] = None,
     ):
         self._instances_service = instances_service
         self._instance = instance
@@ -33,7 +35,8 @@ class MotionGroupUIBuilder:
         self._connection_error_label: ui.Label = None
         self._container = ui.VStack(spacing=10)
         self._articulations = []
-        self._input_use_external_joint_stream = False
+        self._use_external_joint_stream_model: ExternalJointStreamModel = None
+        self._motion_group_connection_changed_fn = motion_group_connection_changed_fn
 
         self.connected_motion_group = self.motion_group_config
 
@@ -44,7 +47,10 @@ class MotionGroupUIBuilder:
             with ui.VStack(alignment=ui.Alignment.LEFT, spacing=10):
                 if self._articulations:
                     self._display_articulation_selector()
-                    self._display_external_joint_stream_checkbox()
+                    if self.motion_group_config:
+                        self._display_external_joint_stream_checkbox(
+                            self.motion_group_config
+                        )
                     self._display_connect_button()
                 else:
                     with ui.HStack(height=25):
@@ -58,20 +64,22 @@ class MotionGroupUIBuilder:
 
     # Display methods
 
-    def _display_external_joint_stream_checkbox(self):
+    def _display_external_joint_stream_checkbox(
+        self, motion_group_config: MotionGroupConfiguration
+    ):
         """Display checkbox for using external joint stream."""
         with ui.HStack(height=20):
             ui.Spacer(width=15)
             ui.Label("Sync with simulation:", width=150)
 
-            model = ui.SimpleBoolModel(
-                self.use_external_joint_stream,
-                read_only=self.motion_group_config is not None,
+            self._use_external_joint_stream_model = ExternalJointStreamModel(
+                motion_group_config.prim_path if motion_group_config else None,
+                read_only=motion_group_config is not None,
             )
             checkbox = ui.CheckBox(
                 width=20,
                 height=20,
-                model=model,
+                model=self._use_external_joint_stream_model,
                 style={
                     "background_color": NOVAColor.SECONDARY_TONAL.color,
                     "color": NOVAColor.SECONDARY_CONTRAST_TEXT.color,
@@ -79,19 +87,17 @@ class MotionGroupUIBuilder:
                 tooltip="Enable to sync this motion group with the simulation.",
             )
 
-            def on_checkbox_changed(model: ui.SimpleBoolModel):
-                self.use_external_joint_stream = model.get_value_as_bool()
+            def on_checkbox_changed(model: ExternalJointStreamModel):
                 carb.log_info(
-                    f"use_external_joint_stream changed to: {self.use_external_joint_stream}"
+                    f"use_external_joint_stream changing to: {model.get_value_as_bool()}"
                 )
 
-                if self.motion_group_config:
-                    asyncio.get_event_loop().create_task(
-                        get_motion_group_service().update_motion_group_stream_configuration(
-                            motion_group_prim_path=self.motion_group_config.prim_path,
-                            motion_stream_configuration=self.motion_group_config.motion_stream_configuration,
-                        )
+                asyncio.get_event_loop().create_task(
+                    get_motion_group_service().update_motion_group_stream_configuration(
+                        motion_group_prim_path=motion_group_config.prim_path,
+                        motion_stream_configuration=model.motion_stream_configuration,
                     )
+                )
 
             checkbox.model.add_value_changed_fn(on_checkbox_changed)
             carb.log_info(
@@ -101,16 +107,10 @@ class MotionGroupUIBuilder:
     @property
     def use_external_joint_stream(self) -> bool:
         return (
-            self.motion_group_config.motion_stream_configuration.use_external_joint_stream
-            if self.motion_group_config
-            else self._input_use_external_joint_stream
+            self._use_external_joint_stream_model.get_value_as_bool()
+            if self._use_external_joint_stream_model
+            else False
         )
-
-    @use_external_joint_stream.setter
-    def use_external_joint_stream(self, value: bool):
-        self._input_use_external_joint_stream = value
-        if self.motion_group_config:
-            self.motion_group_config.motion_stream_configuration.use_external_joint_stream = value
 
     def _display_articulation_selector(self):
         """Display articulation selector for connecting motion group to an articulation."""
@@ -238,6 +238,8 @@ class MotionGroupUIBuilder:
         def on_complete(success: bool, message: str = ""):
             if success:
                 self.build_ui()
+                if self._motion_group_connection_changed_fn:
+                    self._motion_group_connection_changed_fn()
             else:
                 self._update_connection_error_message(message)
                 self._update_connect_button()
@@ -266,6 +268,8 @@ class MotionGroupUIBuilder:
 
         def on_complete(success: bool):
             self.build_ui()
+            if self._motion_group_connection_changed_fn:
+                self._motion_group_connection_changed_fn()
 
         try:
             self._instances_service.delete_motion_group(

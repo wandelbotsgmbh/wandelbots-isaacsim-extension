@@ -273,12 +273,14 @@ class TrajectoryBuilder:
 
         name = trajectory_data.name
         trajectory_path = f"{parent_prim_path}/trajectories/{name}"
-        if stage.GetPrimAtPath(trajectory_path):
+        curve_path = f"{trajectory_path}/curve"
+        if stage.GetPrimAtPath(curve_path):
             raise ValueError(f"Trajectory '{name}' already exists")
 
         # create trajectory scope
         stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
-        UsdGeom.Xform.Define(stage, trajectory_path)
+        if not stage.GetPrimAtPath(trajectory_path):
+            UsdGeom.Xform.Define(stage, trajectory_path)
 
         # Calculate number of segments
         num_segments = len(trajectory_data.poses) - 1
@@ -294,7 +296,7 @@ class TrajectoryBuilder:
         curve_waypoints = [
             (x / 1000, y / 1000, z / 1000) for x, y, z, *_ in trajectory_data.poses
         ]
-        curve_path = f"{trajectory_path}/curve"
+
         self.draw_curve(
             curve_path=curve_path,
             waypoints=curve_waypoints,

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Callable
 from attr import dataclass
 from pxr import Usd
@@ -33,8 +34,9 @@ class PrimPicker:
         self._build_ui()
 
     def _pick_prim(self):
-        def _on_prim_selected(prims: list[Usd.Prim]):
-            self._prim = prims[0] if len(prims) > 0 else None
+        def _on_prim_selected(future: asyncio.Future[list[str] | None]):
+            prims = future.result()
+            self._prim = prims[0] if prims and len(prims) > 0 else None
             self._deferred_build_ui()
             self._prim_picked_fn(self._prim)
 
@@ -43,7 +45,9 @@ class PrimPicker:
             window_title=self._dialog_properties.title,
             modal_window=True,
         )
-        dialog.show(1, _on_prim_selected, self._dialog_properties.filter_fn)
+        run_coroutine(
+            dialog.show(1, self._dialog_properties.filter_fn)
+        ).add_done_callback(_on_prim_selected)
 
     def _highlight_prim(self):
         if not self._prim:

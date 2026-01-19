@@ -23,7 +23,7 @@ from wandelbots.omni.io import (
 )
 from wandelbots.omni.manipulators import get_motion_group_service, MotionGroupService
 from wandelbots.omni.utils.base import get_current_version
-from wandelbots.omni.utils.shims.menu import make_menu_item_description
+from wandelbots.omni.ui.utils import make_menu_item_description
 import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
 from wandelbots.omni.environment import credential_store
@@ -118,6 +118,7 @@ class OmniService(omni.ext.IExt):
         }:
             host_database.clear_all()
             if self.instance_list_window:
+                self.instance_list_window.setup()
                 self.instance_list_window.build_ui()
 
     async def _async_shutdown(
@@ -158,7 +159,6 @@ class OmniService(omni.ext.IExt):
             carb.log_verbose("Stopping timeline")
             self.timeline.stop()
 
-        self.schema_extension.unregister()
         self.schema_extension = None
         self._tools_subscription = None
         self._asset_browser_manager = None
@@ -167,9 +167,11 @@ class OmniService(omni.ext.IExt):
         self._menu_items = [
             make_menu_item_description(
                 ext_id=ext_id,
-                header="",
                 name="Connected Instances",
                 onclick_fun=lambda ext=weakref.proxy(self): ext._open_connect_to_nova(),
+                on_ticked_fn=lambda ext=weakref.proxy(self): ext.instance_list_window
+                is not None
+                and ext.instance_list_window.is_visible,
             ),
             make_menu_item_description(
                 ext_id=ext_id,
@@ -215,12 +217,13 @@ class OmniService(omni.ext.IExt):
         webbrowser.open("https://portal.wandelbots.io")
 
     def _open_connect_to_nova(self):
-        if self.instance_list_window:
+        if self.instance_list_window and self.instance_list_window.is_visible:
             self.instance_list_window.close()
-
-        self.instance_list_window = NOVAInstanceListUIBuilder()
-        self.instance_list_window.setup()
-        self.instance_list_window.build_ui()
+            self.instance_list_window = None
+        else:
+            self.instance_list_window = NOVAInstanceListUIBuilder()
+            self.instance_list_window.setup()
+            self.instance_list_window.build_ui()
 
     def _open_about(self):
         self._version = get_current_version()

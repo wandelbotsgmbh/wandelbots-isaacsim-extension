@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp311"]
 target.platform = ["linux-x86_64"]
-version = "2.15.5"
+version = "2.19.1"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -33,12 +33,11 @@ icon = "data/icon.png"
 
 
 [dependencies]
-"wandelbots.usd" = { version = "1.1.4" }
+"wandelbots.usd" = { version = "1.1.5" }
 "isaacsim.core.api" = {}
 "isaacsim.core.prims" = {}
 "isaacsim.core.utils" = {}
 "isaacsim.gui.components" = {}
-"isaacsim.asset.gen.conveyor" = {}
 'omni.services.core' = {}
 "isaacsim.core.cloner" = {}
 'omni.services.client' = {}
@@ -91,3 +90,8 @@ name = "startup"
 pythonTests.include = []
 _startup_only_test = true
 timeout = 3600
+
+
+[[test]]
+name = "unit"
+pythonTests.include = ["wandelbots.omni.tests.unit.*"]

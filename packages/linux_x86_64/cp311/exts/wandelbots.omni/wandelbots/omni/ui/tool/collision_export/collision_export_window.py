@@ -1,4 +1,5 @@
-from typing import cast
+from dataclasses import dataclass
+from typing import Callable, cast
 import omni.kit.notification_manager as nm
 import asyncio
 from pxr import Usd
@@ -7,7 +8,7 @@ import weakref
 import carb
 import omni.ui as ui
 import omni.kit.menu.utils
-from wandelbots.omni.utils.shims.menu import make_menu_item_description
+import omni.kit.actions.core
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.core.collision.collision_export_service import (
     get_collision_export_service,
@@ -27,9 +28,10 @@ from wandelbots.omni.ui.widgets import (
     CoordinatesInput,
     CoordinateInputFieldModel,
 )
-from wandelbots.omni.utils.auth import get_auth_token
 import carb.events
 from omni.kit.async_engine import run_coroutine
+
+WINDOW_MENU_ROOT = "Tools"
 
 
 class SphereRadiusModel(ui.SimpleFloatModel):
@@ -62,6 +64,9 @@ class CollisionExportWindow:
         self._exporting = False
 
         self.window = ui.Window("Collision Export (Beta)", width=400, height=300)
+        self.window.set_visibility_changed_fn(
+            lambda _: omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
+        )
         self.window.visible = False
         self.window.deferred_dock_in("Property", ui.DockPolicy.CURRENT_WINDOW_IS_ACTIVE)
 
@@ -212,9 +217,7 @@ class CollisionExportWindow:
                                     weak_self._deferred_build_ui()
 
                             self._tcp_selector = TcpSelector(
-                                api_configuration=stream_config.get_api_configuration(
-                                    token=get_auth_token()
-                                ),
+                                api_configuration=stream_config.get_api_configuration(),
                                 cell=stream_config.cell,
                                 controller=stream_config.controller,
                                 motion_group=stream_config.motion_group,
@@ -390,30 +393,60 @@ class CollisionExportWindow:
         return self._tcp_selector.selected_tcp if self._tcp_selector else None
 
 
+@dataclass
+class CollisionExportWindowSubscription:
+    collision_export_window: CollisionExportWindow = None
+    menu_subscriptions: list = None
+
+    def __del__(self):
+        # Need to explicitly hide the collision_export_window because the docking causes issues on deletion
+        if self.collision_export_window:
+            self.collision_export_window.window.visible = False
+
+        # Dropping the menu items is not enough we need to explicitly remove them
+        omni.kit.menu.utils.remove_menu_items(self.menu_subscriptions, WINDOW_MENU_ROOT)
+
+
 def register_collision_export_window():
     collision_export_window = CollisionExportWindow()
 
-    def _open_window():
-        if collision_export_window.window:
-            collision_export_window.window.visible = True
-
-    menu_items = [
-        omni.kit.menu.utils.MenuItemDescription(
-            name="Wandelbots NOVA",
-            sub_menu=[
-                make_menu_item_description(
-                    "wandelbots.omni",
-                    "Collision Export (Beta)",
-                    lambda: _open_window(),
-                )
-            ],
+    def toggle_visibility():
+        collision_export_window.window.visible = (
+            not collision_export_window.window.visible
         )
-    ]
 
-    return (
+    def _is_visible(
+        toolbar: Callable[[], CollisionExportWindow | None] = weakref.ref(
+            collision_export_window
+        ),
+    ):
+        return toolbar().window.visible if toolbar() else False
+
+    ext_id = "wandelbots.omni"
+    name = "Collision Export (Beta)"
+    action_name = "toggle_collision_export_window"
+    action_unique = f"{ext_id}_{name}_{action_name}"
+    action_registry = omni.kit.actions.core.get_action_registry()
+    action_registry.deregister_action(ext_id, action_unique)
+    action_registry.register_action(
+        ext_id, action_unique, toggle_visibility, display_name=name, tag="MenuItem"
+    )
+
+    return CollisionExportWindowSubscription(
         collision_export_window,
         omni.kit.menu.utils.add_menu_items(
-            menu_items,
-            "Tools",
+            [
+                omni.kit.menu.utils.MenuItemDescription(
+                    name="Wandelbots NOVA",
+                    sub_menu=[
+                        omni.kit.menu.utils.MenuItemDescription(
+                            name=name,
+                            onclick_action=(ext_id, action_unique),
+                            ticked_fn=_is_visible,
+                        )
+                    ],
+                )
+            ],
+            WINDOW_MENU_ROOT,
         ),
     )

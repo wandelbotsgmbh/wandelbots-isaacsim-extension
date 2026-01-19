@@ -1,6 +1,5 @@
 from typing import Callable
 import asyncio
-from wandelbots.omni.utils.auth import get_auth_token
 from wandelbots.omni.utils.api import get_api_client_from_config
 import wandelbots_api_client.v2 as wb
 import wandelbots_api_client.v2.models as wb_models
@@ -40,8 +39,8 @@ MotionCommand = (
 )
 
 
-def _get_websocket_kwargs() -> dict:
-    return _to_header_params(get_base_headers(get_auth_token()))
+def _get_websocket_kwargs(access_token: str | None = None) -> dict:
+    return _to_header_params(get_base_headers(access_token))
 
 
 async def plan_path(
@@ -56,9 +55,7 @@ async def plan_path(
     motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
 
     stream_config = motion_group.motion_stream_configuration
-    async with get_api_client_from_config(
-        stream_config.get_api_configuration(get_auth_token(), version="v2")
-    ) as api:
+    async with get_api_client_from_config(stream_config.get_api_configuration()) as api:
         tcps = await wb.VirtualControllerApi(api).list_virtual_controller_tcps(
             cell=stream_config.cell,
             controller=stream_config.controller,
@@ -281,7 +278,7 @@ async def get_tcp_offset_by_name(
     motion_stream_config: MotionStreamConfiguration, tcp_name: str
 ) -> wb_models.TcpOffset:
     async with get_api_client_from_config(
-        motion_stream_config.get_api_configuration(get_auth_token(), version="v2")
+        motion_stream_config.get_api_configuration()
     ) as api:
         motion_group_description = await wb.MotionGroupApi(
             api
@@ -303,9 +300,7 @@ async def pose_to_joint_positions(
     target_pose: WSPose,
 ) -> list[list[float | int]]:
     async with get_api_client_from_config(
-        motion_stream_configuration.get_api_configuration(
-            get_auth_token(), version="v2"
-        )
+        motion_stream_configuration.get_api_configuration()
     ) as api:
         motion_group_description: wb_models.MotionGroupDescription = (
             await wb.MotionGroupApi(api).get_motion_group_description(
@@ -344,9 +339,7 @@ async def get_operation_limits(
     motion_stream_configuration: MotionStreamConfiguration,
 ) -> wb_models.OperationLimits:
     async with get_api_client_from_config(
-        motion_stream_configuration.get_api_configuration(
-            get_auth_token(), version="v2"
-        )
+        motion_stream_configuration.get_api_configuration()
     ) as api:
         motion_group_description: wb_models.MotionGroupDescription = (
             await wb.MotionGroupApi(api).get_motion_group_description(
@@ -369,9 +362,7 @@ async def plan_motion_group_move_to(
     carb.log_verbose("Planning path...")
 
     stream_config = motion_stream_configuration
-    async with get_api_client_from_config(
-        stream_config.get_api_configuration(get_auth_token(), version="v2")
-    ) as api:
+    async with get_api_client_from_config(stream_config.get_api_configuration()) as api:
         motion_group_description: wb_models.MotionGroupDescription = (
             await wb.MotionGroupApi(api).get_motion_group_description(
                 cell=stream_config.cell,
@@ -450,9 +441,7 @@ async def play_trajectory(
     if trajectory is None:
         carb.log_warn("No trajectory to play.")
         return
-    api_client_config = motion_group_stream_configuration.get_api_configuration(
-        get_auth_token(), version="v2"
-    )
+    api_client_config = motion_group_stream_configuration.get_api_configuration()
     async with get_api_client_from_config(api_client_config) as api:
         controller_api = wb.ControllerApi(api)
         controller_state = await controller_api.get_current_robot_controller_state(
@@ -516,7 +505,7 @@ async def play_trajectory(
 
     async with websockets.connect(
         f"{api_client_config.base_url_websocket}/cells/{motion_group_stream_configuration.cell}/controllers/{motion_group_stream_configuration.controller}/execution/trajectory",
-        **_get_websocket_kwargs(),
+        **_get_websocket_kwargs(api_client_config.access_token),
     ) as websocket:
         while continue_fn():
             if len(message_queue) == 0:
@@ -553,13 +542,11 @@ def subscribe_motion_group_standstill_state(
         carb.log_verbose("Starting motion state watcher...")
         standstill = None
         stream_config = motion_stream_configuration
-        api_client_config = stream_config.get_api_configuration(
-            get_auth_token(), version="v2"
-        )
+        api_client_config = stream_config.get_api_configuration()
 
         async with websockets.connect(
             f"{api_client_config.base_url_websocket}/cells/{stream_config.cell}/controllers/{stream_config.controller}/motion-groups/{stream_config.motion_group}/state-stream",
-            **_get_websocket_kwargs(),
+            **_get_websocket_kwargs(api_client_config.access_token),
         ) as websocket:
             while True:
                 state = wb_models.MotionGroupState.from_dict(

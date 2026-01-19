@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from typing import Literal
-
+from carb.tokens import get_tokens_interface
 import wandelbots_api_client as wb
 import wandelbots_api_client.v2 as wb_v2
+from wandelbots.omni.utils.base import get_current_version
 
 
 @dataclass
@@ -10,7 +11,7 @@ class ApiConfiguration:
     host: str
     secure_connection: bool = False
     access_token: str = None
-    version: Literal["v1", "v2"] = "v1"
+    version: Literal["v1", "v2"] = "v2"
 
     @property
     def base_url(self):
@@ -36,24 +37,23 @@ def get_api_client(
     host: str,
     secure=False,
     token: str | None = None,
-    version: Literal["v1", "v2"] = "v1",
+    version: Literal["v1", "v2"] = "v2",
 ) -> wb.ApiClient | wb_v2.ApiClient:
     base_url = f"http{'s' if secure else ''}://{host}/api/{version}"
 
-    if version == "v2":
-        config = wb_v2.Configuration(host=base_url, access_token=token)
-        return wb_v2.ApiClient(
-            configuration=config,
-            header_name="X-Wandelbots-Client",
-            header_value="isaac-sim-extension",
-        )
-    else:
-        config = wb.Configuration(host=base_url, access_token=token)
-        return wb.ApiClient(
-            configuration=config,
-            header_name="X-Wandelbots-Client",
-            header_value="isaac-sim-extension",
-        )
+    def create_client() -> wb.ApiClient | wb_v2.ApiClient:
+        if version == "v2":
+            config = wb_v2.Configuration(host=base_url, access_token=token)
+            client = wb_v2.ApiClient(configuration=config)
+            return client
+        else:
+            config = wb.Configuration(host=base_url, access_token=token)
+            client = wb.ApiClient(configuration=config)
+            return client
+
+    client = create_client()
+    client.user_agent = _get_user_agent()
+    return client
 
 
 def get_api_client_from_config(
@@ -68,7 +68,15 @@ def get_api_client_from_config(
 
 
 def get_base_headers(access_token: str | None) -> dict:
-    base_headers = {"X-Wandelbots-Client": "isaac-sim-extension"}
+    base_headers = {
+        "User-Agent": _get_user_agent(),
+    }
     if access_token:
         base_headers["Authorization"] = f"Bearer {access_token}"
     return base_headers
+
+
+def _get_user_agent() -> str:
+    return get_tokens_interface().resolve(
+        f"isaac-sim-extension/{get_current_version()}; IsaacSim/${{app_version}}; Kit/${{kit_version_short}} ${{platform}}"
+    )

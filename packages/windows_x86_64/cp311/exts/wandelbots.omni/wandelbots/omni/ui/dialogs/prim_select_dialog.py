@@ -1,3 +1,4 @@
+import asyncio
 import weakref
 from functools import partial
 from typing import Callable
@@ -27,9 +28,13 @@ class PrimSelectDialog:
         self._modal_window = modal_window
         self._prims_selection_limit = None
 
+        self._show_result_future: asyncio.Future = None
+
         def on_window_visibility_changed(visible):
             if not visible:
                 self._stage_widget.open_stage(None)
+                if self._show_result_future and not self._show_result_future.done():
+                    self._show_result_future.set_result(None)
             else:
                 # NVIDIA: Only attach the stage when picker is open. Otherwise the Tf notice listener in StageWidget kills perf
                 self._stage_widget.open_stage(self._weak_stage())
@@ -74,8 +79,7 @@ class PrimSelectDialog:
         if not weak_self:
             return
 
-        if weak_self._prims_selected_fn:
-            weak_self._prims_selected_fn(weak_self._selected_prims)
+        weak_self._show_result_future.set_result(weak_self._selected_prims)
         weak_self._window.visible = False
 
     def clean(self):
@@ -87,15 +91,13 @@ class PrimSelectDialog:
         self._stage_widget = None
         self._prims_selected_fn = None
 
-    def show(
+    async def show(
         self,
         prims_selection_limit,
-        prims_selected_fn: Callable[[list[str]], None],
         prim_filter_fn: Callable[[Usd.Prim], bool] = lambda _: True,
-    ):
+    ) -> list[str] | None:
         self._prims_selection_limit = prims_selection_limit
         self._prim_filter_fn = prim_filter_fn
-        self._prims_selected_fn = prims_selected_fn
 
         self._selection_watch._filter_lambda = self._prim_filter_fn
         self._selection_watch.reset(prims_selection_limit)
@@ -104,6 +106,10 @@ class PrimSelectDialog:
             self._stage_widget.filter_by_lambda(
                 {"prim_filter": self._prim_filter_fn}, True
             )
+
+        self._show_result_future = asyncio.get_event_loop().create_future()
+        await self._show_result_future
+        return self._show_result_future.result()
 
     def _on_selection_changed(self, paths: list[str]):
         stage: Usd.Stage = self._weak_stage()

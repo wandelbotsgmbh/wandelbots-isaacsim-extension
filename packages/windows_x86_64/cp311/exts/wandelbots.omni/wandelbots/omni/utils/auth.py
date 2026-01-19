@@ -6,8 +6,11 @@ from wandelbots.omni.environment import credential_store, load_config
 from wandelbots_api_client.authorization import Auth0Config, Auth0DeviceAuthorization
 
 
-def get_portal_api_url() -> str | None:
-    config = get_auth_config()
+DEFAULT_AUTH_CONFIG = "default"
+
+
+def get_portal_api_url(auth_config_name: str) -> str | None:
+    config = get_auth_config(auth_config_name)
     if config is None:
         return None
 
@@ -15,17 +18,14 @@ def get_portal_api_url() -> str | None:
     return portal_api
 
 
-def get_auth_token():
-    config = get_auth_config()
-    host = config.get_validated_config()[0]
-
-    token = credential_store.get_token(host)
+def get_auth_token(auth_config_name: str) -> str | None:
+    token = credential_store.get_token(auth_config_name)
 
     if token is None:
-        carb.log_verbose(f"No stored token found for {host}.")
+        carb.log_verbose(f"No stored token found for {auth_config_name}.")
         return None
 
-    carb.log_verbose(f"Retrieved stored token for {host}.")
+    carb.log_verbose(f"Retrieved stored token for {auth_config_name}.")
     return token
 
 
@@ -44,51 +44,48 @@ async def get_device_code_info(controller: Auth0DeviceAuthorization):
         carb.log_error(f"Failed to request device code: {e}")
 
 
-def store_auth_token(token: str, host: str = None):
+def store_auth_token(token: str, auth_config_name: str):
     try:
-        if host is None:
-            config = get_auth_config()
-            host = config.get_validated_config()[0]
-
-        credential_store.store_token(host, token)
+        credential_store.store_token(auth_config_name, token)
     except Exception as e:
-        carb.log_error(f"Failed to store token: {e}")
+        carb.log_error(f"{auth_config_name} Failed to store token: {e}")
 
 
-def invalidate_auth_token():
+def invalidate_auth_token(auth_config_name: str):
     """Invalidate and remove the authentication token when 401 is received."""
     try:
-        config = get_auth_config()
-        host = config.get_validated_config()[0]
-        credential_store.remove_token(host)
-        carb.log_verbose(f"Authentication token invalidated for {host}")
+        credential_store.remove_token(auth_config_name)
+        carb.log_verbose(f"Authentication token invalidated for {auth_config_name}")
     except KeyError:
         carb.log_verbose("No token found to invalidate")
     except Exception as e:
         carb.log_error(f"Failed to invalidate token: {e}")
 
 
-def get_auth_config() -> Auth0Config:
+def get_auth_configs() -> dict[str, Auth0Config]:
     config = load_config("authentication.toml")
-    environments = config.get("wandelbots", {}).get("environments", [])
+    wandelbots_configs: dict = config.get("wandelbots", {})
+    environments: list[dict] = wandelbots_configs.get("environments", [])
 
-    if not environments:
-        return Auth0Config().default()
+    auth_configs = {}
+    for env in environments:
+        domain = env.get("domain", "")
+        client_id = env.get("client_id", "")
+        audience = env.get("audience", "")
+        name = env.get("name", f"{domain}-{client_id}-{audience}")
 
-    if len(environments) >= 1:
-        name = environments[0]["name"]
-        domain = environments[0]["domain"]
-        client_id = environments[0]["client_id"]
-        audience = environments[0]["audience"]
-
-        carb.log_verbose(
-            f"Multiple environments found in configuration. Using the first one: {name}"
-        )
-        return Auth0Config(
+        auth_configs[name] = Auth0Config(
             domain=domain,
             client_id=client_id,
             audience=audience,
         )
+
+    auth_configs.setdefault(DEFAULT_AUTH_CONFIG, Auth0Config().default())
+    return auth_configs
+
+
+def get_auth_config(name: str) -> Auth0Config | None:
+    return get_auth_configs().get(name)
 
 
 async def validate_request(token: str | None, base_url: str):

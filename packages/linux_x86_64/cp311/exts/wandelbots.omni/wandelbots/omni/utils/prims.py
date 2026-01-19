@@ -13,16 +13,24 @@ from wandelbots.omni.environment import host_database
 from isaacsim.core.prims import RigidPrim
 from isaacsim.sensors.camera import Camera
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
-from scipy.spatial.transform import Rotation
 import carb
 import omni.usd
 from wandelbots.omni.utils.scene import SceneUtils
+from wandelbots.omni.utils.math import (
+    quat_to_rotvec,
+    rotvec_to_quat,
+    compose_rotvecs,
+    pose_to_matrix as math_pose_to_matrix,
+    matrix_to_pose as math_matrix_to_pose,
+)
 
 
 class PrimUtils:
     @staticmethod
-    def get_prim(prim_path: str) -> Usd.Prim:
-        return prims_utils.get_prim_at_path(prim_path)
+    def get_prim(prim_path: str, stage: Usd.Stage = None) -> Usd.Prim:
+        if stage is None:
+            stage = omni.usd.get_context().get_stage()
+        return stage.GetPrimAtPath(prim_path)
 
     @staticmethod
     def is_prim_valid(prim_path: str) -> bool:
@@ -37,12 +45,56 @@ class PrimUtils:
             prim.HasAttribute("xformOp:orient") or prim.HasAttribute("xformOp:rotate")
         )
 
+    def _get_xformable_prim_pose(
+        prim: Usd.Prim,
+        coordinate_system: COORDINATE_SYSTEM = "local",
+        rotation_type: ROTATION_TYPES = "cartesian",
+        stage: Usd.Stage = None,
+    ) -> Pose:
+        if not prim.IsA(UsdGeom.Xformable):
+            raise ValueError(f"Prim {prim.GetPath()} is not Xformable.")
+
+        xform = UsdGeom.Xformable(prim)
+        time = Usd.TimeCode.Default()
+        transformation: Gf.Matrix4d = (
+            xform.ComputeLocalToWorldTransform(time)
+            if coordinate_system == "world"
+            else xform.GetLocalTransformation()
+        )
+
+        # Orthnormalize the transformation matrix to avoid scaling issues
+        if not transformation.Orthonormalize():
+            carb.log_warn(f"Transform for prim {prim.GetPath()} orthonormalize failed.")
+        position = np.array(transformation.ExtractTranslation())
+
+        if rotation_type == "cartesian":
+            # Extract quaternion and convert to rotation vector (axis-angle representation)
+            # Wandelbots poses use rotation vectors: [rx, ry, rz] = axis.normalized * angle (radians)
+            quat = transformation.ExtractRotation().GetQuaternion()
+            w, (x, y, z) = quat.GetReal(), quat.GetImaginary()
+            rotation = quat_to_rotvec(x, y, z, w)
+        else:
+            orientation = transformation.ExtractRotation().GetQuaternion()
+            w, (x, y, z) = orientation.GetReal(), orientation.GetImaginary()
+            rotation = [w, x, y, z]
+
+        pose = (
+            (position / SceneUtils.get_stage_units(stage)) * 1000
+        ).tolist() + rotation
+
+        return (
+            WSPose(pose=pose) if rotation_type == "cartesian" else QuatPose(pose=pose)
+        )
+
     def get_prim_pose(
         prim_path: str,
         coordinate_system: COORDINATE_SYSTEM = "local",
         rotation_type: ROTATION_TYPES = "cartesian",
+        stage: Usd.Stage = None,
     ) -> Pose:
-        prim = PrimUtils.get_prim(prim_path)
+        prim = PrimUtils.get_prim(prim_path, stage)
+        if prim is None or not prim.IsValid():
+            raise ValueError(f"Prim at path {prim_path} is not valid.")
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             prim = RigidPrim(prim_path)
             poses = (
@@ -62,23 +114,9 @@ class PrimUtils:
             )
 
         elif prim.IsA(UsdGeom.Xformable):
-            xform = UsdGeom.Xformable(prim)
-            time = Usd.TimeCode.Default()
-            transformation: Gf.Matrix4d = (
-                xform.ComputeLocalToWorldTransform(time)
-                if coordinate_system == "world"
-                else xform.GetLocalTransformation()
+            return PrimUtils._get_xformable_prim_pose(
+                prim, coordinate_system, rotation_type, stage
             )
-
-            # Orthnormalize the transformation matrix to avoid scaling issues
-            if not transformation.Orthonormalize():
-                carb.log_warn(
-                    f"Transform for prim {prim.GetPath()} orthonormalize failed."
-                )
-            position = np.array(transformation.ExtractTranslation())
-            orientation = transformation.ExtractRotation().GetQuaternion()
-            w, (x, y, z) = orientation.GetReal(), orientation.GetImaginary()
-            quat = np.array([w, x, y, z])
         else:
             parent = prim.GetParent()
             if not parent:
@@ -89,31 +127,42 @@ class PrimUtils:
                 parent.GetPrimPath().pathString,
                 coordinate_system=coordinate_system,
                 rotation_type=rotation_type,
+                stage=stage,
             )
 
         rotation = (
-            Rotation.from_quat(quat[[1, 2, 3, 0]]).as_rotvec()
+            quat_to_rotvec(quat[1], quat[2], quat[3], quat[0])
             if rotation_type == "cartesian"
-            else quat
+            else quat.tolist()
         )
-        pose = (
-            (position / SceneUtils.get_stage_units()) * 1000
-        ).tolist() + rotation.tolist()
+        pose = ((position / SceneUtils.get_stage_units(stage)) * 1000).tolist() + (
+            rotation if isinstance(rotation, list) else rotation.tolist()
+        )
 
         return (
             WSPose(pose=pose) if rotation_type == "cartesian" else QuatPose(pose=pose)
         )
 
-    def set_prim_pose(prim_path: str, input_pose: WSPose) -> None:
+    def set_prim_pose(
+        prim_path: str, input_pose: WSPose, stage: Usd.Stage = None
+    ) -> None:
         position = tuple(each / 1000 for each in input_pose.pose[:3])
         rot = tuple(input_pose.pose[3:])
-        rotation = Rotation.from_rotvec(rot).as_quat().tolist()
-        rotation.insert(0, rotation.pop())
+        # Convert rotation vector to quaternion [x, y, z, w]
+        quat_xyzw = rotvec_to_quat(*rot)
+        # Reorder to [w, x, y, z] for USD
+        rotation = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
 
-        prim = PrimUtils.get_prim(prim_path)
+        prim = PrimUtils.get_prim(prim_path, stage)
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
             prim = RigidPrim(prim_path)
-            prim.set_local_pose(position, rotation)
+            # (IsaacSim +5.0)
+            if hasattr(prim, "set_local_poses"):
+                prim.set_local_poses(
+                    translations=np.array([position]), orientations=np.array([rotation])
+                )
+            else:
+                prim.set_local_pose(translation=position, orientation=rotation)
             return
         elif prim.GetTypeName() == "Camera":
             camera = Camera(prim.GetPrimPath().pathString)
@@ -144,18 +193,11 @@ class PrimUtils:
 
     @staticmethod
     def pose_to_matrix(pose: list[float]) -> np.ndarray:
-        trans = np.array(pose[:3])
-        rot = Rotation.from_rotvec(pose[3:])
-        mat = np.eye(4)
-        mat[:3, :3] = rot.as_matrix()
-        mat[:3, 3] = trans
-        return mat
+        return math_pose_to_matrix(pose)
 
     @staticmethod
     def matrix_to_pose(mat: np.ndarray) -> np.ndarray:
-        trans = mat[:3, 3]
-        rot = Rotation.from_matrix(mat[:3, :3])
-        return np.concatenate([trans, rot.as_rotvec()])
+        return np.array(math_matrix_to_pose(mat))
 
     def get_relative_prim_pose(
         prim_path_a: str,
@@ -195,8 +237,8 @@ class PrimUtils:
         if rotation_type == "cartesian":
             return WSPose(pose=result_pose.tolist())
         else:
-            quat = Rotation.from_rotvec(result_pose[3:]).as_quat()
-            return QuatPose(pose=result_pose[:3].tolist() + quat.tolist())
+            quat = rotvec_to_quat(*result_pose[3:])
+            return QuatPose(pose=result_pose[:3].tolist() + quat)
 
     def set_relative_pose(
         prim_path: str, relative_pose: WSPose, object_first: bool = False
@@ -205,18 +247,17 @@ class PrimUtils:
         current_translation = np.array(current_pose.pose[:3])
         relative_translation = np.array(relative_pose.pose[:3])
 
-        current_rotation = Rotation.from_rotvec(current_pose.pose[3:])
-        relative_rotation = Rotation.from_rotvec(relative_pose.pose[3:])
+        current_rotvec = current_pose.pose[3:]
+        relative_rotvec = relative_pose.pose[3:]
 
         if object_first:
             new_translation = (current_translation - relative_translation).tolist()
-            new_rotation = relative_rotation * current_rotation
+            new_rotvec = compose_rotvecs(relative_rotvec, current_rotvec)
         else:
             new_translation = (current_translation + relative_translation).tolist()
-            new_rotation = current_rotation * relative_rotation
+            new_rotvec = compose_rotvecs(current_rotvec, relative_rotvec)
 
-        new_rotation_vec = new_rotation.as_rotvec().tolist()
-        new_pose = new_translation + new_rotation_vec
+        new_pose = new_translation + new_rotvec
         PrimUtils.set_prim_pose(prim_path, WSPose(pose=new_pose))
 
     def reset_objects(prim_path: str) -> None:

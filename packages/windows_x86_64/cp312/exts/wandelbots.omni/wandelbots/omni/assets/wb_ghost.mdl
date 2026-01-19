@@ -1,0 +1,31 @@
+mdl 1.8;
+
+import ::state::normal;
+import ::SimPBR_Translucent::SimPBR_Translucent;
+import ::tex::gamma_mode;
+
+export material GhostTeaching(*)
+ = ::SimPBR_Translucent::SimPBR_Translucent(
+    ior_constant: 1.10000002f,
+    reflection_roughness_constant: 1.f,
+    reflection_roughness_texture_influence: 0.f,
+    reflectionroughness_texture: texture_2d(),
+    transmittance_color: color(0.249225855f, 0.0883856788f, 0.467181444f),
+    transmittance_measurement_distance: 1.f,
+    enable_thin_walled: false,
+    enable_emission: true,
+    emissive_color: color(0.370656371f, 0.028622115f, 0.115781687f),
+    emissive_mask_texture: texture_2d(),
+    emissive_intensity: 5169.5f,
+    enable_emissive_flipbook: false,
+    flipbook_dim: int2(136, 1),
+    target_fps: 1,
+    bump_factor: 1.f,
+    normalmap_texture: texture_2d(),
+    flip_tangent_u: false,
+    flip_tangent_v: true,
+    project_uvw: false,
+    world_or_object: false,
+    texture_translate: float2(0.f),
+    texture_scale: float2(1.f),
+    texture_speed: float2(0.f));

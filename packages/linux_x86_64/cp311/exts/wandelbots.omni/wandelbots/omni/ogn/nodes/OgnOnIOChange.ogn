@@ -1,6 +1,6 @@
 {
     "OgnOnIOChange": {
-        "version": 1,
+        "version": 2,
         "description": "Triggers once the selected IO value changes.",
         "language": "Python",
         "categories": {

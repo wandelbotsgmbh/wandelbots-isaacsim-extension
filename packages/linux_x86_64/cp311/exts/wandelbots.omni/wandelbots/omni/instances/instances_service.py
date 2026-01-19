@@ -1,12 +1,10 @@
-from typing import Optional
+from typing import Callable, Optional
 import carb
 import asyncio
-import omni.ui as ui
 import re
 import ipaddress
 from urllib.parse import urlparse
 from wandelbots.omni.instances.instances_api import NOVAInstancesAPI
-from wandelbots.omni.ui.auth import Auth0UIBuilder
 from wandelbots.omni.utils.auth import (
     get_auth_token,
     invalidate_auth_token,
@@ -25,15 +23,17 @@ from wandelbots.omni.manipulators import (
     MotionStreamConfiguration,
 )
 from pxr import Usd
+from omni.kit.async_engine import run_coroutine
 
 import isaacsim.core.utils.stage as stage_utils
+from .instances_api import get_instances_api
 
 
 class NOVAInstancesService:
     def __init__(self):
         self._cloud_instances: list[NOVACloudInstance] = []
         self._custom_instances: list[NOVACustomInstance] = []
-        self._instances_api = NOVAInstancesAPI()
+        self._instances_api = get_instances_api()
         self._connected_motion_groups: dict[str, MotionGroupConfiguration] = {}
         self._selected_articulations: dict[str, str] = {}
 
@@ -87,29 +87,40 @@ class NOVAInstancesService:
         instance_store.store_instance(instance)
         carb.log_verbose(f"Custom instance added: {instance.host}")
 
-    def sign_out(self, callback: Optional[callable] = None):
+    def sign_out(self, auth_config_name: str, callback: Optional[callable] = None):
         carb.log_verbose("Signing out user - invalidating auth token")
-        invalidate_auth_token()
+        invalidate_auth_token(auth_config_name)
         self._cloud_instances.clear()
         callback()
 
-    def sign_in(self, container: ui.Widget, callback: Optional[callable] = None):
-        auth_token = get_auth_token()
-        if auth_token is None:
-            Auth0UIBuilder().show(container, callback=callback)
+    def is_signed_in(self, auth_config_name: str) -> bool:
+        auth_token = get_auth_token(auth_config_name)
+        if auth_token == "":
+            carb.log_verbose(f"Auth token is empty for config: {auth_config_name}")
+        return auth_token != "" and auth_token is not None
 
     def remove_instance(
-        self, instance: NOVACustomInstance, callback: Optional[callable] = None
+        self, instance: NOVACustomInstance, on_complete_fn: Optional[callable] = None
     ):
         carb.log_verbose(f"Removing instance: {instance.name}")
 
         if instance.status == "running":
-            self._disconnect_motion_groups(instance)
 
-        instance_store.remove_instance(instance.instance_id)
-        callback()
+            def _done(_: asyncio.Future):
+                carb.log_verbose(
+                    f"Instance {instance.name} stopped. Proceeding to disconnect motion groups."
+                )
+                instance_store.remove_instance(instance.instance_id)
+                on_complete_fn()
 
-    def _disconnect_motion_groups(self, instance: NOVAInstance):
+            run_coroutine(self._disconnect_motion_groups(instance)).add_done_callback(
+                _done
+            )
+        else:
+            instance_store.remove_instance(instance.instance_id)
+            on_complete_fn()
+
+    async def _disconnect_motion_groups(self, instance: NOVAInstance):
         motion_group_service = get_motion_group_service()
         prim_paths = motion_group_service.get_all_motion_group_prim_paths()
         carb.log_verbose(f"Prim paths for motion groups: {prim_paths}")
@@ -129,7 +140,7 @@ class NOVAInstancesService:
                     f"Removing motion group {prim_path} for instance {instance.host}"
                 )
                 try:
-                    motion_group_service.remove_motion_group(prim_path)
+                    await motion_group_service.remove_motion_group(prim_path)
                     identifier = motion_group.identifier
                     self.remove_from_connected_motion_group(identifier)
                 except Exception as e:
@@ -138,7 +149,7 @@ class NOVAInstancesService:
     def delete_motion_group(
         self,
         motion_group_config: MotionGroupConfiguration,
-        callback: Optional[callable] = None,
+        callback: Optional[Callable[[bool], None]] = None,
     ):
         try:
 
@@ -273,22 +284,21 @@ class NOVAInstancesService:
         host = f"{scheme}://{hostname}{port_part}"
         return host
 
-    def toggle_instance_status(self, instance: NOVACloudInstance, callback: callable):
-        self._instances_api.toggle_instance_status(instance)
-        callback()
-
-    @property
-    def is_signed_in(self) -> bool:
-        """Check if user has valid authentication token for cloud access."""
-        auth_token = get_auth_token()
-        return auth_token != "" and auth_token is not None
+    def toggle_instance_status(
+        self,
+        auth_config_name: str,
+        instance: NOVACloudInstance,
+        callback: Callable[[], None] | None = None,
+    ):
+        self._instances_api.toggle_instance_status(
+            auth_config_name=auth_config_name, instance=instance
+        )
+        if callback:
+            callback()
 
     @property
     def connected_motion_groups(self) -> dict[str, MotionGroupConfiguration]:
         return self._connected_motion_groups
-
-    def handle_authentication_error(self):
-        invalidate_auth_token()
 
     def find_connected_motion_group_by(
         self,
@@ -317,3 +327,7 @@ class NOVAInstancesService:
             results.append(connected_motion_group)
 
         return results
+
+    @property
+    def instances_api(self) -> NOVAInstancesAPI:
+        return self._instances_api

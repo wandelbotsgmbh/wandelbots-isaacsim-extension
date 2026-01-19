@@ -1,4 +1,7 @@
 import omni.ui as ui
+import omni.kit.menu.utils
+
+WANDELBOTS_MENU_ROOT = "Wandelbots NOVA"
 
 
 class BaseUIBuilder:
@@ -37,8 +40,14 @@ class BaseUIBuilder:
     def on_window_dismissed(self, is_visible):
         """Handle window dismiss"""
         self._dismissed = not is_visible
+        omni.kit.menu.utils.refresh_menu_items(WANDELBOTS_MENU_ROOT)
 
     @property
-    def dismissed(self):
+    def is_visible(self) -> bool:
+        """Check if the window is visible"""
+        return self._window.visible if self._window else False
+
+    @property
+    def dismissed(self) -> bool:
         """Check if the window has been dismissed"""
         return self._dismissed

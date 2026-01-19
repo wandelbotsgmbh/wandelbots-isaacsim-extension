@@ -17,7 +17,6 @@ from wandelbots.omni.manipulators import get_motion_group_configuration_from_pri
 import omni.kit.notification_manager as nm
 import omni.usd
 from wandelbots.omni.ui.widgets import TcpSelector
-from wandelbots.omni.utils.auth import get_auth_token
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.ui.colors import NOVAColor
 from .widgets.ghost_teaching_settings_window import (
@@ -132,9 +131,7 @@ class GhostTeachingToolBar:
                             ] = tcp_name
 
                         self._tcp_selector = TcpSelector(
-                            api_configuration=stream_config.get_api_configuration(
-                                get_auth_token()
-                            ),
+                            api_configuration=stream_config.get_api_configuration(),
                             cell=stream_config.cell,
                             controller=stream_config.controller,
                             motion_group=stream_config.motion_group,

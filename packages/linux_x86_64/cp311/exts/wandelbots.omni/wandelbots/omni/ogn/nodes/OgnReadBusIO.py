@@ -23,8 +23,6 @@ from wandelbots_api_client.v2.models.io_value import (
     IOFloatValue,
 )
 from wandelbots.omni.ogn.OgnReadBusIODatabase import OgnReadBusIODatabase
-from wandelbots.omni.utils.api import ApiConfiguration
-from wandelbots.omni.utils.auth import get_auth_token
 
 timeline = omni.timeline.get_timeline_interface()
 
@@ -37,7 +35,11 @@ class OgnReadBusIOState:
         self.io_value: IOValue = None
 
     def on_init(self, ios: dict[str, IOValue]):
-        self.io_value = ios[self.io_id]
+        try:
+            self.io_value = ios[self.io_id]
+        except KeyError:
+            carb.log_warn(f"IO ID '{self.io_id}' not found in available IOs")
+            self.io_value = None
 
     def on_change(self, io: str, new_value: IOValue):
         self.io_value = new_value
@@ -47,6 +49,7 @@ class OgnReadBusIOState:
             raise ValueError("Robot prim is not set")
         if io_id is None:
             raise ValueError("Bus IO is None")
+        self.io_id = io_id
         self.robot_prim: usdrt.Sdf.Path = robot_prim[0]
         self.robot_configuration = (
             get_motion_group_service().get_motion_group_configuration(
@@ -57,23 +60,29 @@ class OgnReadBusIOState:
             raise ValueError(
                 f"No robot configuration found for {self.robot_prim}. Make sure to create a robot for the selected prim"
             )
-        motion_stream_config = self.robot_configuration.motion_stream_configuration
-        self.api_configuration = ApiConfiguration(
-            host=motion_stream_config.host,
-            secure_connection=motion_stream_config.secure_connection,
-            access_token=get_auth_token(),
-            version="v2",
+        if not self.robot_configuration.enabled:
+            carb.log_verbose(
+                f"Motion group for {self.robot_prim} is disabled. Skipping IO subscription."
+            )
+            return
+
+        self.api_configuration = (
+            self.robot_configuration.motion_stream_configuration.get_api_configuration()
         )
-        self.io_id = io_id
+
         self.io_sub = asyncio.get_event_loop().run_until_complete(
             get_bus_io_stream_service().subscribe(
                 self.api_configuration,
-                motion_stream_config.cell,
+                self.robot_configuration.motion_stream_configuration.cell,
                 [self.io_id],
                 on_change=self.on_change,
                 on_init=self.on_init,
             )
         )
+
+    @property
+    def enabled(self) -> bool:
+        return self.robot_configuration is not None and self.robot_configuration.enabled
 
     def reset(self):
         self.io_sub = None
@@ -120,6 +129,8 @@ class OgnReadBusIO:
 
             if not get_interface().get_execution_enabled("inputs:exec_in"):
                 return
+            if not state.enabled:
+                return
 
             # Fetch current value from cache on every exec
             read_value = asyncio.get_event_loop().run_until_complete(
@@ -134,11 +145,11 @@ class OgnReadBusIO:
                 return
 
             if isinstance(read_value, IOBooleanValue):
-                db.outputs.value_bool = read_value.value
+                db.outputs.value_bool = bool(read_value.value)
             if isinstance(read_value, IOIntegerValue):
-                db.outputs.value_int = read_value.value
+                db.outputs.value_int = int(read_value.value)
             if isinstance(read_value, IOFloatValue):
-                db.outputs.value_float = read_value.value
+                db.outputs.value_float = float(read_value.value)
             get_interface().set_execution_enabled("outputs:exec_out")
         except Exception as error:
             db.log_error(str(error))

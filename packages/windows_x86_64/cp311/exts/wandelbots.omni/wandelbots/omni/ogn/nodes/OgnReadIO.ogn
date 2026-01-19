@@ -1,6 +1,6 @@
 {
     "OgnReadIO": {
-        "version": 1,
+        "version": 2,
         "description": "Read an IO value from a controller.",
         "language": "Python",
         "categories": {

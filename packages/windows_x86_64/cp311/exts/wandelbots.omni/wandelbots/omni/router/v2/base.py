@@ -17,17 +17,17 @@ from wandelbots.omni.router.v2 import (
     nucleus_router,
 )
 from wandelbots.omni.utils.auth import (
-    get_auth_token,
     store_auth_token,
     validate_request,
 )
+from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.utils.base import get_versions_of_enabled_extensions
 import traceback
 
 omniservice_app = FastAPI(
     title="Wandelbots Omniservice",
     description="A microservice-based framework for managing Omniverse functionalities",
-    version="2.15.5",
+    version="2.19.1",
     docs_url=None,
     redoc_url=None,
 )
@@ -110,12 +110,22 @@ async def authenticate(
         if credentials.access_token:
             token_to_validate = credentials.access_token
         else:
-            token_to_validate = get_auth_token()
+            token_to_validate = get_instances_api().get_auth_token_from_host(
+                credentials.host
+            )
 
         await validate_request(token_to_validate, base_url)
         if token_to_validate is not None:
-            host = ensure_portal_host(credentials.host)
-            store_auth_token(token=token_to_validate, host=host)
+            auth_config_name = get_instances_api().get_auth_config_name_from_host(
+                credentials.host
+            )
+            if auth_config_name is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No auth config found for host: {credentials.host}",
+                )
+
+            store_auth_token(token=token_to_validate, auth_config_name=auth_config_name)
 
     except Exception as e:
         raise HTTPException(

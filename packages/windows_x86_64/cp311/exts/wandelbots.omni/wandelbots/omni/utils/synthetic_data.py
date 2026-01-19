@@ -4,10 +4,9 @@ import isaacsim.core.utils.semantics as semantic_utils
 import isaacsim.core.utils.stage as stage_utils
 
 from wandelbots.omni.utils.prims import PrimUtils
+from wandelbots.omni.utils.math import rotvec_to_matrix
 from omni.replicator.core.scripts.writers_default.tools import data_to_colour
 from PIL import Image, ImageDraw
-from sklearn.neighbors import NearestNeighbors
-from scipy.spatial.transform import Rotation as R
 
 from wandelbots.omni.periphery.camera_configuration import BoundingBox2D, BoundingBox3D
 
@@ -116,8 +115,6 @@ class SyntheticDataUtils:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         original_points_count = len(points)
         downsampled_points_count = int(original_points_count * percentage)
-        nn_model = NearestNeighbors(n_neighbors=1)
-        nn_model.fit(points)
         np.random.seed(33)
         random_indices = np.random.choice(
             original_points_count, downsampled_points_count, replace=False
@@ -168,7 +165,7 @@ class SyntheticDataUtils:
     async def get_camera_tfm(camera_path: str) -> np.ndarray:
         pose = PrimUtils.get_prim_pose(camera_path, coordinate_system="world")
         tfm = np.eye(4)
-        tfm[:3, :3] = R.from_rotvec(pose.pose[3:]).as_matrix()
+        tfm[:3, :3] = rotvec_to_matrix(*pose.pose[3:])
         tfm[:3, -1] = pose.pose[:3]
         tfm[:3, -1] = tfm[:3, -1]
         return np.linalg.inv(tfm)

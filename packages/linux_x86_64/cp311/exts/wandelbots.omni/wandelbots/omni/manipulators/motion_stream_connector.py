@@ -1,6 +1,5 @@
 import asyncio
 import json
-from typing import Literal
 
 import carb
 import torch
@@ -10,7 +9,6 @@ import wandelbots_api_client.v2.models as wb_models
 from isaacsim.core.utils.types import ArticulationAction
 from wandelbots.omni.core.networks import ReconnectingWebsocket
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
-from wandelbots.omni.utils.auth import get_auth_token
 
 from .motion_group import MotionGroup, MotionStreamConfiguration
 
@@ -22,15 +20,10 @@ class MotionStreamConnector:
 
         # This configuration is updated with every connect/state call which needs a token
         self.api_configuration: ApiConfiguration = (
-            self.configuration.get_api_configuration(
-                token=None,
-                version="v2",
-            )
+            self.configuration.get_api_configuration()
         )
 
-        self.stream = ReconnectingWebsocket(
-            self._websocket_uri, on_receive=self._receive_data, token=get_auth_token()
-        )
+        self.stream: ReconnectingWebsocket | None = None
 
         self.stream_joint_count: int = None
         self.timeline = omni.timeline.get_timeline_interface()
@@ -50,13 +43,11 @@ class MotionStreamConnector:
             return f"{base_url}/cells/{self.configuration.cell}/virtual-controllers/{self.configuration.controller}/external-joints-stream"
         return f"{base_url}/cells/{self.configuration.cell}/controllers/{self.configuration.controller}/motion-groups/{self.configuration.motion_group}/state-stream?response_rate={self.configuration.response_rate}"
 
-    async def check_connection(self, token: str | None):
+    async def check_connection(self):
         """
         Tests if a connection can be established. Will throw an error if check failed
         """
-        self.api_configuration = self.configuration.get_api_configuration(
-            token=token, version="v2"
-        )
+        self.api_configuration = self.configuration.get_api_configuration()
         await self.get_motion_group_state()
 
     async def get_motion_group_state(self) -> wb_models.MotionGroupState:
@@ -71,15 +62,25 @@ class MotionStreamConnector:
             return state
 
     async def close(self):
-        await self.stream.close()
+        if self.stream:
+            await self.stream.close()
 
     async def _receive_data(self, data: str):
         async with self.receive_lock:
             return await self._parse(json.loads(data))
 
     async def open(self):
-        self.api_configuration = self.configuration.get_api_configuration(
-            token=get_auth_token(), version="v2"
+        self.api_configuration = self.configuration.get_api_configuration()
+
+        if self.stream and self.stream.streaming:
+            carb.log_warn(
+                f"Websocket for MotionStreamConnector {self.configuration.motion_group} {self.api_configuration} is already open"
+            )
+            return
+        self.stream = ReconnectingWebsocket(
+            self._websocket_uri,
+            on_receive=self._receive_data,
+            token=self.api_configuration.access_token,
         )
 
         result = await self.get_motion_group_state()
@@ -104,61 +105,24 @@ class MotionStreamConnector:
         async with get_api_client_from_config(self.api_configuration) as api_client:
             controller_api = wb.ControllerApi(api_client=api_client)
 
-            # Need to parse the moved mode endpoint manually until the API client 25.7.0 is included in the sdk
-            controller_state = json.loads(
-                (
-                    await controller_api.get_current_robot_controller_state_with_http_info(
-                        self.configuration.cell, self.configuration.controller
-                    )
-                ).raw_data.decode("utf-8")
+            controller_state = await controller_api.get_current_robot_controller_state(
+                self.configuration.cell, self.configuration.controller
             )
 
-            # <25.7.0 the controller state did not have a mode field
-            if "mode" not in controller_state:
-                carb.log_verbose(
-                    "Controller state does not have mode, switching back to legacy endpoint"
-                )
-                await self._ensure_control_mode_legacy(controller_api)
-                return
-
-            controller_mode: Literal["MODE_CONTROL", "MODE_MONITOR"] = controller_state[
-                "mode"
-            ]
-            if controller_mode == "MODE_MONITOR":
+            controller_mode = controller_state.mode
+            if controller_mode == wb_models.RobotSystemMode.MODE_MONITOR:
                 carb.log_info(
                     f"MotionGroup {self.configuration.motion_group} is in monitor mode, switching to control mode"
                 )
                 await controller_api.set_default_mode(
                     self.configuration.cell,
                     self.configuration.controller,
-                    wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
+                    wb_models.SettableRobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
                 )
-            elif controller_mode != "MODE_CONTROL":
+            elif controller_mode != wb_models.RobotSystemMode.MODE_CONTROL:
                 carb.log_warn(
                     f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {controller_mode}, expected control mode"
                 )
-
-    async def _ensure_control_mode_legacy(
-        self, controller_api: wb.ControllerApi
-    ) -> None:
-        controller_mode = (
-            await controller_api.get_mode(
-                self.configuration.cell, self.configuration.controller_id
-            )
-        ).robot_system_mode
-        if controller_mode == wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_MONITOR:
-            carb.log_info(
-                f"MotionGroup {self.configuration.motion_group} is in monitor mode, switching to control mode"
-            )
-            await controller_api.set_default_mode(
-                self.configuration.cell,
-                self.configuration.controller_id,
-                wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL,
-            )
-        elif controller_mode != wb_models.RobotSystemMode.ROBOT_SYSTEM_MODE_CONTROL:
-            carb.log_warn(
-                f"MotionGroup {self.configuration.motion_group} is in unexpected mode: {controller_mode}, expected control mode"
-            )
 
     async def send_joint_positions(self, positions: list[float]):
         if positions is None:

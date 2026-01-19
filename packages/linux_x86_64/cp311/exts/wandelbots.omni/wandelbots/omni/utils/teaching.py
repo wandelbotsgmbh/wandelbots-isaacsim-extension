@@ -7,7 +7,7 @@ import omni.usd
 import omni.usd.commands
 from omni.usd.commands import DeletePrimsCommand
 from pxr import Usd, UsdPhysics, UsdShade, Sdf, UsdGeom, Gf
-import wandelbots.usd as wb_schema
+import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.datatypes import (
     GHOST_MATERIAL_MDL_EXT_FILE,
     GHOST_MATERIAL_MDL_PROJECT_FILE,
@@ -112,31 +112,51 @@ class GhostObjectUtils:
         ]
 
     def add_ghost_object(
-        prim_path: str, tcp_world_pose: WSPose, target_path: str = None
+        source_prim: Usd.Prim,
+        tcp_world_pose: WSPose,
+        target_path: str = None,
+        tcp_prim: Usd.Prim = None,
     ):
-        stage: Usd.Stage = omni.usd.get_context().get_stage()
-        source_prim: Usd.Prim = stage.GetPrimAtPath(prim_path)
         source_parent_prim = source_prim.GetParent()
 
-        carb.log_info(f"Add ghost object {prim_path} ref_world_pose={tcp_world_pose}")
+        carb.log_info(
+            f"Add ghost object {source_prim.GetPath()} ref_world_pose={tcp_world_pose}"
+        )
 
         clone_prim_path = f"{source_parent_prim.GetPath().pathString}/poses/{source_prim.GetName()}_Pose"
         if target_path is None:
             target_path = stage_utils.get_next_free_path(clone_prim_path)
 
-        tcp_sources = GhostObjectUtils.get_all_tcp_sources(source_prim)
+        tcp_sources: list[TCPSource] = GhostObjectUtils.get_all_tcp_sources(source_prim)
         if len(tcp_sources) == 0:
             carb.log_error(
-                f"Failed to add ghost object {prim_path} because no TCP source was found."
+                f"Failed to add ghost object {source_prim.GetPath()} because no TCP source was found."
             )
             return
 
-        if len(tcp_sources) > 1:
-            carb.log_warn(
-                f"Found multiple TCP sources {tcp_sources} for ghost object {prim_path}. Using the first one."
-            )
-            return
-        tcp_source: TCPSource = tcp_sources[0]
+        if tcp_prim:
+            tcp_sources_filtered = [
+                source
+                for source in tcp_sources
+                if source.prim_path == tcp_prim.GetPath().pathString
+            ]
+            if len(tcp_sources_filtered) == 0:
+                carb.log_error(
+                    f"Failed to add ghost object {source_prim.GetPath()} because TCP prim {tcp_prim.GetPath()} was not found in available TCP sources."
+                )
+                return
+            if len(tcp_sources_filtered) > 1:
+                carb.log_warn(
+                    f"Found multiple TCP sources {[tcp.prim_path for tcp in tcp_sources_filtered]} for ghost object {source_prim.GetPath()} with TCP prim {tcp_prim.GetPath()}. Using the first one."
+                )
+            tcp_source: TCPSource = tcp_sources_filtered[0]
+        else:
+            if len(tcp_sources) > 1:
+                carb.log_warn(
+                    f"Found multiple TCP sources {[tcp.prim_path for tcp in tcp_sources]} for ghost object {source_prim.GetPath()}. Using the first one."
+                )
+            tcp_source = tcp_sources[0]
+
         ghost_prim: Usd.Prim = GhostObjectUtils._convert_prim_to_ghost_prim(
             source_prim=source_prim,
             tcp_prim_path=tcp_source.prim_path,
@@ -200,12 +220,13 @@ class GhostObjectUtils:
             return None
 
         path = ghost_prim.GetPrimPath().pathString
-        robot_prim_path = (
-            GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(ghost_prim)
-            .GetPath()
-            .pathString
+        robot_prim = GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(
+            ghost_prim
         )
-
+        if not robot_prim:
+            carb.log_verbose(f"Robot prim for ghost object {path} not found.")
+            return None
+        robot_prim_path = robot_prim.GetPath().pathString
         ws_pose = PrimUtils.get_relative_prim_pose(
             relative_to_prim if relative_to_prim else robot_prim_path, path
         )
@@ -274,12 +295,11 @@ class GhostObjectUtils:
                 ),
             )
         else:
+            stage: Usd.Stage = omni.usd.get_context().get_stage()
             for source_prim in GhostObjectUtils.get_ghost_object_sources():
                 source_tcp_prims += prims_utils.get_all_matching_child_prims(
                     source_prim.prim_path,
-                    lambda prim_path: TcpUtils.is_tcp(
-                        stage_utils.get_stage().GetPrimAtPath(prim_path)
-                    ),
+                    lambda prim_path: TcpUtils.is_tcp(stage.GetPrimAtPath(prim_path)),
                 )
 
         tcp_sources = []
@@ -338,7 +358,7 @@ class GhostObjectUtils:
             add_pivot_op=False,
         )
 
-        # # add ghost material to object
+        # add ghost material to object
         GhostObjectUtils.add_material_to_prim(ghost_mesh_prim.GetPrim())
 
         # register prim

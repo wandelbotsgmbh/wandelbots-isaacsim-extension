@@ -21,20 +21,41 @@ from wandelbots_api_client.v2.api.controller_api import ControllerApi
 from wandelbots_api_client.v2.api.motion_group_api import MotionGroupApi
 import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.environment import instance_store
+from wandelbots.omni.utils.auth import get_auth_configs
 
 
 class NOVAInstancesAPI:
     def __init__(self):
-        self._base_url = get_portal_api_url()
+        self._instance_host_auth_mapping: dict[str, str] = {}
 
-    def get_cloud_instances(self) -> list[NOVACloudInstance]:
-        token = get_auth_token()
+    def get_auth_token_from_host(self, host: str) -> str | None:
+        auth_config_name = self.get_auth_config_name_from_host(host)
+        if auth_config_name is None:
+            carb.log_verbose(f"No auth config found for host: {host}")
+            return None
+        return get_auth_token(auth_config_name)
+
+    def get_auth_config_name_from_host(self, host: str) -> str | None:
+        if host not in self._instance_host_auth_mapping:
+            # Refresh once and then just return whatever we have
+            self._reload_instance_auth_mappings()
+            return self._instance_host_auth_mapping.get(host)
+        return self._instance_host_auth_mapping.get(host)
+
+    def _reload_instance_auth_mappings(self):
+        self.get_cloud_instances()
+        self.get_custom_instances()
+
+    def get_cloud_instances_by_auth(
+        self, auth_config_name: str
+    ) -> list[NOVACloudInstance]:
+        token = get_auth_token(auth_config_name)
         if not token:
             carb.log_verbose("No authentication token available for cloud instances")
             return []
 
         try:
-            instances_data = self._fetch_instances(token)
+            instances_data = self._fetch_instances(auth_config_name, token)
             carb.log_verbose(
                 f"Retrieved {len(instances_data)} cloud instances from API"
             )
@@ -44,6 +65,9 @@ class NOVAInstancesAPI:
                 for instance in map(self._create_cloud_instance, instances_data)
                 if instance is not None
             ]
+
+            for instance in instances:
+                self._instance_host_auth_mapping[instance.host] = auth_config_name
 
             carb.log_verbose(
                 f"Successfully parsed {len(instances)} valid cloud instances"
@@ -55,7 +79,7 @@ class NOVAInstancesAPI:
                 carb.log_warn(
                     "Authentication token for cloud instances is invalid (401). Invalidating token."
                 )
-                invalidate_auth_token()
+                invalidate_auth_token(auth_config_name)
                 return []
             else:
                 carb.log_error(f"HTTP error retrieving cloud instances: {e}")
@@ -67,13 +91,21 @@ class NOVAInstancesAPI:
             carb.log_error(f"Unexpected error while processing cloud instances: {e}")
             return []
 
+    def get_cloud_instances(self) -> dict[str, list[NOVACloudInstance]]:
+        return {
+            auth_config_name: self.get_cloud_instances_by_auth(auth_config_name)
+            for auth_config_name in get_auth_configs().keys()
+        }
+
     def get_custom_instances(self) -> list[NOVACustomInstance]:
         custom_instances = instance_store.get_instances()
+        for instance in custom_instances:
+            self._instance_host_auth_mapping[instance.host] = None
         return custom_instances
 
     async def fetch_cells_for_instance(
         self, instance: NOVAInstance
-    ) -> Optional[NOVAInstance]:
+    ) -> Optional[list[NOVACellData]]:
         try:
             carb.log_info(f"Fetching cells for instance {instance.host}...")
 
@@ -87,7 +119,13 @@ class NOVAInstancesAPI:
 
             # Get API client based on instance type
             if isinstance(instance, NOVACloudInstance):
-                api_client = instance.create_api_client(token=get_auth_token())
+                api_client = instance.create_api_client(
+                    token=self.get_auth_token_from_host(instance.host)
+                )
+                if api_client.configuration.access_token is None:
+                    carb.log_warn(
+                        f"No valid token available for cloud instance {instance.display_name}"
+                    )
             elif isinstance(instance, NOVACustomInstance):
                 api_client = instance.create_api_client()
             else:
@@ -113,8 +151,10 @@ class NOVAInstancesAPI:
             cells = await self._fetch_cells_data(api_client, cell_names)
             return cells
 
-        except Exception:
-            carb.log_verbose(f"No cell available for instance {instance.display_name}")
+        except Exception as ex:
+            carb.log_warn(
+                f"No cell available for instance {instance.display_name} {ex}"
+            )
             return []
         finally:
             if "api_client" in locals() and api_client:
@@ -123,13 +163,15 @@ class NOVAInstancesAPI:
                 except Exception as e:
                     carb.log_warn(f"Error closing API client: {e}")
 
-    def toggle_instance_status(self, instance: NOVACloudInstance):
+    def toggle_instance_status(
+        self, auth_config_name: str, instance: NOVACloudInstance
+    ):
         try:
             new_status = "running" if instance.status == "stopped" else "stopped"
 
-            headers = {"Authorization": f"Bearer {get_auth_token()}"}
+            headers = {"Authorization": f"Bearer {get_auth_token(auth_config_name)}"}
             response = requests.put(
-                f"{self._base_url}/instances/{instance.instance_id}/state",
+                f"{get_portal_api_url(auth_config_name)}/instances/{instance.instance_id}/state",
                 headers=headers,
                 timeout=10,
                 json={"state": new_status},
@@ -140,7 +182,7 @@ class NOVAInstancesAPI:
                 carb.log_warn(
                     f"Authentication token for host '{instance.host}' is invalid (401). Invalidating token."
                 )
-                invalidate_auth_token()
+                invalidate_auth_token(auth_config_name)
             else:
                 carb.log_error(f"HTTP error updating instance status: {e}")
 
@@ -153,7 +195,7 @@ class NOVAInstancesAPI:
             version = await system_api.get_system_version()
             return version
         except Exception as e:
-            carb.log_error(f"Error fetching instance version: {e}")
+            carb.log_warn(f"Error fetching instance version: {e}")
             return None
 
     async def _fetch_cells(self, api_client: wb_v2.ApiClient) -> list[str]:
@@ -177,7 +219,7 @@ class NOVAInstancesAPI:
             ):
                 carb.log_warn(f"Network connection error fetching cells: {e}")
             else:
-                carb.log_error(f"Error fetching cells: {e}")
+                carb.log_warn(f"Error fetching cells: {e}")
             return []
 
     async def _fetch_cells_data(
@@ -193,7 +235,7 @@ class NOVAInstancesAPI:
         valid_results = []
         for result in results:
             if isinstance(result, Exception):
-                carb.log_error(f"Failed to fetch cell data: {result}")
+                carb.log_warn(f"Failed to fetch cell data: {result}")
             elif result is not None:
                 valid_results.append(result)
 
@@ -211,54 +253,70 @@ class NOVAInstancesAPI:
 
             controllers_data = []
             for controller_name in controller_names:
-                controller_desc: wb_v2.ControllerDescription = (
-                    await controller_api.get_controller_description(
-                        cell=cell_name, controller=controller_name
-                    )
-                )
-
-                motion_groups = []
-
-                for motion_group_name in controller_desc.connected_motion_groups:
-                    motion_group_desc: wb_v2.MotionGroupDescription = (
-                        await motion_group_api.get_motion_group_description(
-                            cell=cell_name,
-                            controller=controller_name,
-                            motion_group=motion_group_name,
-                        )
-                    )
-                    motion_groups.append(
-                        NOVAMotionGroupData(
-                            name=motion_group_name,
-                            motion_group_model_name=motion_group_desc.motion_group_model.replace(
-                                "_", " "
-                            ),
+                try:
+                    controller_desc: wb_v2.ControllerDescription = (
+                        await controller_api.get_controller_description(
+                            cell=cell_name, controller=controller_name
                         )
                     )
 
-                controllers_data.append(
-                    NOVAControllerData(
-                        name=controller_name,
-                        cell_name=cell_name,
-                        description=controller_desc,
-                        motion_groups=motion_groups,
+                    motion_groups = []
+
+                    for motion_group_name in controller_desc.connected_motion_groups:
+                        motion_group_desc: wb_v2.MotionGroupDescription = (
+                            await motion_group_api.get_motion_group_description(
+                                cell=cell_name,
+                                controller=controller_name,
+                                motion_group=motion_group_name,
+                            )
+                        )
+                        motion_groups.append(
+                            NOVAMotionGroupData(
+                                name=motion_group_name,
+                                motion_group_model_name=motion_group_desc.motion_group_model.replace(
+                                    "_", " "
+                                ),
+                            )
+                        )
+
+                    controllers_data.append(
+                        NOVAControllerData(
+                            name=controller_name,
+                            cell_name=cell_name,
+                            description=controller_desc,
+                            motion_groups=motion_groups,
+                        )
                     )
-                )
+                except Exception as e:
+                    carb.log_warn(
+                        f"Error fetching data for controller {controller_name} in cell {cell_name}: {e}"
+                    )
+                    continue
 
             return NOVACellData(name=cell_name, controllers=controllers_data)
 
         except Exception as e:
-            carb.log_error(f"Error fetching data for cell {cell_name}: {e}")
+            carb.log_warn(f"Error fetching data for cell {cell_name}: {e}")
             return None
 
     # Helper methods for cloud instance management
-    def _fetch_instances(self, token: str) -> list[NOVAInstance]:
+    def _fetch_instances(self, auth_config_name: str, token: str) -> list[NOVAInstance]:
+        token = get_auth_token(auth_config_name)
+        if not token:
+            carb.log_verbose(
+                f"No authentication token available for {auth_config_name} cloud instances"
+            )
+            return []
         headers = {"Authorization": f"Bearer {token}"}
         response = requests.get(
-            f"{self._base_url}/instances", headers=headers, timeout=10
+            f"{get_portal_api_url(auth_config_name)}/instances",
+            headers=headers,
+            timeout=10,
         )
         response.raise_for_status()
         instances = response.json().get("instances", [])
+        for instance in instances:
+            instance["auth_config_name"] = auth_config_name
         return instances
 
     def _create_cloud_instance(self, data: dict) -> NOVACloudInstance:
@@ -281,3 +339,10 @@ class NOVAInstancesAPI:
             "status",
         ]
         return all(data.get(field) for field in required_fields)
+
+
+_instances_api = NOVAInstancesAPI()
+
+
+def get_instances_api() -> NOVAInstancesAPI:
+    return _instances_api

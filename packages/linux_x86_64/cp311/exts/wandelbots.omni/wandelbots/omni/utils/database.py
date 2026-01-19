@@ -157,28 +157,32 @@ class CredentialStore(BaseStore):
     def __init__(self):
         super().__init__(file_name="credentials.json")
 
-    def store_token(self, host: str, token: str):
+    def store_token(self, auth_config_name: str, token: str):
         self.load_data()
-        if not host or not token:
-            raise ValueError("Host and token must be provided.")
-        self._data[host] = token
+        if not auth_config_name or not token:
+            raise ValueError("Auth name and token must be provided.")
+        self._data[auth_config_name] = token
         self.save_data()
 
-    def get_token(self, host: str) -> str:
+    def get_token(self, auth_config_name: str) -> str:
         self.load_data()
-        if not host:
-            raise ValueError("Host must be provided.")
-        if host not in self._data:
-            carb.log_verbose("No token found for {host}. Authentication required.")
+        if not auth_config_name:
+            raise ValueError("Auth name must be provided.")
+        if auth_config_name not in self._data:
+            carb.log_verbose(
+                f"No token found for {auth_config_name}. Authentication required."
+            )
             return None
-        return self._data[host]
+        return self._data[auth_config_name]
 
-    def remove_token(self, host: str):
-        if not host:
-            raise ValueError("Host must be provided.")
-        if host in self._data:
-            del self._data[host]
+    def remove_token(self, auth_config_name: str):
+        if not auth_config_name:
+            raise ValueError("Auth name must be provided.")
+        if auth_config_name in self._data:
+            del self._data[auth_config_name]
             self.save_data()
-            carb.log_info(f"Token removed for host: {host}")
+            carb.log_info(f"Token removed for auth: {auth_config_name}")
         else:
-            carb.log_warn(f"No token found for host: {host} - nothing to remove")
+            carb.log_warn(
+                f"No token found for auth: {auth_config_name} - nothing to remove"
+            )

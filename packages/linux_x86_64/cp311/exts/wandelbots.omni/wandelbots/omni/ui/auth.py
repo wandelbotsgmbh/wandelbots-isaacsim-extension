@@ -1,7 +1,6 @@
-from typing import Optional
+from typing import Callable, Optional
 import omni.ui as ui
 import webbrowser
-import asyncio
 import carb
 from wandelbots.omni.ui.utils import defer_call
 import omni.kit.clipboard as clipboard
@@ -16,10 +15,11 @@ from wandelbots_api_client.authorization import (
     Auth0DeviceCodeInfo,
 )
 from wandelbots.omni.ui.colors import NOVAColor
+from omni.kit.async_engine import run_coroutine
 
 
 class Auth0UIBuilder:
-    def __init__(self):
+    def __init__(self, auth_config_name: str):
         self._container = None
         self._callback = None
         self._dismissed = False
@@ -30,7 +30,8 @@ class Auth0UIBuilder:
         self._error_headline_lbl = (
             "Authentication not possible. Please try again later."
         )
-        self._auth_config = get_auth_config()
+        self._auth_config_name = auth_config_name
+        self._auth_config = get_auth_config(auth_config_name)
         self._polling = False
         self._auth_controller = Auth0DeviceAuthorization(self._auth_config)
 
@@ -71,14 +72,13 @@ class Auth0UIBuilder:
                         clicked_fn=lambda: self._on_open_in_browser(verification_url),
                     )
                     ui.Spacer(width=5)
-                ui.Spacer(height=10)
 
     async def _check_auth_status(self):
         """Async function to check authentication status and update UI"""
         try:
             carb.log_info("Starting token polling...")
             token = await poll_token_endpoint(self._auth_controller)
-            store_auth_token(token)
+            store_auth_token(token, self._auth_config_name)
             self._polling = False
             self._callback(True)
 
@@ -112,33 +112,20 @@ class Auth0UIBuilder:
 
     def _waiting_for_auth(self):
         self._polling = True
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # Create a new event loop if one doesn't exist
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
 
         carb.log_info("Copying URL to clipboard. Waiting for callback...")
         # Create task in the event loop
-        loop.create_task(self._check_auth_status())
+        run_coroutine(self._check_auth_status())
 
     def _show_device_code_ui(self):
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # Create a new event loop if one doesn't exist
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
         carb.log_verbose("Fetching device code")
-        # Create task in the event loop
-        task = loop.create_task(get_device_code_info(self._auth_controller))
-        task.add_done_callback(
+        run_coroutine(get_device_code_info(self._auth_controller)).add_done_callback(
             lambda device_code: defer_call(lambda: self.build_ui(device_code.result()))
         )
 
-    def show(self, container: ui.Widget, callback: Optional[callable] = None):
+    def show(
+        self, container: ui.Widget, callback: Optional[Callable[[bool], None]] = None
+    ):
         self._container = container
         self._callback = callback
         self._show_device_code_ui()

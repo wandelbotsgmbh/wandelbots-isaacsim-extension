@@ -7,14 +7,12 @@ from enum import Enum
 from typing import Callable, Optional
 
 import carb
-import requests
-import wandelbots_api_client as wb
-import wandelbots_api_client.models as wb_models
+import wandelbots_api_client.v2 as wb
+import wandelbots_api_client.v2.models as wb_models
 from wandelbots.omni.core.networks.reconnecting_websocket import ReconnectingWebsocket
 from wandelbots.omni.utils.api import (
     ApiConfiguration,
     get_api_client_from_config,
-    get_base_headers,
 )
 
 
@@ -30,13 +28,14 @@ OnChangeCallback = Callable[[str, IOValue], None]
 
 
 def get_io_value(io_value: wb_models.IOValue) -> IOValue | None:
-    if io_value.boolean_value is not None:
-        return io_value.boolean_value
-    if io_value.integer_value is not None:
-        return int(io_value.integer_value)
-    if io_value.floating_value is not None:
-        return float(io_value.floating_value)
-    carb.log_error(f"IO value type not supported. {io_value}")
+    value_instance = io_value.actual_instance
+    if isinstance(value_instance, wb_models.IOBooleanValue):
+        return value_instance.value
+    if isinstance(value_instance, wb_models.IOIntegerValue):
+        return int(value_instance.value)
+    if isinstance(value_instance, wb_models.IOFloatValue):
+        return float(value_instance.value)
+    carb.log_error(f"IO value type not supported. {io_value.actual_instance}")
     return None
 
 
@@ -45,11 +44,13 @@ class Subscription:
 
     def __init__(
         self,
+        ios: list[str],
         unsubscribe: Callable[[Id], None],
         on_change: OnChangeCallback,
         get_value: Callable[[str], IOValue],
         on_init: Optional[OnInitCallback] = None,
     ):
+        self._ios = ios
         self.id: Subscription.Id = uuid.uuid4()
         self.get_value = get_value
         self.on_init = on_init
@@ -59,6 +60,10 @@ class Subscription:
     def __del__(self):
         carb.log_verbose(f"IO Unsub {self.id}")
         self._unsubscribe(self.id)
+
+    @property
+    def ios(self) -> list[str]:
+        return self._ios
 
 
 class ControllerIOStreamService:
@@ -76,22 +81,29 @@ class ControllerIOStreamService:
     ):
         self.cell = cell
         self.controller = controller
-        self.subscription_ios: dict[Subscription.Id, list[str]] = {}
+
         self.subscriptions: weakref.WeakKeyDictionary[Subscription.Id, Subscription] = (
             weakref.WeakValueDictionary()
         )
         self._subscription_lock = asyncio.Lock()
-        self.io_subscriptions: dict[str, weakref.WeakSet[Subscription]] = {}
+
         self.io_cache: dict[str, IOValue] = {}
         self.io_stream = None
         self._io_stream_lock = asyncio.Lock()
         self.api_configuration = api_configuration
+        if self.api_configuration.version != "v2":
+            raise ValueError("Only Wandelbots API v2 is supported for IO streaming")
+
+        self._cached_io_subscriptions: dict[str, weakref.WeakSet[Subscription]] = {}
 
     async def clear(self):
         async with self._subscription_lock:
             await self.stop_stream()
-            self.subscription_ios.clear()
-            self.io_subscriptions.clear()
+            self._rebuild_subscription_cache()
+
+    def has_subscriptions(self) -> bool:
+        carb.log_verbose(f"{self.id} subs {list(self.subscriptions.keys())}")
+        return len(self.subscriptions) > 0
 
     async def subscribe(
         self,
@@ -99,41 +111,65 @@ class ControllerIOStreamService:
         on_change: OnChangeCallback,
         on_init: Optional[OnInitCallback] = None,
     ) -> Subscription:
-        carb.log_verbose(f"Subscribe {io_ids}")
+        carb.log_verbose(f"{self.id} Subscribe {io_ids}")
         if len(io_ids) == 0:
-            raise ValueError("IO list is empty")
+            raise ValueError(f"{self.id} IO list is empty")
 
         async with self._subscription_lock:
+
+            def unsubscribe(id: Subscription.Id, weak_self=weakref.ref(self)):
+                weak_self_instance = weak_self()
+                if weak_self_instance is None:
+                    return
+                weak_self_instance._unsubscribe_callback(id)
+
+            def get_io_value(io: str, weak_self=weakref.ref(self)) -> IOValue:
+                weak_self_instance = weak_self()
+                if weak_self_instance is None:
+                    raise ValueError("IOStreamService has been deleted")
+                return asyncio.get_event_loop().run_until_complete(
+                    weak_self_instance.get_io_value(io)
+                )
+
             subscription = Subscription(
-                unsubscribe=lambda id: (self._unsubscribe_callback(id)),
+                ios=io_ids,
+                unsubscribe=unsubscribe,
                 on_change=on_change,
                 on_init=on_init,
-                get_value=self.get_io_value,
+                get_value=get_io_value,
             )
-            self._add_subscription(subscription, io_ids)
+            self.subscriptions[subscription.id] = subscription
+            self._rebuild_subscription_cache()
             if self.io_stream is not None:
                 await self._restart_stream()
 
-            carb.log_verbose(f"Subscription {subscription.id} created")
+            carb.log_verbose(f"{self.id} Subscription {subscription.id} created")
             return subscription
+
+    def _rebuild_subscription_cache(self):
+        self._cached_io_subscriptions = {}
+        for subscription in self.subscriptions.values():
+            self.subscriptions[subscription.id] = subscription
+
+            for io in subscription.ios:
+                if io in self._cached_io_subscriptions:
+                    self._cached_io_subscriptions[io].add(subscription)
+                else:
+                    self._cached_io_subscriptions[io] = weakref.WeakSet([subscription])
 
     async def get_io_value(self, io: str) -> IOValue | None:
         async with self._io_stream_lock:
-            if io not in self.io_subscriptions:
-                raise ValueError(
-                    f"ControllerIOStreamService {self.cell}/{self.controller} is not subscribed to {io}"
-                )
+            if io not in self._cached_io_subscriptions:
+                raise ValueError(f"{self.id} is not subscribed to {io}")
             return self.io_cache.get(io, None)
 
     async def get_available_ios(self) -> list[str]:
         async with get_api_client_from_config(self.api_configuration) as api_client:
-            io_api = wb.ControllerIOsApi(api_client)
-            io_descriptions = (
-                await io_api.list_io_descriptions(
-                    cell=self.cell, controller=self.controller
-                )
-            ).io_descriptions
-            return [io_description.id for io_description in io_descriptions]
+            io_api = wb.ControllerInputsOutputsApi(api_client)
+            io_descriptions = await io_api.list_io_descriptions(
+                cell=self.cell, controller=self.controller
+            )
+            return [io_description.io for io_description in io_descriptions]
 
     def _unsubscribe_callback(self, subscription_id: Subscription.Id):
         loop = asyncio.get_event_loop()
@@ -143,7 +179,7 @@ class ControllerIOStreamService:
             loop.run_until_complete(self._unsubscribe(subscription_id))
 
     async def _unsubscribe(self, subscription_id: Subscription.Id):
-        carb.log_verbose(f"Unsubscribe {subscription_id}")
+        carb.log_verbose(f"{self.id} Unsubscribe {subscription_id}")
         async with self._subscription_lock:
             stream_running = self.io_stream is not None
             if stream_running:
@@ -151,44 +187,32 @@ class ControllerIOStreamService:
 
             self._remove_subscription(subscription_id)
 
-            if stream_running and len(self.io_subscriptions.keys()) > 0:
+            if stream_running and len(self._cached_io_subscriptions.keys()) > 0:
                 await self.start_stream()
 
-    def _add_subscription(self, subscription: Subscription, ios: list[str]):
-        self.subscriptions[subscription.id] = subscription
-        self.subscription_ios[subscription.id] = ios
-
-        for io in ios:
-            if io in self.io_subscriptions:
-                self.io_subscriptions[io].add(subscription)
-            else:
-                self.io_subscriptions[io] = weakref.WeakSet([subscription])
-
     def _remove_subscription(self, subscription_id: Subscription.Id):
-        # remove from tracked subscriptions
-        # because of weak ref the sub might be removed before the unsubscribe call
-        ios: list[str] = []
-        if subscription_id in self.subscription_ios:
-            ios = list(self.subscription_ios[subscription_id])
-            del self.subscription_ios[subscription_id]
-
-        if subscription_id in self.subscriptions:
+        # Subscriptions usually remove themselves on deletion but we might be faster than GC so we clean up fast before rebuilding the cache
+        if subscription_id not in self.subscriptions:
+            carb.log_verbose(
+                f"{self.id} Subscription {subscription_id} already removed"
+            )
+            return
+        else:
             del self.subscriptions[subscription_id]
+        self._rebuild_subscription_cache()
 
-        # remove from tracked IOs
-        for io in ios:
-            if io not in self.io_subscriptions:
-                carb.log_error(
-                    "IO not found in io_subscriptions which seems to be wrong"
-                )
-                return
-
-            if len(self.io_subscriptions[io]) == 0:
-                del self.io_subscriptions[io]
+    def _add_subscription(self, subscription: Subscription):
+        if subscription.id in self.subscriptions:
+            carb.log_error(
+                f"{self.id} Subscription {subscription.id} already exists in ControllerIOStreamService"
+            )
+            return
+        self.subscriptions[subscription.id] = subscription
+        self._rebuild_subscription_cache()
 
     async def _restart_stream(self):
         """Might be used when a subscription changed"""
-        carb.log_verbose(f"Restarting stream {self.cell}/{self.controller}")
+        carb.log_verbose(f"{self.id} Restarting stream")
         await self.stop_stream()
         await self.start_stream()
 
@@ -201,76 +225,83 @@ class ControllerIOStreamService:
 
         self.io_cache[io] = value
 
-        for subscription in self.io_subscriptions[io]:
+        for subscription in self._cached_io_subscriptions[io]:
             carb.log_verbose(f"{subscription.id} {io}={value}")
             subscription.on_change(io, value)
 
     async def _receive_io_state(self, io_result_data: str):
         try:
             result_response = json.loads(io_result_data)
-            io_response = wb_models.ListIOValuesResponse.from_dict(
+            io_response = wb_models.StreamIOValuesResponse.from_dict(
                 result_response["result"]
             )
             async with self._io_stream_lock:
                 for io_data in io_response.io_values:
-                    self._update_value(io=io_data.io, value=get_io_value(io_data))
+                    self._update_value(
+                        io=io_data.actual_instance.io, value=get_io_value(io_data)
+                    )
         except Exception as ex:
-            carb.log_error(f"Failed to read {self.controller} io_state. error={ex}")
+            carb.log_error(f"{self.id} Failed to read io_state. error={ex}")
 
     async def start_stream(self):
         async with self._io_stream_lock:
-            if len(self.io_subscriptions.keys()) == 0:
-                carb.log_verbose(
-                    f"Trying to start {self.cell}/{self.controller} without ios"
-                )
+            if len(self._cached_io_subscriptions.keys()) == 0:
+                carb.log_verbose(f"{self.id} Trying to start without ios")
                 return
 
             if self.io_stream and self.io_stream.streaming:
-                carb.log_verbose(f"{self.controller} io stream already started")
+                carb.log_verbose(f"{self.id} io stream already started")
                 return
-            carb.log_info(f"Start {self.cell}/{self.controller} stream")
+            carb.log_info(f"{self.id} Start stream")
 
             self.io_cache = {}
-            ios = self.io_subscriptions.keys()
-            carb.log_verbose(f"Filling cache {list(ios)}")
+            ios = self._cached_io_subscriptions.keys()
+            carb.log_verbose(f"{self.id} Filling cache {list(ios)}")
 
             watched_ios: list[str] = []
             for io in ios:
                 try:
-                    response = wb_models.ListIOValuesResponse.from_dict(
-                        requests.get(
-                            f"{self.api_configuration.base_url}/cells/{self.cell}/controllers/{self.controller}/ios/values?{urllib.parse.urlencode({'ios': list({io})}, doseq=True)}",
-                            headers=get_base_headers(
-                                self.api_configuration.access_token
-                            ),
-                            timeout=10,
-                        ).json()
-                    )
-                    self.io_cache[io] = get_io_value(response.io_values[0])
+                    async with get_api_client_from_config(
+                        self.api_configuration
+                    ) as api_client:
+                        io_api = wb.ControllerInputsOutputsApi(api_client)
+                        self.io_cache[io] = get_io_value(
+                            (
+                                await io_api.list_io_values(
+                                    self.cell, self.controller, ios=[io]
+                                )
+                            )[0]
+                        )
                     if self.io_cache[io] is None:
-                        raise ValueError("Value not supported")
+                        raise ValueError(f"Value for {io} not supported")
                     watched_ios.append(io)
+                except wb.exceptions.NotFoundException:
+                    carb.log_warn(f"{self.id} IO {io} not found, will not be watched")
                 except Exception as ex:
                     carb.log_error(
                         f'Failed to retrieve {self.controller} "{io}" data. IO will not be watched. {ex}'
                     )
-            carb.log_verbose(self.io_cache)
+            carb.log_verbose(f"{self.id} Cache: {self.io_cache}")
             if len(watched_ios) == 0:
-                carb.log_info("No IOs found to watch, stream will not be started")
+                carb.log_info(
+                    f"{self.id} No IOs found to watch, stream will not be started"
+                )
                 return
 
-            carb.log_verbose("Initializing io subscriptions")
-            for subscription_id, subscription_ios in self.subscription_ios.items():
+            carb.log_verbose(f"{self.id} Initializing io subscriptions")
+            for subscription_id, subscription in self.subscriptions.items():
                 subscription = self.subscriptions[subscription_id]
                 if not subscription.on_init:
                     continue
                 initial_subscription_values = dict(
-                    [(io, self.io_cache.get(io, None)) for io in subscription_ios]
+                    [(io, self.io_cache.get(io, None)) for io in subscription.ios]
                 )
                 subscription.on_init(initial_subscription_values)
 
-            carb.log_verbose("Connecting")
-            ios_query_string = urllib.parse.urlencode({"ios": list(ios)}, doseq=True)
+            carb.log_verbose(f"{self.id} Connecting")
+            ios_query_string = urllib.parse.urlencode(
+                {"ios": list(watched_ios)}, doseq=True
+            )
 
             uri = f"{self.api_configuration.base_url_websocket}/cells/{self.cell}/controllers/{self.controller}/ios/stream?{ios_query_string}"
             carb.log_verbose(f"Open io stream {uri}")
@@ -282,18 +313,22 @@ class ControllerIOStreamService:
             try:
                 await self.io_stream.open()
             except Exception as ex:
-                carb.log_error(f"Failed to open io stream. {ex}")
+                carb.log_error(f"{self.id} Failed to open io stream. {ex}")
                 return
 
     async def stop_stream(self):
-        carb.log_verbose("Stopping stream")
+        carb.log_verbose(f"{self.id} Stopping stream")
         async with self._io_stream_lock:
-            carb.log_info(f"Stop {self.cell}/{self.controller} stream")
+            carb.log_info(f"{self.id} Stop {self.cell}/{self.controller} stream")
             self.io_cache = {}
             if not self.io_stream or not self.io_stream.streaming:
-                carb.log_verbose(f"{self.controller} io stream not running")
+                carb.log_verbose(f"{self.id} io stream not running")
                 return
             await self.io_stream.close()
+
+    @property
+    def id(self):
+        return f"{self.cell}/{self.controller}"
 
 
 class IOStreamService:
@@ -355,22 +390,20 @@ class IOStreamService:
     async def get_io_type(
         self, api_configuration: ApiConfiguration, cell: str, controller: str, io: str
     ) -> IOValueType:
-        headers = get_base_headers(api_configuration.access_token)
-        response = wb_models.ListIODescriptionsResponse.from_dict(
-            requests.get(
-                f"{api_configuration.base_url}/cells/{cell}/controllers/{controller}/ios/description?{urllib.parse.urlencode({'ios': [io]}, doseq=True)}",
-                headers=headers,
-                timeout=10,
-            ).json()
-        )
-        description = response.io_descriptions[0]
-        if description.value_type == "IO_VALUE_DIGITAL":
-            return IOValueType.BOOL
-        if description.value_type == "IO_VALUE_ANALOG_INTEGER":
-            return IOValueType.INTEGER
-        if description.value_type == "IO_VALUE_ANALOG_FLOATING":
-            return IOValueType.FLOAT
-        raise ValueError(f"Unsupported value type {description.value_type}")
+        async with get_api_client_from_config(api_configuration) as api_client:
+            io_api = wb.ControllerInputsOutputsApi(api_client)
+            description = (
+                await io_api.list_io_descriptions(
+                    cell=cell, controller=controller, ios=[io]
+                )
+            )[0]
+            if description.value_type == wb_models.IOValueType.IO_VALUE_BOOLEAN:
+                return IOValueType.BOOL
+            if description.value_type == wb_models.IOValueType.IO_VALUE_ANALOG_INTEGER:
+                return IOValueType.INTEGER
+            if description.value_type == wb_models.IOValueType.IO_VALUE_ANALOG_FLOAT:
+                return IOValueType.FLOAT
+            raise ValueError(f"Unsupported value type {description.value_type}")
 
     async def set_io_value(
         self,
@@ -380,31 +413,29 @@ class IOStreamService:
         io: str,
         value: IOValue,
     ):
-        bool_value = None
-        integer_value = None
-        float_value = None
+        io_value: wb_models.IOValue = None
 
         if isinstance(value, bool):
-            bool_value = value
+            io_value = wb_models.IOValue(
+                wb_models.IOBooleanValue(io=io, value=value, value_type="boolean")
+            )
         elif isinstance(value, int):
-            integer_value = str(value)
+            io_value = wb_models.IOValue(
+                wb_models.IOIntegerValue(io=io, value=str(value), value_type="integer")
+            )
         elif isinstance(value, float):
-            float_value = value
-
-        carb.log_verbose(
-            f"{cell}/{controller} Set IO  {io} b={bool_value} int={integer_value} float={float_value}"
-        )
+            io_value = wb_models.IOValue(
+                wb_models.IOFloatValue(io=io, value=value, value_type="float")
+            )
+        carb.log_verbose(f"{cell}/{controller} Set IO  {io_value.actual_instance}")
 
         async with get_api_client_from_config(api_configuration) as api_client:
-            self.virtual_io_api = wb.VirtualRobotApi(api_client)
+            self.virtual_io_api = wb.VirtualControllerInputsOutputsApi(api_client)
 
-            await self.virtual_io_api.set_virtual_robot_io_value(
+            await self.virtual_io_api.set_io_values(
                 cell=cell,
                 controller=controller,
-                io=io,
-                bool=bool_value,
-                integer=integer_value,
-                double=float_value,
+                io_value=[io_value],
             )
 
     def _get_or_create_service(
@@ -435,10 +466,7 @@ class IOStreamService:
     def _cleanup_unused_services(self):
         for service_key in list(self.controller_services.keys()):
             controller_service = self.controller_services[service_key]
-            carb.log_verbose(
-                f"{service_key} subs {list(controller_service.io_subscriptions.keys())}"
-            )
-            if len(list(controller_service.io_subscriptions.keys())) == 0:
+            if not controller_service.has_subscriptions():
                 carb.log_verbose(
                     f'Removing unused ControllerIOStreamService "{service_key}"'
                 )

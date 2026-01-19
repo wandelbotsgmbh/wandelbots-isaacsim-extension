@@ -4,6 +4,7 @@ This is the implementation of the OGN node defined in OgnWriteBusIO.ogn
 
 import asyncio
 
+import carb
 import omni.timeline
 import usdrt.Sdf
 from omni.graph.action_core import get_interface
@@ -22,8 +23,6 @@ from wandelbots.omni.manipulators import (
     get_motion_group_service,
 )
 from wandelbots.omni.ogn.OgnWriteBusIODatabase import OgnWriteBusIODatabase
-from wandelbots.omni.utils.api import ApiConfiguration
-from wandelbots.omni.utils.auth import get_auth_token
 
 timeline = omni.timeline.get_timeline_interface()
 
@@ -40,27 +39,29 @@ class OgnWriteBusIOState:
             raise ValueError("Robot prim is not set")
         if io_id is None:
             raise ValueError("Bus IO is None")
+        self.io_id = io_id
         self.robot_prim = robot_prim[0]
         self.robot_config = get_motion_group_service().get_motion_group_configuration(
             self.robot_prim.pathString
         )
-        motion_stream_config = self.robot_config.motion_stream_configuration
         if self.robot_config is None:
             raise ValueError(
                 f"No robot configuration found for {self.robot_prim}. Make sure to create a robot for the selected prim"
             )
-        self.api_configuration = ApiConfiguration(
-            host=motion_stream_config.host,
-            secure_connection=motion_stream_config.secure_connection,
-            access_token=get_auth_token(),
-            version="v2",
+        if not self.robot_config.enabled:
+            carb.log_verbose(
+                f"Motion group for {self.robot_prim} is disabled. Skipping IO query."
+            )
+            return
+        self.api_configuration = (
+            self.robot_config.motion_stream_configuration.get_api_configuration()
         )
-        self.io_id = io_id
+
         self.io_value_type = None
         self.io_value_type = asyncio.get_event_loop().run_until_complete(
             get_bus_io_stream_service().get_io_type(
                 self.api_configuration,
-                motion_stream_config.cell,
+                self.robot_config.motion_stream_configuration.cell,
                 self.io_id,
             )
         )
@@ -69,6 +70,10 @@ class OgnWriteBusIOState:
         self.io_sub = None
         self.robot_prim = None
         self.io_id = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.robot_config is not None and self.robot_config.enabled
 
 
 def get_input_value(db: OgnWriteBusIODatabase, value_type: IOValueType) -> IOValue:
@@ -122,6 +127,9 @@ class OgnWriteBusIO:
                 state.set_metadata(db.inputs.robot, db.inputs.io_id)
 
             if not get_interface().get_execution_enabled("inputs:exec_in"):
+                return
+
+            if not state.enabled:
                 return
 
             if state.io_value_type is None:

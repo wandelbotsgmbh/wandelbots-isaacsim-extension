@@ -92,6 +92,10 @@ class CreateGhostObject(BaseModel):
         None,
         description="The TCP pose to which the ghost object has to be attached",
     )
+    tcp_prim_path: Optional[str] = Field(
+        None,
+        description="Prim path of the TCP which is used as ghost object transform origin",
+    )
 
 
 @teaching_router.post(
@@ -120,9 +124,17 @@ async def create_ghost_object(ghost_object_data: CreateGhostObject) -> None:
             404, detail=f"Invalid prim path: {ghost_object_data.prim_path}"
         )
 
+    tcp_prim_path = ghost_object_data.tcp_prim_path
+    if tcp_prim_path and not prims_utils.is_prim_path_valid(tcp_prim_path):
+        raise HTTPException(404, detail=f"Invalid TCP prim path: {tcp_prim_path}")
+
     try:
         GhostObjectUtils.add_ghost_object(
-            ghost_object_data.prim_path, ghost_object_data.ref_pose
+            prims_utils.get_prim_at_path(ghost_object_data.prim_path),
+            ghost_object_data.ref_pose,
+            tcp_prim=prims_utils.get_prim_at_path(tcp_prim_path)
+            if tcp_prim_path
+            else None,
         )
     except ValueError as e:
         raise HTTPException(422, str(e))

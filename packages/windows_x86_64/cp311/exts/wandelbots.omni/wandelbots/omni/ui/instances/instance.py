@@ -1,7 +1,9 @@
-import asyncio
+from typing import Callable
+import weakref
 import carb
 import omni.ui as ui
 from isaacsim.gui.components.ui_utils import get_style
+from omni.kit.async_engine import run_coroutine
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.manipulators import (
@@ -18,6 +20,67 @@ from wandelbots.omni.instances.models import (
 )
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.instances.motion_group_ui_builder import MotionGroupUIBuilder
+from omni.kit.window.property.templates.header_context_menu import (
+    GroupHeaderContextMenu,
+    GroupHeaderContextMenuEvent,
+)
+from wandelbots.omni.ui.widgets.switch import Switch
+from .models.motion_group_enabled_model import MotionGroupEnabledModel
+
+
+def _build_frame_header(
+    collapsed,
+    text: str,
+    group_id: str = None,
+    motion_group_prim_path: str = None,
+):
+    group_id = group_id if group_id else text
+
+    if collapsed:
+        alignment = ui.Alignment.RIGHT_CENTER
+        width = 5
+        height = 7
+    else:
+        alignment = ui.Alignment.CENTER_BOTTOM
+        width = 7
+        height = 5
+
+    header_stack = ui.HStack(
+        name="header_stack",
+        spacing=8,
+    )
+    with header_stack:
+        ui.Spacer(width=1)
+        with ui.VStack(width=0):
+            ui.Spacer()
+            ui.Triangle(
+                style_type_name_override="CollapsableFrame.Header",
+                width=width,
+                height=height,
+                alignment=alignment,
+            )
+            ui.Spacer()
+        ui.Label(text, style_type_name_override="CollapsableFrame.Header")
+        ui.Spacer()
+        with ui.HStack(content_clipping=True, width=30):
+            ui.Spacer(width=8)
+            if motion_group_prim_path:
+                Switch(
+                    height=17,
+                    model=MotionGroupEnabledModel(motion_group_prim_path),
+                    tooltip="Toggle motion group for simulation",
+                )
+
+            ui.Spacer(width=5)
+
+    def show_context_menu(b):
+        if b != 1:
+            return
+
+        event = GroupHeaderContextMenuEvent(group_id=group_id, payload=[])
+        GroupHeaderContextMenu.on_mouse_event(event)
+
+    header_stack.set_mouse_pressed_fn(lambda x, y, b, _: show_context_menu(b))
 
 
 class NOVAInstanceUIBuilder:
@@ -25,8 +88,8 @@ class NOVAInstanceUIBuilder:
         self,
         instance: NOVAInstance,
         instances_service: NOVAInstancesService,
-        on_remove: callable,
-        on_toggle_status: callable,
+        on_remove: Callable[[NOVAInstance], None] | None = None,
+        on_toggle_status: Callable[[], None] | None = None,
     ):
         self._instance = instance
         self._instances_service = instances_service
@@ -72,7 +135,7 @@ class NOVAInstanceUIBuilder:
                 if isinstance(self._instance, NOVACustomInstance):
                     self._display_remove_button()
                 elif isinstance(self._instance, NOVACloudInstance):
-                    self._display_toggle_status_button()
+                    self._display_toggle_status_button(self._instance.auth_config_name)
                 ui.Spacer(width=5)
             ui.Spacer(height=1)
             # Display content based on cells state
@@ -135,10 +198,10 @@ class NOVAInstanceUIBuilder:
             clicked_fn=lambda instance=self._instance: self._on_remove(instance),
         )
 
-    def _display_toggle_status_button(self):
-        def _callback():
+    def _display_toggle_status_button(self, auth_config_name: str):
+        def _toggle_instance_status_clicked():
             self._instances_service.toggle_instance_status(
-                self._instance, callback=self._on_toggle_status
+                auth_config_name, self._instance, callback=self._on_toggle_status
             )
 
         if self._instance.status == "running":
@@ -164,7 +227,7 @@ class NOVAInstanceUIBuilder:
                 "padding": 0,
             },
             enabled=enabled,
-            clicked_fn=lambda: _callback(),
+            clicked_fn=lambda: _toggle_instance_status_clicked(),
         )
 
     def _display_cell(self, cell: NOVACellData, instance: NOVAInstance):
@@ -188,6 +251,21 @@ class NOVAInstanceUIBuilder:
             # If there's only one motion group, use it as the frame title
             motion_group = controller.motion_groups[0]
             title = f"{motion_group.motion_group_model_name} ({motion_group.name})"
+
+            motion_groups = self._instances_service.find_connected_motion_group_by(
+                host=instance.host,
+                cell=controller.cell_name,
+                controller=controller.name,
+                motion_group=motion_group.name,
+            )
+            if len(motion_groups) > 1:
+                carb.log_warn(
+                    f"Multiple connected motion groups found for {motion_group.name} in controller {controller.name} on instance {instance.display_name}"
+                )
+            motion_group_prim_path = (
+                (motion_groups[0]).prim_path if len(motion_groups) else None
+            )
+
             with ui.CollapsableFrame(
                 title=title,
                 collapsed=True,
@@ -197,6 +275,13 @@ class NOVAInstanceUIBuilder:
                     "font-size": "20px",
                     "background_color": NOVAColor.BACKGROUND_DEFAULT.color,
                 },
+                build_header_fn=lambda collapsed,
+                text,
+                weak_self=weakref.ref(self): _build_frame_header(
+                    collapsed, text, motion_group_prim_path=motion_group_prim_path
+                )
+                if weak_self()
+                else None,
             ):
                 self._display_motion_group(
                     motion_group=motion_group, instance=instance, controller=controller
@@ -209,6 +294,7 @@ class NOVAInstanceUIBuilder:
                     with ui.VStack(spacing=5):
                         for motion_group in controller.motion_groups:
                             title = f"{motion_group.motion_group_model_name} ({motion_group.name})"
+
                             with ui.CollapsableFrame(
                                 title=title,
                                 collapsed=True,
@@ -241,6 +327,9 @@ class NOVAInstanceUIBuilder:
             instance=instance,
             controller=controller,
             motion_group=motion_group,
+            motion_group_connection_changed_fn=lambda weak_self=weakref.ref(
+                self
+            ): weak_self().build_ui() if weak_self() else None,
         ).build_ui()
 
     # Handler for events
@@ -300,7 +389,7 @@ class NOVAInstanceUIBuilder:
                 ):
                     self._instance.cells = []
                     return
-                cells = await self._instances_service._instances_api.fetch_cells_for_instance(
+                cells = await self._instances_service.instances_api.fetch_cells_for_instance(
                     self._instance
                 )
                 carb.log_info(
@@ -317,11 +406,7 @@ class NOVAInstanceUIBuilder:
                 self.build_ui()
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(_load())
-            else:
-                loop.run_until_complete(_load())
+            run_coroutine(_load())
         except Exception as e:
             carb.log_error(f"Error scheduling cell load: {e}")
             self._instance.cells = []

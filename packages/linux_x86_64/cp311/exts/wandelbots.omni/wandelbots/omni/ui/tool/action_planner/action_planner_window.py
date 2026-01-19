@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import cast
+from typing import Callable, cast
 import omni.kit.notification_manager as nm
 import asyncio
 from pxr import Usd
@@ -8,7 +8,6 @@ import weakref
 import carb
 import omni.ui as ui
 import omni.kit.menu.utils
-from wandelbots.omni.utils.shims.menu import make_menu_item_description
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.manipulators import (
     get_motion_group_configuration_from_prim,
@@ -24,11 +23,13 @@ from wandelbots.omni.ui.widgets import (
     PrimPickerDialogProperties,
 )
 from .widgets import CollisionSetupSelector, ActionItem, PlanAction
-from wandelbots.omni.utils.auth import get_auth_token
 import wandelbots.omni.ui.tool.action_planner.utils as plan_utils
 import carb.events
 import omni.kit.app
 from omni.kit.async_engine import run_coroutine
+import omni.kit.actions.core
+
+WINDOW_MENU_ROOT = "Tools"
 
 
 @dataclass
@@ -56,6 +57,9 @@ class ActionPlannerWindow:
         self._plan_task: asyncio.Task | None = None
 
         self.window = ui.Window("Action Planner (Beta)", width=400, height=300)
+        self.window.set_visibility_changed_fn(
+            lambda _: omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
+        )
         self.window.visible = False
         self.window.deferred_dock_in("Property", ui.DockPolicy.CURRENT_WINDOW_IS_ACTIVE)
         self._stage = omni.usd.get_context().get_stage()
@@ -174,9 +178,7 @@ class ActionPlannerWindow:
                                 weak_self._deferred_build_ui()
 
                         self._tcp_selector = TcpSelector(
-                            api_configuration=stream_config.get_api_configuration(
-                                token=get_auth_token()
-                            ),
+                            api_configuration=stream_config.get_api_configuration(),
                             cell=stream_config.cell,
                             controller=stream_config.controller,
                             motion_group=stream_config.motion_group,
@@ -199,9 +201,7 @@ class ActionPlannerWindow:
                             weak_self._collision_setup_name = collision_setup
 
                         CollisionSetupSelector(
-                            api_configuration=stream_config.get_api_configuration(
-                                token=get_auth_token()
-                            ),
+                            api_configuration=stream_config.get_api_configuration(),
                             cell=stream_config.cell,
                             collision_setup_changed_fn=assign_collision_setup,
                             selected_collision_setup=self._collision_setup_name,
@@ -468,30 +468,58 @@ class ActionPlannerWindow:
         return self._tcp_selector.selected_tcp if self._tcp_selector else None
 
 
+@dataclass
+class ActionPlannerWindowSubscription:
+    action_planner_window: ActionPlannerWindow = None
+    menu_subscriptions: list = None
+
+    def __del__(self):
+        # Need to explicitly hide the action_planner_window because the docking causes issues on deletion
+        if self.action_planner_window:
+            self.action_planner_window.window.visible = False
+
+        # Dropping the menu items is not enough we need to explicitly remove them
+        omni.kit.menu.utils.remove_menu_items(self.menu_subscriptions, WINDOW_MENU_ROOT)
+
+
 def register_action_planner_window():
-    action_planner_window: ActionPlannerWindow = ActionPlannerWindow()
+    action_planner_window = ActionPlannerWindow()
 
-    def _open_window():
-        if action_planner_window:
-            action_planner_window.window.visible = True
+    def toggle_visibility():
+        action_planner_window.window.visible = not action_planner_window.window.visible
 
-    menu_items = [
-        omni.kit.menu.utils.MenuItemDescription(
-            name="Wandelbots NOVA",
-            sub_menu=[
-                make_menu_item_description(
-                    "wandelbots.omni",
-                    "Action Planner (Beta)",
-                    lambda: _open_window(),
-                )
-            ],
-        )
-    ]
+    def _is_visible(
+        toolbar: Callable[[], ActionPlannerWindow | None] = weakref.ref(
+            action_planner_window
+        ),
+    ):
+        return toolbar().window.visible if toolbar() else False
 
-    return (
+    ext_id = "wandelbots.omni"
+    name = "Action Planner (Beta)"
+    action_name = "toggle_action_planner_window"
+    action_unique = f"{ext_id}_{name}_{action_name}"
+    action_registry = omni.kit.actions.core.get_action_registry()
+    action_registry.deregister_action(ext_id, action_unique)
+    action_registry.register_action(
+        ext_id, action_unique, toggle_visibility, display_name=name, tag="MenuItem"
+    )
+
+    return ActionPlannerWindowSubscription(
         action_planner_window,
         omni.kit.menu.utils.add_menu_items(
-            menu_items,
-            "Tools",
+            [
+                omni.kit.menu.utils.MenuItemDescription(
+                    name="Wandelbots NOVA",
+                    sub_menu=[
+                        omni.kit.menu.utils.MenuItemDescription(
+                            name=name,
+                            onclick_action=(ext_id, action_unique),
+                            ticked_fn=_is_visible,
+                        )
+                    ],
+                )
+            ],
+            WINDOW_MENU_ROOT,
         ),
     )

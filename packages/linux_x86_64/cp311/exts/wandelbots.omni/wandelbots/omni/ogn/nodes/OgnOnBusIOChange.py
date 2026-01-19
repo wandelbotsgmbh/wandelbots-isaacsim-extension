@@ -26,8 +26,6 @@ from wandelbots_api_client.v2.models.io_value import (
     IOFloatValue,
 )
 from wandelbots.omni.ogn.OgnOnBusIOChangeDatabase import OgnOnBusIOChangeDatabase
-from wandelbots.omni.utils.auth import get_auth_token
-from wandelbots.omni.utils.api import ApiConfiguration
 
 timeline = omni.timeline.get_timeline_interface()
 
@@ -52,6 +50,7 @@ class OgnOnBusIOChangeState:
             raise ValueError("Robot prim is not set")
         if io_id is None:
             raise ValueError("Bus IO is None")
+        self.io_id = io_id
         self.robot_prim = robot_prim[0]
         self.robot_config = self.robot_service.get_motion_group_configuration(
             self.robot_prim.pathString
@@ -61,16 +60,16 @@ class OgnOnBusIOChangeState:
                 f"No robot configuration found for {self.robot_prim}. Make sure to create a robot for the selected prim"
             )
 
-        motion_stream_config = self.robot_config.motion_stream_configuration
+        if not self.robot_config.enabled:
+            carb.log_verbose(
+                f"Motion group for {self.robot_prim} is disabled. Skipping IO subscription."
+            )
+            return
 
-        self.api_configuration = ApiConfiguration(
-            host=motion_stream_config.host,
-            secure_connection=motion_stream_config.secure_connection,
-            access_token=get_auth_token(),
-            version="v2",
+        self.api_configuration = (
+            self.robot_config.motion_stream_configuration.get_api_configuration()
         )
 
-        self.io_id = io_id
         self.io_sub = asyncio.get_event_loop().run_until_complete(
             get_bus_io_stream_service().subscribe(
                 self.api_configuration,
@@ -84,6 +83,10 @@ class OgnOnBusIOChangeState:
         self.io_sub = None
         self.robot_prim = None
         self.io_id = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.robot_config is not None and self.robot_config.enabled
 
 
 class OgnOnBusIOChange:
@@ -123,6 +126,9 @@ class OgnOnBusIOChange:
             if db.inputs.robot[0] != state.robot_prim or db.inputs.io_id != state.io_id:
                 state.set_metadata(db.inputs.robot, db.inputs.io_id)
 
+            if not state.enabled:
+                return
+
             if state.io_change_queue.empty():
                 return
 
@@ -130,11 +136,11 @@ class OgnOnBusIOChange:
             carb.log_info(f"New Bus IO value {io_value}")
 
             if isinstance(io_value, IOBooleanValue):
-                db.outputs.value_bool = io_value.value
+                db.outputs.value_bool = bool(io_value.value)
             if isinstance(io_value, IOIntegerValue):
-                db.outputs.value_int = io_value.value
+                db.outputs.value_int = int(io_value.value)
             if isinstance(io_value, IOFloatValue):
-                db.outputs.value_float = io_value.value
+                db.outputs.value_float = float(io_value.value)
             get_interface().set_execution_enabled("outputs:exec_out")
         except Exception as error:
             db.log_error(str(error))

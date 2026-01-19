@@ -1,4 +1,5 @@
 from typing import cast
+import weakref
 from .widgets import SchemaComponent, PropertyGroupFrameWidget
 import omni.kit.window.property as property_window_ext
 import carb
@@ -24,6 +25,7 @@ class SchemaExtensionUI:
 
     def __init__(self):
         self._stage_create_menu_subscription = None
+        self._stage_menu_subscription = None
         self._add_menu_items = []
         self._frame_widget = PropertyGroupFrameWidget(id="wb_schema_nova_schema_widget")
 
@@ -32,12 +34,16 @@ class SchemaExtensionUI:
 
         self._register()
 
+    def __del__(self):
+        self.unregister()
+
     def _register(self):
         self._register_property_windows()
         self._register_prim_menu()
         self._register_create_menu()
 
     def unregister(self):
+        carb.log_verbose("Unregister Wandelbots NOVA schema UI")
         self._unregister_property_windows()
         self._unregister_prim_menu()
         self._stage_create_menu_subscription = None
@@ -63,9 +69,8 @@ class SchemaExtensionUI:
             },
             "glyph": get_icon("wandelbots.png"),
         }
-
-        self._stage_create_menu_subscription = omni.kit.context_menu.add_menu(
-            create_menu_dict, "CREATE", "omni.kit.widget.stage"
+        self._stage_menu_subscription = omni.kit.context_menu.add_menu(
+            create_menu_dict, "CREATE"
         )
 
     def _register_property_windows(self):
@@ -100,9 +105,9 @@ class SchemaExtensionUI:
                 PrimPathWidget.add_button_menu_entry(
                     f"Wandelbots NOVA/{component.title}",
                     show_fn=lambda payload, c=component: show_fn(c, payload),
-                    onclick_fn=lambda payload, c=component: self._prim_add_api(
-                        c, payload
-                    ),
+                    onclick_fn=lambda payload,
+                    c=component,
+                    weak_self=weakref.proxy(self): weak_self._prim_add_api(c, payload),
                 )
             )
 

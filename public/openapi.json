@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots Omniservice",
         "description": "A microservice-based framework for managing Omniverse functionalities",
-        "version": "2.15.5"
+        "version": "2.19.1"
     },
     "paths": {
         "/stage/scene": {
@@ -3440,6 +3440,18 @@
                             }
                         ],
                         "description": "The TCP pose to which the ghost object has to be attached"
+                    },
+                    "tcp_prim_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tcp Prim Path",
+                        "description": "Prim path of the TCP which is used as ghost object transform origin"
                     }
                 },
                 "type": "object",

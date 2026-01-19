@@ -3,6 +3,7 @@ import asyncio
 
 import carb
 import omni.physx.bindings._physx as physx_bindings
+import omni.physx
 import omni.usd
 from pxr import UsdUtils, Usd
 import pydantic
@@ -13,7 +14,6 @@ from wandelbots.omni.utils.prims import Pose, PrimUtils, WSPose
 import wandelbots_api_client.v2 as wb
 import wandelbots_api_client.v2.models as wb_models
 from wandelbots.omni.utils.api import get_api_client_from_config
-from wandelbots.omni.utils.auth import get_auth_token
 from wandelbots.omni.utils.scene import SceneUtils
 from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
 from .utils import to_nova_collider
@@ -77,16 +77,9 @@ SweepParameters = SphereSweepParameters | BoxSweepParameters
 class CollisionExportService:
     def __init__(self):
         carb.log_verbose("Acquire physx interfaces")
-        # acquire the physx interfaces takes some time, so we do it once here
-        self._physx_cooking = physx_bindings.acquire_physx_cooking_interface()
-        self._physx_sweep = physx_bindings.acquire_physx_scene_query_interface()
-        self._physx_query = physx_bindings.acquire_physx_property_query_interface()
-
-    def __del__(self):
-        carb.log_verbose("Release physx interfaces")
-        physx_bindings.release_physx_cooking_interface(self._physx_cooking)
-        physx_bindings.release_physx_scene_query_interface(self._physx_sweep)
-        physx_bindings.release_physx_property_query_interface(self._physx_query)
+        self._physx_cooking = omni.physx.get_physx_cooking_interface()
+        self._physx_sweep = omni.physx.get_physx_scene_query_interface()
+        self._physx_query = omni.physx.get_physx_property_query_interface()
 
     def collision_sweep(
         self,
@@ -266,7 +259,7 @@ class CollisionExportService:
 
         stream_config = motion_group.motion_stream_configuration
         async with get_api_client_from_config(
-            stream_config.get_api_configuration(token=get_auth_token(), version="v2")
+            stream_config.get_api_configuration()
         ) as api:
             collision_setup_api = wb.StoreCollisionSetupsApi(api)
 

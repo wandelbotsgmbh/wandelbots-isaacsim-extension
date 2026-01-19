@@ -367,7 +367,7 @@ class OgnWriteIODatabase(og.Database):
     @staticmethod
     def register(node_type_class):
         OgnWriteIODatabase.NODE_TYPE_CLASS = node_type_class
-        og.register_node_type(OgnWriteIODatabase.abi, 1)
+        og.register_node_type(OgnWriteIODatabase.abi, 2)
 
     @staticmethod
     def deregister():

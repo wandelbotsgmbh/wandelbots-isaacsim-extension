@@ -1,5 +1,101 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.19.1 (2026-01-19)
+
+### Bug Fixes
+
+* Update location for openapi.json.
+
+## 2.19.0 (2026-01-19)
+
+### Features
+
+* **CSI-1946:** Added multi tcp ghost object creation support
+
+## 2.18.5 (2026-01-19)
+
+### Bug Fixes
+
+* Update the value type casting of bus io values.
+
+## 2.18.4 (2026-01-15)
+
+### Bug Fixes
+
+* **CSI-2266:** upgrade trajectory viewer to api version v2, implemented tcp_offset property
+
+## 2.18.3 (2026-01-12)
+
+### Bug Fixes
+
+* set_default_mode used wrong api client enum
+
+## 2.18.2 (2026-01-12)
+
+### Bug Fixes
+
+* **CSI-2115:** OGN nodes do not query disabled motion groups. Added enable toggle in connector
+
+## 2.18.1 (2026-01-09)
+
+### Bug Fixes
+
+* Removed conveyor dependency
+
+## 2.18.0 (2026-01-07)
+
+### Features
+
+* Add indicator that connected instances window is opened.
+
+## 2.17.2 (2026-01-07)
+
+### Bug Fixes
+
+* Fixed update pose on rigid body
+
+## 2.17.1 (2026-01-06)
+
+### Bug Fixes
+
+* **CSI-2138:** Create trajectory now checks for all prims existence
+
+## 2.17.0 (2026-01-06)
+
+### Features
+
+* **CSI-2273:** Added user agent and versions to http requests
+
+## 2.16.0 (2026-01-05)
+
+### Features
+
+* Added support to select auth provider if multiple configure and some qol changes
+
+## 2.15.9 (2025-12-17)
+
+### Bug Fixes
+
+* Fixed nova menu not visible in viewport context menu and some cleanup after extension shutdown
+
+## 2.15.8 (2025-12-15)
+
+### Bug Fixes
+
+* Reduced log level of invalid robot config in IO nodes
+
+## 2.15.7 (2025-12-12)
+
+### Bug Fixes
+
+* **CSI-2128:** Improved handling of io subscriptions and bug fixes
+
+## 2.15.6 (2025-12-11)
+
+### Bug Fixes
+
+* **CSI-2134:** Fixed switching motion group host keeping old connection
+
 ## 2.15.5 (2025-12-03)
 
 ### Bug Fixes

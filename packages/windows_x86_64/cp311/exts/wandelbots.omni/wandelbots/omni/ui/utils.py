@@ -2,6 +2,8 @@ import carb
 from typing import Callable, Any
 import asyncio
 import os
+import omni.ext
+from omni.kit.menu.utils import MenuItemDescription
 
 
 def get_icon(icon_name: str) -> str:
@@ -51,3 +53,25 @@ def defer_call(callback: Callable[[], Any]) -> None:
             callback()
         except Exception as callback_error:
             carb.log_error(f"Error in fallback callback execution: {callback_error}")
+
+
+def make_menu_item_description(
+    ext_id: str,
+    name: str,
+    onclick_fun,
+    action_name: str = "",
+    header: str | None = None,
+    glyph: str = "",
+    on_ticked_fn=None,
+) -> MenuItemDescription:
+    action_unique = f"{ext_id.replace(' ', '_')}{name.replace(' ', '_')}{action_name.replace(' ', '_')}"
+    action_registry = omni.kit.actions.core.get_action_registry()
+    action_registry.deregister_action(ext_id, action_unique)
+    action_registry.register_action(ext_id, action_unique, onclick_fun)
+    return MenuItemDescription(
+        name=name,
+        header=header,
+        glyph=glyph,
+        onclick_action=(ext_id, action_unique),
+        ticked_fn=on_ticked_fn,
+    )

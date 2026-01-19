@@ -48,7 +48,7 @@ def get_io_value_from_dict(io_value_dict: dict) -> IOValue | None:
             else:
                 return IOBooleanValue(io=io, value=bool(value))
         elif value_type == "integer":
-            return IOIntegerValue(io=io, value=int(value))
+            return IOIntegerValue(io=io, value=str(value))
         elif value_type == "float":
             return IOFloatValue(io=io, value=float(value))
         else:
@@ -324,7 +324,7 @@ class BusIOStream:
                         watched_ios.append(io_id)
             except Exception as ex:
                 carb.log_error(
-                    f"Failed to retrieve Bus IO values. IOs will not be watched. {ex}"
+                    f"Failed to retrieve Bus IO values. IOs ({watched_ios}) will not be watched. {ex}"
                 )
 
             carb.log_verbose(f"Bus IO cache: {self.io_cache}")

@@ -1,3 +1,4 @@
+import weakref
 import carb
 import omni.ui as ui
 from isaacsim.gui.components.ui_utils import get_style
@@ -7,21 +8,23 @@ from wandelbots.omni.ui.utils import defer_call, get_icon
 from wandelbots.omni.ui.base import BaseUIBuilder
 from wandelbots.omni.instances.models import (
     NOVACustomInstance,
-    NOVACloudInstance,
     NOVAInstance,
 )
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.instances.instance import NOVAInstanceUIBuilder
+from .widgets import NOVACloudInstancesContainer, SignInWidget
 
 
 class NOVAInstanceListUIBuilder(BaseUIBuilder):
     def __init__(self):
         super().__init__(
-            title="Wandelbots NOVA | Connected Instances", width=500, height=600
+            title="Wandelbots NOVA | Connected Instances",
+            width=500,
+            height=600,
         )
         self._instances_service = NOVAInstancesService()
-        self._cloud_instances: list[NOVACloudInstance] = []
         self._custom_instances: list[NOVACustomInstance] = []
+        self._cloud_instances: dict[str, NOVACloudInstancesContainer] = {}
         self._cloud_instances_container: Optional[ui.VStack] = None
         self._custom_instances_container: Optional[ui.VStack] = None
         self._host_error_message = ""
@@ -29,7 +32,21 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         self._style = get_style()
 
     def build_ui(self):
-        self._style.update({"color": NOVAColor.TEXT_PRIMARY.color})
+        self._style.update(
+            {
+                "color": NOVAColor.TEXT_PRIMARY.color,
+                "Tooltip": {
+                    "background_color": NOVAColor.BACKGROUND_ELEVATION_4.color,
+                    "color": NOVAColor.TEXT_SECONDARY.color,
+                    "padding": 2,
+                    "margin_width": 0,
+                    "margin_height": 0,
+                    "border_width": 1,
+                    "border_radius": 1.5,
+                    "border_color": NOVAColor.DIVIDER.color,
+                },
+            }
+        )
         self._fetch_instances_data()
 
         with self._window.frame:
@@ -58,24 +75,12 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
                 ui.Spacer(width=5)
                 ui.Label("Wandelbots NOVA Instances", style={"font_size": 16})
                 ui.Spacer()
-                if self._instances_service.is_signed_in:
-                    ui.Button(
-                        image_url=get_icon("sign_out.svg"),
-                        width=20,
-                        height=20,
-                        style={
-                            "color": NOVAColor.ACTION_ACTIVE.color,
-                        },
-                        tooltip="Click to sign out of your account.",
-                        clicked_fn=self._on_sign_out,
-                    )
+
                 ui.Button(
                     image_url=get_icon("add.svg"),
                     width=20,
                     height=20,
-                    style={
-                        "color": NOVAColor.ACTION_ACTIVE.color,
-                    },
+                    style={"color": NOVAColor.ACTION_ACTIVE.color},
                     tooltip="Click to add a Wandelbots NOVA instance which is reachable within your network.",
                     clicked_fn=self._on_toggle_add_custom_instance_form,
                 )
@@ -132,19 +137,33 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
 
     def _display_cloud_instances(self):
         self._cloud_instances_container.clear()
-
         with self._cloud_instances_container:
-            if not self._instances_service.is_signed_in:
-                self._display_sign_in_section()
-            elif len(self._cloud_instances) == 0:
-                with ui.VStack(spacing=8):
-                    ui.Spacer()
-                    with ui.HStack():
-                        ui.Spacer(width=10)
-                        ui.Label("No instances available. Please create one.")
-                        ui.Spacer()
-            else:
-                self._display_cloud_instances_section()
+            for _, container in self._cloud_instances.items():
+                container.build_ui()
+            any_not_signed_in = any(
+                not self._instances_service.is_signed_in(auth_config_name)
+                for auth_config_name in self._cloud_instances.keys()
+            )
+            if any_not_signed_in:
+
+                def _on_sign_in_callback(auth_config_name, weak_ref=weakref.ref(self)):
+                    ref_instance = weak_ref()
+                    if ref_instance:
+                        ref_instance._on_sign_in(auth_config_name)
+
+                SignInWidget(
+                    self._instances_service,
+                    _on_sign_in_callback,
+                )
+
+    def _on_sign_in(self, auth_config_name: str):
+        if auth_config_name not in self._cloud_instances:
+            carb.log_error(
+                f"Auth config name {auth_config_name} not found in cloud instances containers."
+            )
+            return
+        self._cloud_instances[auth_config_name].refresh_cloud_instances()
+        defer_call(self._display_cloud_instances)
 
     def _display_instances(self):
         """Display all loaded instances in the UI."""
@@ -153,51 +172,6 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             defer_call(self._display_custom_instances)
         except Exception as e:
             carb.log_error(f"Error displaying instances: {e}")
-
-    def _display_sign_in_section(self):
-        """Show sign-in prompt for cloud instances."""
-        sign_in_container = ui.CollapsableFrame("Cloud Instances", height=0, spacing=5)
-        with sign_in_container:
-            with ui.VStack(spacing=5):
-                with ui.HStack(spacing=5):
-                    ui.Spacer(width=10)
-                    ui.Label(
-                        "Sign in to Wandelbots NOVA:",
-                        width=ui.Percent(50),
-                    )
-                    ui.Spacer()
-                    ui.Button(
-                        "Sign in",
-                        height=25,
-                        width=ui.Percent(20),
-                        style={"background_color": NOVAColor.PRIMARY_MAIN.color},
-                        clicked_fn=lambda: self._on_sign_in(sign_in_container),
-                    )
-                    ui.Spacer(width=5)
-                ui.Spacer(height=5)
-
-    def _display_cloud_instances_section(self):
-        """Display cloud instances or sign-in prompt."""
-        if not self._instances_service.is_signed_in:
-            return
-
-        if len(self._cloud_instances) == 0:
-            carb.log_verbose("No cloud instances available")
-            return
-
-        with ui.CollapsableFrame(title="Cloud Instances", height=0):
-            with ui.VStack(spacing=5, height=0):
-                if len(self._cloud_instances) == 0:
-                    with ui.HStack(spacing=5):
-                        ui.Spacer(width=10)
-                        ui.Label("No instances available. Create one.")
-                for instance in self._cloud_instances:
-                    self._display_instance(instance)
-
-                    if instance != self._cloud_instances[-1]:
-                        self._display_separator()
-
-                ui.Spacer(height=5)
 
     def _display_custom_instances_section(self):
         """Display custom instances section."""
@@ -241,20 +215,28 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             self._cloud_instances.clear()
             self._custom_instances.clear()
 
-            cloud_instances = (
-                self._instances_service._instances_api.get_cloud_instances()
-            )
-            for instance in cloud_instances:
-                self._cloud_instances.append(instance)
+            self._cloud_instances = {
+                auth_config_name: NOVACloudInstancesContainer(
+                    auth_config_name,
+                    self._instances_service,
+                    on_sign_out_fn=lambda auth_config_name=auth_config_name,
+                    weak_ref=weakref.ref(self): weak_ref()._on_sign_out(
+                        auth_config_name
+                    )
+                    if weak_ref()
+                    else None,
+                )
+                for auth_config_name in self._instances_service.instances_api.get_cloud_instances().keys()
+            }
 
             custom_instances = (
-                self._instances_service._instances_api.get_custom_instances()
+                self._instances_service.instances_api.get_custom_instances()
             )
             for instance in custom_instances:
                 self._custom_instances.append(instance)
 
             carb.log_info(
-                f"Loaded {len(self._cloud_instances)} cloud instances and {len(self._custom_instances)} custom instances"
+                f"Loaded {[(auth, len(self._cloud_instances[auth]._cloud_instances)) for auth in self._cloud_instances.keys()]} cloud instances and {len(self._custom_instances)} custom instances"
             )
 
         except Exception as e:
@@ -303,7 +285,7 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             carb.log_info(f"Instance {instance.display_name} removed successfully")
             self._refresh_data()
 
-        self._instances_service.remove_instance(instance, callback=on_complete)
+        self._instances_service.remove_instance(instance, on_complete_fn=on_complete)
 
     def _on_toggle_add_custom_instance_form(self):
         if self._custom_instance_form.visible:
@@ -313,16 +295,9 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             self._custom_instance_form.visible = True
             self._display_add_custom_instance_form()
 
-    def _on_sign_in(self, container: ui.Widget):
-        def on_complete(_):
-            defer_call(self._refresh_data)
-            defer_call(self._display_header)
-
-        self._instances_service.sign_in(container, callback=on_complete)
-
-    def _on_sign_out(self):
+    def _on_sign_out(self, auth_config_name: str = None):
         def on_complete():
             defer_call(self._display_header)
             defer_call(self._refresh_data)
 
-        self._instances_service.sign_out(callback=on_complete)
+        self._instances_service.sign_out(auth_config_name, callback=on_complete)
