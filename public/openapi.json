@@ -1,9 +1,9 @@
 {
     "openapi": "3.1.0",
     "info": {
-        "title": "Wandelbots Omniservice",
-        "description": "A microservice-based framework for managing Omniverse functionalities",
-        "version": "2.19.1"
+        "title": "Wandelbots NOVA - Isaac Sim Extension API",
+        "description": "This extension enables seamless connection between NVIDIA Isaac Sim\u2122 and Wandelbots NOVA. Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, allowing users to easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs. Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\nThe API provides comprehensive capabilities including:\n- **Stage Management**: Load, save, and manipulate USD stages\n- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n- **Cameras**: Configure virtual cameras and viewports for visualization\n- **Motion Groups**: Define and control robot motion groups and kinematics\n- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n- **UI Control**: Interact with the Isaac Sim user interface programmatically",
+        "version": "2.26.0"
     },
     "paths": {
         "/stage/scene": {
@@ -2700,6 +2700,9 @@
                             "schema": {
                                 "anyOf": [
                                     {
+                                        "$ref": "#/components/schemas/TreeSweepParameters"
+                                    },
+                                    {
                                         "$ref": "#/components/schemas/SphereSweepParameters"
                                     },
                                     {
@@ -2889,14 +2892,22 @@
         "/auth/token": {
             "post": {
                 "summary": "Authenticate",
-                "description": "Starting with 24.8: This endpoint allows you to authenticate via the provided access token of your NOVA instance.",
+                "description": "This Endpoint allows you to authenticate with Wandelbots NOVA using your access token.",
                 "operationId": "authenticate",
                 "requestBody": {
                     "content": {
                         "application/json": {
                             "schema": {
-                                "$ref": "#/components/schemas/Auth0Credentials",
-                                "description": "Auth0 credentials from NOVA"
+                                "anyOf": [
+                                    {
+                                        "$ref": "#/components/schemas/Auth0Credentials"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/EntraIDCredentials"
+                                    }
+                                ],
+                                "title": "Credentials",
+                                "description": "Authentication credentials from NOVA"
                             }
                         }
                     },
@@ -2927,30 +2938,20 @@
         "schemas": {
             "Auth0Credentials": {
                 "properties": {
-                    "host": {
+                    "id": {
                         "type": "string",
-                        "title": "Host"
-                    },
-                    "is_secured": {
-                        "type": "boolean",
-                        "title": "Is Secured",
-                        "default": true
+                        "title": "Id",
+                        "description": "Provide the id to find the matching Auth0 auth configuration.",
+                        "default": "default"
                     },
                     "access_token": {
-                        "anyOf": [
-                            {
-                                "type": "string"
-                            },
-                            {
-                                "type": "null"
-                            }
-                        ],
-                        "title": "Access Token"
+                        "type": "string",
+                        "title": "Access Token",
+                        "description": "Provide the access token obtained for authentication"
                     }
                 },
                 "type": "object",
                 "required": [
-                    "host",
                     "access_token"
                 ],
                 "title": "Auth0Credentials"
@@ -3524,6 +3525,26 @@
                     "height"
                 ],
                 "title": "Cylinder"
+            },
+            "EntraIDCredentials": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id",
+                        "description": "Provide the id to find the matching Entra ID auth configuration."
+                    },
+                    "access_token": {
+                        "type": "string",
+                        "title": "Access Token",
+                        "description": "Provide the access token obtained for authentication"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "access_token"
+                ],
+                "title": "EntraIDCredentials"
             },
             "GhostObject": {
                 "properties": {
@@ -4443,6 +4464,26 @@
                 },
                 "type": "object",
                 "title": "TrajectoryOptions"
+            },
+            "TreeSweepParameters": {
+                "properties": {
+                    "sweep_type": {
+                        "type": "string",
+                        "const": "tree",
+                        "title": "Sweep Type"
+                    },
+                    "base_prim_path": {
+                        "type": "string",
+                        "title": "Base Prim Path",
+                        "description": "Base prim path to perform the tree sweep from",
+                        "default": "/World"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "sweep_type"
+                ],
+                "title": "TreeSweepParameters"
             },
             "UsdStageModel": {
                 "properties": {

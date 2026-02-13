@@ -8,6 +8,7 @@ import weakref
 import carb
 import omni.ui as ui
 import omni.kit.menu.utils
+from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.manipulators import (
     get_motion_group_configuration_from_prim,
@@ -110,9 +111,9 @@ class ActionPlannerWindow:
                             "color": NOVAColor.ACTION_ACTIVE.color,
                         },
                         tooltip="Click to refresh pose data",
-                        clicked_fn=lambda obj=weakref.proxy(
-                            self
-                        ): obj._deferred_build_ui(),
+                        clicked_fn=lambda obj=weakref.proxy(self): (
+                            obj._deferred_build_ui()
+                        ),
                     )
                     ui.Button(
                         clicked_fn=lambda obj=weakref.proxy(self): obj._add_action(),
@@ -152,8 +153,9 @@ class ActionPlannerWindow:
                     with ui.HStack(height=20):
                         self._motion_group_prim_picker = PrimPicker(
                             stage=self._stage,
-                            prim_picked_fn=lambda prim,
-                            obj=weakref.proxy(self): obj.assign_prim(prim),
+                            prim_picked_fn=lambda prim, obj=weakref.proxy(self): (
+                                obj.assign_prim(prim)
+                            ),
                             prim=self._motion_group_prim,
                             dialog_properties=PrimPickerDialogProperties(
                                 filter_fn=is_prim_motion_group,
@@ -240,22 +242,19 @@ class ActionPlannerWindow:
                                 ghost_objects=list(ghost_objects.values()),
                                 is_first=action_index == 0,
                                 is_last=action_index == len(self._plan_actions) - 1,
-                                ghost_object_changed_fn=lambda new_ghost_object,
-                                idx=action_index,
-                                actions=self._plan_actions: actions[idx].__setattr__(
-                                    "ghost_object", new_ghost_object
+                                ghost_object_changed_fn=lambda new_ghost_object, idx=action_index, actions=self._plan_actions: (
+                                    actions[idx].__setattr__(
+                                        "ghost_object", new_ghost_object
+                                    )
                                 ),
-                                remove_action_fn=lambda idx=action_index,
-                                obj=weakref.proxy(self): obj._remove_action(idx),
-                                move_action_fn=lambda direction,
-                                idx=action_index,
-                                obj=weakref.proxy(self): obj._shift_action(
-                                    idx, idx + direction
+                                remove_action_fn=lambda idx=action_index, obj=weakref.proxy(self): (
+                                    obj._remove_action(idx)
                                 ),
-                                play_trajectory_fn=lambda _,
-                                action=plan_action,
-                                obj=weakref.proxy(self): obj._request_play_trajectory(
-                                    action
+                                move_action_fn=lambda direction, idx=action_index, obj=weakref.proxy(self): (
+                                    obj._shift_action(idx, idx + direction)
+                                ),
+                                play_trajectory_fn=lambda _, action=plan_action, obj=weakref.proxy(self): (
+                                    obj._request_play_trajectory(action)
                                 ),
                             )
                         ui.Spacer(height=ui.Fraction(1))
@@ -268,9 +267,9 @@ class ActionPlannerWindow:
                         ui.Button(
                             text="Cancel",
                             alignment=ui.Alignment.CENTER,
-                            clicked_fn=lambda obj=weakref.proxy(
-                                self
-                            ): obj._cancel_plan(),
+                            clicked_fn=lambda obj=weakref.proxy(self): (
+                                obj._cancel_plan()
+                            ),
                             width=ui.Pixel(70),
                         )
 
@@ -495,7 +494,7 @@ def register_action_planner_window():
     ):
         return toolbar().window.visible if toolbar() else False
 
-    ext_id = "wandelbots.omni"
+    ext_id = EXTENSION_ID
     name = "Action Planner (Beta)"
     action_name = "toggle_action_planner_window"
     action_unique = f"{ext_id}_{name}_{action_name}"
@@ -510,7 +509,7 @@ def register_action_planner_window():
         omni.kit.menu.utils.add_menu_items(
             [
                 omni.kit.menu.utils.MenuItemDescription(
-                    name="Wandelbots NOVA",
+                    name=EXTENSION_WINDOW_MENU_ROOT,
                     sub_menu=[
                         omni.kit.menu.utils.MenuItemDescription(
                             name=name,

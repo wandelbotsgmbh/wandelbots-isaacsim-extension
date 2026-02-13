@@ -50,6 +50,10 @@ class NOVAInstance(BaseModel):
             return False
 
     @property
+    def is_running(self) -> bool:
+        return self.status.lower() == "running"
+
+    @property
     def status_color(self):
         if not self.is_reachable:
             return NOVAColor.ERROR_MAIN.color
@@ -63,7 +67,7 @@ class NOVAInstance(BaseModel):
 
 class NOVACloudInstance(NOVAInstance):
     model_config = {"populate_by_name": True}
-    auth_config_name: str
+    auth_config_id: str
     expires_at: int
     id: str = Field(alias="instance_id")
     obsolete_at: int

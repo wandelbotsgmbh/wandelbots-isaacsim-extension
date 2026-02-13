@@ -2,6 +2,8 @@ import wandelbots_api_client.v2 as nova_api
 from typing import cast
 import wandelbots.omni.core.collision.shapes as collision_shapes
 
+CARB_SETTINGS_PREFIX = "/persistent/exts/wandelbots.omni/collision_world"
+
 
 def to_nova_collider(
     shape: collision_shapes.Collider,

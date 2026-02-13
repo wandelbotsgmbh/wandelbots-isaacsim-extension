@@ -9,7 +9,7 @@ from wandelbots.omni.manipulators.motion_stream_configuration import (
 )
 from wandelbots.omni.utils.auth import validate_request
 from pxr import Usd, Sdf
-import wandelbots.usd as wb_schema
+import wandelbots.usd as wb_schema  # type: ignore
 
 
 class MotionGroupConfiguration(pydantic.BaseModel):
@@ -140,7 +140,7 @@ class MotionGroup:
 
 def get_motion_group_configuration_from_prim(
     prim: Usd.Prim,
-) -> MotionGroupConfiguration:
+) -> MotionGroupConfiguration | None:
     if not prim.HasAPI(wb_schema.MotionGroupAPI):
         return None
 

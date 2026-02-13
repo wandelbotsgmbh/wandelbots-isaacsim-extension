@@ -135,23 +135,32 @@ class NOVAInstanceUIBuilder:
                 if isinstance(self._instance, NOVACustomInstance):
                     self._display_remove_button()
                 elif isinstance(self._instance, NOVACloudInstance):
-                    self._display_toggle_status_button(self._instance.auth_config_name)
+                    self._display_toggle_status_button(self._instance.auth_config_id)
                 ui.Spacer(width=5)
             ui.Spacer(height=1)
             # Display content based on cells state
+            if not self._instance.is_reachable:
+                with ui.HStack():
+                    ui.Spacer(width=15)
+                    ui.Label(
+                        "Instance is not reachable. Please check your network connection and instance settings.",
+                        style={"color": NOVAColor.TEXT_SECONDARY.color},
+                    )
+                return
+
+            if not self._instance.is_running:
+                with ui.HStack():
+                    ui.Spacer(width=15)
+                    ui.Label(
+                        "Instance is not running. Press play to start it.",
+                        style={"color": NOVAColor.TEXT_SECONDARY.color},
+                    )
+                return
             if not self._instance.is_compatible:
                 with ui.HStack():
                     ui.Spacer(width=15)
                     ui.Label(
                         "Please update your Wandelbots NOVA instance to at least 25.8.0.",
-                        style={"color": NOVAColor.TEXT_SECONDARY.color},
-                    )
-                return
-            if self._instance.status != "running":
-                with ui.HStack():
-                    ui.Spacer(width=15)
-                    ui.Label(
-                        f"Instance is {self._instance.status}.",
                         style={"color": NOVAColor.TEXT_SECONDARY.color},
                     )
                 return
@@ -198,10 +207,10 @@ class NOVAInstanceUIBuilder:
             clicked_fn=lambda instance=self._instance: self._on_remove(instance),
         )
 
-    def _display_toggle_status_button(self, auth_config_name: str):
+    def _display_toggle_status_button(self, auth_config_id: str):
         def _toggle_instance_status_clicked():
             self._instances_service.toggle_instance_status(
-                auth_config_name, self._instance, callback=self._on_toggle_status
+                auth_config_id, self._instance, callback=self._on_toggle_status
             )
 
         if self._instance.status == "running":
@@ -275,13 +284,13 @@ class NOVAInstanceUIBuilder:
                     "font-size": "20px",
                     "background_color": NOVAColor.BACKGROUND_DEFAULT.color,
                 },
-                build_header_fn=lambda collapsed,
-                text,
-                weak_self=weakref.ref(self): _build_frame_header(
-                    collapsed, text, motion_group_prim_path=motion_group_prim_path
-                )
-                if weak_self()
-                else None,
+                build_header_fn=lambda collapsed, text, weak_self=weakref.ref(self): (
+                    _build_frame_header(
+                        collapsed, text, motion_group_prim_path=motion_group_prim_path
+                    )
+                    if weak_self()
+                    else None
+                ),
             ):
                 self._display_motion_group(
                     motion_group=motion_group, instance=instance, controller=controller
@@ -327,9 +336,9 @@ class NOVAInstanceUIBuilder:
             instance=instance,
             controller=controller,
             motion_group=motion_group,
-            motion_group_connection_changed_fn=lambda weak_self=weakref.ref(
-                self
-            ): weak_self().build_ui() if weak_self() else None,
+            motion_group_connection_changed_fn=lambda weak_self=weakref.ref(self): (
+                weak_self().build_ui() if weak_self() else None
+            ),
         ).build_ui()
 
     # Handler for events

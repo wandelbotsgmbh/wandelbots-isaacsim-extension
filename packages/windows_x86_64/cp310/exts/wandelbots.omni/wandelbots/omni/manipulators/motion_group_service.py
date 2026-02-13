@@ -15,7 +15,7 @@ from .motion_stream_connector import MotionStreamConnector
 from .utils import get_scene_motion_group_prim_paths
 import omni.usd
 from pxr import Usd
-import wandelbots.usd as wb_schema
+import wandelbots.usd as wb_schema  # type: ignore
 
 
 class MotionGroupService:
@@ -126,21 +126,24 @@ class MotionGroupService:
         async with self.stream_action_lock:
             for motion_group_prim_path in self.get_all_motion_group_prim_paths():
                 try:
+                    motion_group_configuration = (
+                        get_motion_group_configuration_from_prim(
+                            self._get_prim(motion_group_prim_path)
+                        )
+                    )
+
+                    if not motion_group_configuration.enabled:
+                        carb.log_verbose(
+                            f"Skipping stream for {motion_group_prim_path} as it is not enabled"
+                        )
+                        continue
                     stream = self._get_motion_group_stream(motion_group_prim_path)
                     if not stream:
                         stream = await self._create_stream(motion_group_prim_path)
                     else:
                         stream.motion_group.configuration.refresh_from_prim(self._stage)
-                    if not stream.motion_group.configuration.enabled:
-                        carb.log_verbose(
-                            f"Skipping stream for {motion_group_prim_path} as it is not enabled"
-                        )
-                        continue
                     await self._start_stream(stream)
                 except Exception as ex:
-                    import traceback
-
-                    traceback.print_exc()
                     carb.log_error(f"Failed to stream {motion_group_prim_path}. {ex}")
 
     async def stop_streams(self):

@@ -1,13 +1,14 @@
 import weakref
-import wandelbots.usd as wb_schema
+
 import carb
-from pxr import Sdf, Usd, UsdGeom
+import isaacsim.core.utils.stage as stage_utils
 import omni
 import omni.kit
-from omni.kit.property.usd import prim_selection_payload
 import omni.kit.commands
+from omni.kit.property.usd import prim_selection_payload
+from pxr import Sdf, Usd, UsdGeom
 
-import isaacsim.core.utils.stage as stage_utils
+import wandelbots.usd as wb_schema
 
 
 class TcpUtils:
@@ -37,8 +38,8 @@ class TcpUtils:
             precision=UsdGeom.XformOp.PrecisionDouble,
             rotation_order="ZYX",
             add_translate_op=True,
-            add_rotate_xyz_op=True,
-            add_orient_op=False,
+            add_rotate_xyz_op=False,
+            add_orient_op=True,
             add_scale_op=True,
             add_transform_op=False,
             add_pivot_op=False,

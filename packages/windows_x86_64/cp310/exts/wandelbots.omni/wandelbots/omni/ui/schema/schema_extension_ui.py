@@ -54,11 +54,13 @@ class SchemaExtensionUI:
                 "Wandelbots NOVA": [
                     {
                         "name": "Ghost Object",
-                        "show_fn": lambda payload: GhostObjectApiSchema.can_create_ghost_object(
-                            payload
+                        "show_fn": lambda payload: (
+                            GhostObjectApiSchema.can_create_ghost_object(payload)
                         ),
-                        "onclick_fn": lambda payload: GhostObjectApiSchema.create_ghost_object_from_payload(
-                            payload
+                        "onclick_fn": lambda payload: (
+                            GhostObjectApiSchema.create_ghost_object_from_payload(
+                                payload
+                            )
                         ),
                     },
                     {
@@ -105,9 +107,9 @@ class SchemaExtensionUI:
                 PrimPathWidget.add_button_menu_entry(
                     f"Wandelbots NOVA/{component.title}",
                     show_fn=lambda payload, c=component: show_fn(c, payload),
-                    onclick_fn=lambda payload,
-                    c=component,
-                    weak_self=weakref.proxy(self): weak_self._prim_add_api(c, payload),
+                    onclick_fn=lambda payload, c=component, weak_self=weakref.proxy(self): (
+                        weak_self._prim_add_api(c, payload)
+                    ),
                 )
             )
 

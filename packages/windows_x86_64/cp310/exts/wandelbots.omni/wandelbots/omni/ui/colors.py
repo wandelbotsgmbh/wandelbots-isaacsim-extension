@@ -1,6 +1,29 @@
 import omni.ui as ui
 from enum import Enum
 
+ColorRGBA = list[float, float, float, float]
+
+
+def hex_to_float_array(hex_string: str) -> list[float]:
+    hex_string = hex_string.lstrip("#")
+    if len(hex_string) == 6:
+        hex_string += "FF"
+    r = int(hex_string[0:2], 16) / 255.0
+    g = int(hex_string[2:4], 16) / 255.0
+    b = int(hex_string[4:6], 16) / 255.0
+    a = int(hex_string[6:8], 16) / 255.0
+    return [r, g, b, a]
+
+
+def float_array_to_hex(rgba: list[float]) -> str:
+    if len(rgba) == 3:
+        rgba = rgba + [1.0]
+    r = int(rgba[0] * 255)
+    g = int(rgba[1] * 255)
+    b = int(rgba[2] * 255)
+    a = int(rgba[3] * 255)
+    return f"#{r:02X}{g:02X}{b:02X}{a:02X}"
+
 
 class NOVAColor(Enum):
     """Color palette namespace for NOVA UI components."""

@@ -1,12 +1,17 @@
-import carb
 import weakref
+from typing import Callable, cast
 
+import carb
 import isaacsim.core.utils.prims as prims_utils
 import isaacsim.core.utils.stage as stage_utils
+import omni.client
+import omni.kit.commands
 import omni.usd
 import omni.usd.commands
+from omni.kit.property.usd import prim_selection_payload
 from omni.usd.commands import DeletePrimsCommand
-from pxr import Usd, UsdPhysics, UsdShade, Sdf, UsdGeom, Gf
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
 import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.datatypes import (
     GHOST_MATERIAL_MDL_EXT_FILE,
@@ -14,15 +19,16 @@ from wandelbots.omni.datatypes import (
     SHADER_IDENTIFIER,
     GhostObject,
     GhostObjectSource,
+    Pose,
     TCPSource,
     WSPose,
 )
-from wandelbots.omni.utils.prims import PrimUtils, RelativePoseMode
 from wandelbots.omni.usd import SchemaUtils, TcpUtils
 from wandelbots.omni.utils.mesh import MeshUtils
-import omni.kit.commands
-from omni.kit.property.usd import prim_selection_payload
-import omni.client
+from wandelbots.omni.utils.prims import PrimPoseWatcher, PrimUtils, RelativePoseMode
+
+
+CARB_SETTINGS_PREFIX = "/persistent/exts/wandelbots.omni/ghost_teaching"
 
 
 class GhostObjectUtils:
@@ -50,10 +56,10 @@ class GhostObjectUtils:
         stage_url = omni.usd.get_context().get_stage_url()
         copy_destination = omni.client.combine_urls(
             stage_url,
-            str(GHOST_MATERIAL_MDL_PROJECT_FILE),
+            GHOST_MATERIAL_MDL_PROJECT_FILE.as_posix(),
         )
         copy_result = omni.client.copy_file(
-            str(GHOST_MATERIAL_MDL_EXT_FILE),
+            GHOST_MATERIAL_MDL_EXT_FILE.as_posix(),
             copy_destination,
             behavior=omni.client.CopyBehavior.ERROR_IF_EXISTS,
         )
@@ -366,6 +372,71 @@ class GhostObjectUtils:
         GhostObjectUtils.register_ghost_object(ghost_mesh_prim.GetPrim(), tcp_prim)
 
         return ghost_mesh_prim.GetPrim()
+
+    def get_ghost_object_tcp_offset(ghost_prim: Usd.Prim) -> WSPose | None:
+        stage: Usd.Stage = ghost_prim.GetStage()
+        if not GhostObjectUtils.is_ghost_object(ghost_prim):
+            carb.log_error(
+                f"Ghost prim {ghost_prim.GetPath()} does not have GhostObjectAPI."
+            )
+            return None
+
+        ghost_object_api = wb_schema.GhostObjectAPI.Get(stage, ghost_prim.GetPath())
+        tcp_prim_paths: list[Sdf.Path] = (
+            ghost_object_api.GetSourceTcpRel().GetForwardedTargets()
+        )
+        if len(tcp_prim_paths) == 0:
+            carb.log_error(f"Ghost prim {ghost_prim.GetPath()} has no linked TCP.")
+            return None
+        if len(tcp_prim_paths) > 1:
+            carb.log_warn(
+                f"Ghost prim {ghost_prim.GetPath()} has multiple linked TCPs: {tcp_prim_paths}. Using the first one."
+            )
+        tcp_prim: Usd.Prim = stage.GetPrimAtPath(tcp_prim_paths[0])
+        flange_tcp = SchemaUtils.get_flange_tcp_from_tool_tcp(tcp_prim)
+        if not flange_tcp:
+            carb.log_error(
+                f"Failed to find flange TCP for ghost object {ghost_prim.GetPath()} with TCP {tcp_prim.GetPath()}."
+            )
+            return None
+        return PrimUtils.get_relative_prim_pose(
+            flange_tcp.GetPrimPath().pathString,
+            tcp_prim.GetPrimPath().pathString,
+        )
+
+    def create_ghost_object_pose_watcher(
+        ghost_object_prim: Usd.Prim, pose_changed_fn: Callable[[Pose], None]
+    ):
+        motion_group_prim = (
+            GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(
+                ghost_object_prim
+            )
+        )
+
+        if not motion_group_prim:
+            carb.log_verbose(
+                f"Could not find motion group prim linked to ghost object at {ghost_object_prim.GetPath()}"
+            )
+
+        return PrimPoseWatcher(
+            prim=ghost_object_prim,
+            pose_changed_fn=pose_changed_fn,
+            relative_prim=motion_group_prim,
+        )
+
+    @staticmethod
+    def get_selected_ghost_object_from_scene(
+        ghost_objects: dict[str, GhostObject],
+    ) -> GhostObject | None:
+        selection = cast(omni.usd.Selection, omni.usd.get_context().get_selection())
+        stage: Usd.Stage = omni.usd.get_context().get_stage()
+        selected_prim_paths = selection.get_selected_prim_paths()
+        if len(selected_prim_paths) == 1 and stage:
+            selected_prim = stage.GetPrimAtPath(selected_prim_paths[0])
+            if selected_prim and GhostObjectUtils.is_ghost_object(selected_prim):
+                prim_path = selected_prim.GetPath().pathString
+                return ghost_objects.get(prim_path, None)
+        return None
 
 
 class RefreshGhostMaterialsCommand(omni.kit.commands.Command):

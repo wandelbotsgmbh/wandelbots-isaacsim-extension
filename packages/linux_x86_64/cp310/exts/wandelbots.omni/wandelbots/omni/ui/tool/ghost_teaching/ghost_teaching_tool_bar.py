@@ -8,11 +8,15 @@ import omni.kit.actions.core
 import omni.ui as ui
 import omni.kit.app
 import omni.kit.viewport.utility
+from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from .widgets.ghost_object_selector import GhostObjectSelector
 from omni.kit.async_engine import run_coroutine
 import omni.kit.menu.utils
 from wandelbots.omni.utils.teaching import GhostObjectUtils, GhostObject
-import carb.input
+from wandelbots.omni.teaching.ghost_teaching_follow_service import (
+    GhostTeachingFollowService,
+)
+
 from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
 import omni.kit.notification_manager as nm
 import omni.usd
@@ -36,9 +40,9 @@ WINDOW_MENU_ROOT = "Tools"
 class GhostTeachingToolBar:
     def __init__(self):
         self._tool_bar: ui.ToolBar = None
-        self._ghost_objects: list = []
+        self._ghost_objects: dict[str, GhostObject] = {}
         self._motion_group_prim: Usd.Prim = None
-        self._selected_ghost_object_path = None
+        self._selected_ghost_object: GhostObject = None
         self._move_to_settings: MoveToExecuteSettings = None
         self._move_to_button: MoveToButton = None
         self._settings_model: SettingsModel = load_ghost_teaching_carb_settings()
@@ -46,17 +50,21 @@ class GhostTeachingToolBar:
         self._tcp_selector: TcpSelector = None
         self._ghost_object_selector: GhostObjectSelector = None
         self._deferred_build_task: asyncio.Task = None
+        self._follow_button: ui.Button = None
+        self._selected_ghost_object_path: str = None
         self._ghost_objects_subscription: GhostObjectsSubscription = (
             GhostObjectsSubscription(
-                ghost_object_changed_fn=lambda weak_self=weakref.proxy(
-                    self
-                ): weak_self._ghost_object_changed_fn()
+                ghost_object_changed_fn=lambda weak_self=weakref.proxy(self): (
+                    weak_self._ghost_object_changed_fn()
+                )
             )
         )
 
         self._tcp_selection_cache: dict[
             str, str
         ] = {}  # "motion_group_prim_path": "tcp_name"
+        self._follow_service: GhostTeachingFollowService | None = None
+        self._follow_button_model: ui.SimpleBoolModel = ui.SimpleBoolModel(False)
 
         self._stage_event_subscription = (
             cast(
@@ -73,10 +81,9 @@ class GhostTeachingToolBar:
         )
 
         self._settings_model.property_changed_fn = (
-            lambda prop,
-            old,
-            new,
-            obj=weakref.proxy(self): obj._on_settings_property_changed(prop, old, new)
+            lambda prop, old, new, obj=weakref.proxy(self): (
+                obj._on_settings_property_changed(prop, old, new)
+            )
         )
 
         # Select the motion group if a ghost object is already selected in the scene while this windows is being build
@@ -149,18 +156,12 @@ class GhostTeachingToolBar:
                         ):
                             obj._assign_ghost_object(ghost_object)
 
-                        selected_ghost_object = (
-                            self._ghost_objects.get(
-                                self._selected_ghost_object_path,
-                                None,
-                            )
-                            if self._selected_ghost_object_path
-                            else None
-                        )
                         with ui.VStack(width=ui.Pixel(300)):
                             self._ghost_object_selector = GhostObjectSelector(
                                 list(self._ghost_objects.values()),
-                                selected_ghost_object,
+                                GhostObjectUtils.get_selected_ghost_object_from_scene(
+                                    self._ghost_objects
+                                ),
                                 ghost_object_changed_fn=ghost_object_changed_fn,
                                 can_select_in_scene=self._settings_model.select_ghost_object_in_scene,
                                 can_select_from_scene=True,
@@ -169,23 +170,50 @@ class GhostTeachingToolBar:
                     # Recreating the button would lead to losing the move to task and blocking the motion group control so we recycle the existing one
                     if self._move_to_button is None:
                         self._move_to_button = MoveToButton(
-                            configure_execution_fn=lambda weak_self=weakref.proxy(
-                                self
-                            ): weak_self._get_planning_configuration()
+                            configure_execution_fn=lambda weak_self=weakref.proxy(self): (
+                                weak_self._get_planning_configuration()
+                            )
                         )
                     else:
                         self._move_to_button._build_ui()
+
+                    # Disable move_to_button when following is active
+                    self._move_to_button.enabled = not self._follow_button_model.as_bool
+
+                    # Follow button
+                    self._follow_button = ui.Button(
+                        image_url=get_icon(
+                            "link.svg"
+                            if self._follow_button_model.as_bool
+                            else "unlink.svg"
+                        ),
+                        width=ui.Pixel(30),
+                        height=ui.Fraction(1),
+                        clicked_fn=lambda obj=weakref.proxy(self): obj._toggle_follow(),
+                        style={
+                            "margin": 0,
+                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color
+                            if self._follow_button_model.as_bool
+                            else NOVAColor.TEXT_PRIMARY.color,
+                            "background_color": NOVAColor.PRIMARY_MAIN.color
+                            if self._follow_button_model.as_bool
+                            else NOVAColor.BACKGROUND_PAPER.color,
+                            ":hovered": {
+                                "background_color": NOVAColor.PRIMARY_LIGHT.color
+                                if self._follow_button_model.as_bool
+                                else NOVAColor.BACKGROUND_DEFAULT.color
+                            },
+                        },
+                    )
 
                     ui.Button(
                         image_url=get_icon("settings.svg"),
                         width=ui.Pixel(30),
                         height=ui.Fraction(1),
-                        mouse_pressed_fn=lambda x,
-                        y,
-                        button,
-                        modifier,
-                        obj=weakref.proxy(self): obj._on_settings_button_mouse_pressed(
-                            x, y, button, modifier
+                        mouse_pressed_fn=lambda x, y, button, modifier, obj=weakref.proxy(self): (
+                            obj._on_settings_button_mouse_pressed(
+                                x, y, button, modifier
+                            )
                         ),
                         style={
                             "margin": 0,
@@ -212,11 +240,93 @@ class GhostTeachingToolBar:
         self._settings_window.show(x, y)
 
     def _assign_ghost_object(self, ghost_object: GhostObject):
-        self._selected_ghost_object_path = ghost_object.prim_path
+        self._selected_ghost_object = ghost_object
         stage: Usd.Stage = omni.usd.get_context().get_stage()
+
+        # If following is active, we'll restart it with the new target after UI rebuild
+        was_following = self._follow_button_model.as_bool
+
         self._assign_motion_group_prim(
             stage.GetPrimAtPath(ghost_object.robot_prim_path)
         )
+        self._deferred_build_ui()
+
+        # Log the target change if following
+        if was_following:
+            carb.log_info(f"Follow mode: switching target to {ghost_object.prim_path}")
+
+    def _toggle_follow(self):
+        """Toggle follow button state."""
+        new_state = not self._follow_button_model.as_bool
+        self._follow_button_model.set_value(new_state)
+        if new_state:
+            self._start_follow_service()
+        else:
+            self._stop_follow_service()
+
+        # Update button appearance directly
+        if self._follow_button:
+            self._follow_button.image_url = get_icon(
+                "link.svg" if new_state else "unlink.svg"
+            )
+            self._follow_button.set_style(
+                {
+                    "margin": 0,
+                    "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color
+                    if self._follow_button_model.as_bool
+                    else NOVAColor.TEXT_PRIMARY.color,
+                    "background_color": NOVAColor.PRIMARY_MAIN.color
+                    if self._follow_button_model.as_bool
+                    else NOVAColor.BACKGROUND_PAPER.color,
+                    ":hovered": {
+                        "background_color": NOVAColor.PRIMARY_LIGHT.color
+                        if self._follow_button_model.as_bool
+                        else NOVAColor.BACKGROUND_DEFAULT.color
+                    },
+                },
+            )
+
+        # Update move_to_button enabled state and text
+        if self._move_to_button:
+            self._move_to_button.enabled = not new_state
+            self._move_to_button.is_following = new_state
+
+    def _on_follow_toggled(self, model: ui.SimpleBoolModel):
+        """Handle follow button toggle."""
+        if model.as_bool:
+            self._start_follow_service()
+        else:
+            self._stop_follow_service()
+
+    def _start_follow_service(self):
+        """Start the follow service for the selected ghost object."""
+        self._selected_ghost_object = (
+            GhostObjectUtils.get_selected_ghost_object_from_scene(self._ghost_objects)
+        )
+        if not self._selected_ghost_object:
+            carb.log_warn("No ghost object selected for follow")
+            self._follow_button_model.set_value(False)
+            return
+
+        self._stop_follow_service()
+        self._follow_service = GhostTeachingFollowService(
+            prim_path=self._selected_ghost_object.prim_path,
+            configure_execution_fn=lambda weak_self=weakref.proxy(self): (
+                weak_self._get_planning_configuration()
+            ),
+            delay_seconds=0.1,
+        )
+        self._follow_service.start()
+        carb.log_info(
+            f"Started follow service for {self._selected_ghost_object.prim_path}"
+        )
+
+    def _stop_follow_service(self):
+        """Stop and cleanup the follow service."""
+        if self._follow_service:
+            self._follow_service.destroy()
+            self._follow_service = None
+            carb.log_info("Stopped follow service")
 
     def _get_planning_configuration(self) -> MoveToExecuteSettings | None:
         motion_group = get_motion_group_configuration_from_prim(self._motion_group_prim)
@@ -234,6 +344,11 @@ class GhostTeachingToolBar:
         motion_stream_configuration = motion_group.motion_stream_configuration
 
         self._refresh_ghost_objects()
+        self._selected_ghost_object_path = (
+            GhostObjectUtils.get_selected_ghost_object_from_scene(
+                self._ghost_objects
+            ).prim_path
+        )
         if self._selected_ghost_object_path not in self._ghost_objects:
             carb.log_error(
                 f"Selected ghost object {self._selected_ghost_object_path} not found"
@@ -405,6 +520,8 @@ class GhostTeachingToolBar:
         carb.log_verbose(
             f"Hiding GhostTeachingToolBar {self._tool_bar} {self._settings_window}"
         )
+        self._stop_follow_service()
+        self._follow_button_model.set_value(False)
         self._reset_selection()
         if self._settings_window:
             self._settings_model = self._settings_window.model
@@ -485,7 +602,7 @@ def register_ghost_teaching_tool_bar():
     ):
         return toolbar().visible if toolbar() else False
 
-    ext_id = "wandelbots.omni"
+    ext_id = EXTENSION_ID
     name = "Ghost Teaching Tool Bar"
     action_name = "toggle_ghost_teaching_tool_bar"
     action_unique = f"{ext_id}_{name}_{action_name}"
@@ -499,7 +616,7 @@ def register_ghost_teaching_tool_bar():
         omni.kit.menu.utils.add_menu_items(
             [
                 omni.kit.menu.utils.MenuItemDescription(
-                    name="Wandelbots NOVA",
+                    name=EXTENSION_WINDOW_MENU_ROOT,
                     sub_menu=[
                         omni.kit.menu.utils.MenuItemDescription(
                             name=name,

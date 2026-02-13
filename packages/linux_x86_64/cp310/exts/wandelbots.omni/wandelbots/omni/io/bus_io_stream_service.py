@@ -127,7 +127,7 @@ class BusIOStream:
 
         async with self._subscription_lock:
             subscription = Subscription(
-                unsubscribe=lambda id: (self._unsubscribe_callback(id)),
+                unsubscribe=lambda id: self._unsubscribe_callback(id),
                 on_change=on_change,
                 on_init=on_init,
                 get_value=self.get_io_value,

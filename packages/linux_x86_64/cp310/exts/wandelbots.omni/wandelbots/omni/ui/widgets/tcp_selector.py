@@ -80,9 +80,9 @@ class TcpSelector:
             cell,
             controller,
             motion_group,
-            tcps_changed_fn=lambda weak_self=weakref.proxy(
-                self
-            ): weak_self._refresh_tcp_names_with_ui_update(),
+            tcps_changed_fn=lambda weak_self=weakref.proxy(self): (
+                weak_self._refresh_tcp_names_with_ui_update()
+            ),
         )
 
     async def refresh_tcp_names(self):
@@ -188,14 +188,20 @@ def subscribe_tcp_list_changed(
                     )
                     return set(motion_group_description.tcps.keys())
                 except Exception as e:
-                    carb.log_warn(f"Error fetching TCP ids: {str(e)}")
+                    carb.log_error(
+                        f"Not able to fetch TCPs. Please ensure the Motion Group has been set up correctly. {e}"
+                    )
                     return None
 
             initial_tcp_ids = await fetch_tcp_ids()
+            if initial_tcp_ids is None:
+                return
 
             while True:
                 fetched_tcp_ids = await fetch_tcp_ids()
-                if fetched_tcp_ids and fetched_tcp_ids != initial_tcp_ids:
+                if fetched_tcp_ids is None:
+                    break
+                if fetched_tcp_ids != initial_tcp_ids:
                     initial_tcp_ids = fetched_tcp_ids
                     tcps_changed_fn()
 

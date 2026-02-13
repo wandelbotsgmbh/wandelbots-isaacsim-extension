@@ -29,13 +29,13 @@ class NOVAInstancesAPI:
         self._instance_host_auth_mapping: dict[str, str] = {}
 
     def get_auth_token_from_host(self, host: str) -> str | None:
-        auth_config_name = self.get_auth_config_name_from_host(host)
-        if auth_config_name is None:
+        auth_config_id = self.get_auth_config_id_from_host(host)
+        if auth_config_id is None:
             carb.log_verbose(f"No auth config found for host: {host}")
             return None
-        return get_auth_token(auth_config_name)
+        return get_auth_token(auth_config_id)
 
-    def get_auth_config_name_from_host(self, host: str) -> str | None:
+    def get_auth_config_id_from_host(self, host: str) -> str | None:
         if host not in self._instance_host_auth_mapping:
             # Refresh once and then just return whatever we have
             self._reload_instance_auth_mappings()
@@ -47,15 +47,15 @@ class NOVAInstancesAPI:
         self.get_custom_instances()
 
     def get_cloud_instances_by_auth(
-        self, auth_config_name: str
+        self, auth_config_id: str
     ) -> list[NOVACloudInstance]:
-        token = get_auth_token(auth_config_name)
+        token = get_auth_token(auth_config_id)
         if not token:
             carb.log_verbose("No authentication token available for cloud instances")
             return []
 
         try:
-            instances_data = self._fetch_instances(auth_config_name, token)
+            instances_data = self._fetch_instances(auth_config_id, token)
             carb.log_verbose(
                 f"Retrieved {len(instances_data)} cloud instances from API"
             )
@@ -67,7 +67,7 @@ class NOVAInstancesAPI:
             ]
 
             for instance in instances:
-                self._instance_host_auth_mapping[instance.host] = auth_config_name
+                self._instance_host_auth_mapping[instance.host] = auth_config_id
 
             carb.log_verbose(
                 f"Successfully parsed {len(instances)} valid cloud instances"
@@ -77,9 +77,8 @@ class NOVAInstancesAPI:
         except requests.HTTPError as e:
             if e.response.status_code == 401:
                 carb.log_warn(
-                    "Authentication token for cloud instances is invalid (401). Invalidating token."
+                    "Not able to fetch instances - authentication token is invalid. Please try a re-authentication."
                 )
-                invalidate_auth_token(auth_config_name)
                 return []
             else:
                 carb.log_error(f"HTTP error retrieving cloud instances: {e}")
@@ -93,8 +92,8 @@ class NOVAInstancesAPI:
 
     def get_cloud_instances(self) -> dict[str, list[NOVACloudInstance]]:
         return {
-            auth_config_name: self.get_cloud_instances_by_auth(auth_config_name)
-            for auth_config_name in get_auth_configs().keys()
+            auth_config_id: self.get_cloud_instances_by_auth(auth_config_id)
+            for auth_config_id in get_auth_configs().keys()
         }
 
     def get_custom_instances(self) -> list[NOVACustomInstance]:
@@ -163,15 +162,13 @@ class NOVAInstancesAPI:
                 except Exception as e:
                     carb.log_warn(f"Error closing API client: {e}")
 
-    def toggle_instance_status(
-        self, auth_config_name: str, instance: NOVACloudInstance
-    ):
+    def toggle_instance_status(self, auth_config_id: str, instance: NOVACloudInstance):
         try:
             new_status = "running" if instance.status == "stopped" else "stopped"
-
-            headers = {"Authorization": f"Bearer {get_auth_token(auth_config_name)}"}
+            token = get_auth_token(auth_config_id)
+            headers = {"Authorization": f"Bearer {token}"}
             response = requests.put(
-                f"{get_portal_api_url(auth_config_name)}/instances/{instance.instance_id}/state",
+                f"{get_portal_api_url(auth_config_id)}/instances/{instance.instance_id}/state",
                 headers=headers,
                 timeout=10,
                 json={"state": new_status},
@@ -182,7 +179,7 @@ class NOVAInstancesAPI:
                 carb.log_warn(
                     f"Authentication token for host '{instance.host}' is invalid (401). Invalidating token."
                 )
-                invalidate_auth_token(auth_config_name)
+                invalidate_auth_token(auth_config_id)
             else:
                 carb.log_error(f"HTTP error updating instance status: {e}")
 
@@ -300,23 +297,23 @@ class NOVAInstancesAPI:
             return None
 
     # Helper methods for cloud instance management
-    def _fetch_instances(self, auth_config_name: str, token: str) -> list[NOVAInstance]:
-        token = get_auth_token(auth_config_name)
+    def _fetch_instances(self, auth_config_id: str, token: str) -> list[NOVAInstance]:
+        token = get_auth_token(auth_config_id)
         if not token:
             carb.log_verbose(
-                f"No authentication token available for {auth_config_name} cloud instances"
+                f"No authentication token available for {auth_config_id} cloud instances"
             )
             return []
         headers = {"Authorization": f"Bearer {token}"}
         response = requests.get(
-            f"{get_portal_api_url(auth_config_name)}/instances",
+            f"{get_portal_api_url(auth_config_id)}/instances",
             headers=headers,
             timeout=10,
         )
         response.raise_for_status()
         instances = response.json().get("instances", [])
         for instance in instances:
-            instance["auth_config_name"] = auth_config_name
+            instance["auth_config_id"] = auth_config_id
         return instances
 
     def _create_cloud_instance(self, data: dict) -> NOVACloudInstance:

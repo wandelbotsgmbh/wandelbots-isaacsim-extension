@@ -25,9 +25,14 @@ class SignInWidget:
         """Show sign-in prompt for cloud instances."""
 
         auth_configs = get_auth_configs()
-        names = list(auth_configs.keys())
-        not_signed_in_auth_config_names = [
-            name for name in names if not self._instances_service.is_signed_in(name)
+        # Map identifiers to names for display
+        auth_config_names = {
+            identifier: config.name for identifier, config in auth_configs.items()
+        }
+        not_signed_in_auth_config_ids = [
+            identifier
+            for identifier in auth_configs.keys()
+            if not self._instances_service.is_signed_in(identifier)
         ]
 
         with ui.ZStack():
@@ -54,24 +59,29 @@ class SignInWidget:
                     with ui.HStack(spacing=5):
                         ui.Spacer(width=10)
                         ui.Label(
-                            "Sign in to Wandelbots NOVA:",
-                            width=ui.Percent(50),
+                            "Sign in to Wandelbots NOVA",
+                            width=ui.Percent(40),
                         )
                         selection_subscription_model: ui.AbstractItemModel = None
-                        if len(names) > 1:
+                        if len(not_signed_in_auth_config_ids) > 1:
+                            # Display names in combo box but track identifiers
+                            display_names = [
+                                auth_config_names[id]
+                                for id in not_signed_in_auth_config_ids
+                            ]
                             selection_subscription_model = ui.ComboBox(
                                 self._selected_auth_name_idx,
-                                *not_signed_in_auth_config_names,
+                                *display_names,
                             ).model
                         else:
                             ui.Spacer()
 
-                        def auth_config_name():
+                        def auth_config_id():
                             if selection_subscription_model:
-                                return not_signed_in_auth_config_names[
+                                return not_signed_in_auth_config_ids[
                                     selection_subscription_model.get_item_value_model().as_int
                                 ]
-                            return not_signed_in_auth_config_names[
+                            return not_signed_in_auth_config_ids[
                                 self._selected_auth_name_idx
                             ]
 
@@ -80,23 +90,23 @@ class SignInWidget:
                             height=20,
                             width=ui.Percent(20),
                             style={"background_color": NOVAColor.PRIMARY_MAIN.color},
-                            clicked_fn=lambda weak_self=weakref.proxy(
-                                self
-                            ): weak_self._on_sign_in(auth_config_name()),
+                            clicked_fn=lambda weak_self=weakref.proxy(self): (
+                                weak_self._on_sign_in(auth_config_id())
+                            ),
                         )
                         ui.Spacer(width=5)
 
-    def _on_sign_in(self, auth_config_name: str):
-        if self._instances_service.is_signed_in(auth_config_name):
-            carb.log_info(f"Already signed in for config: {auth_config_name}")
+    def _on_sign_in(self, auth_config_id: str):
+        if self._instances_service.is_signed_in(auth_config_id):
+            carb.log_info(f"Already signed in for config: {auth_config_id}")
             return
 
         def sign_in_callback(success: bool):
             defer_call(self._build_ui)
             if success:
-                carb.log_info(f"Successfully signed in for config: {auth_config_name}")
-                self._on_signed_in_fn(auth_config_name)
+                carb.log_info(f"Successfully signed in for config: {auth_config_id}")
+                self._on_signed_in_fn(auth_config_id)
 
-        Auth0UIBuilder(auth_config_name).show(
+        Auth0UIBuilder(auth_config_id).show(
             self._sign_in_container, callback=sign_in_callback
         )

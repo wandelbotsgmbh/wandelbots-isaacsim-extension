@@ -68,9 +68,9 @@ class OgnReadIOState:
                 self.robot_configuration.motion_stream_configuration.cell,
                 self.robot_configuration.motion_stream_configuration.controller,
                 [self.io_id],
-                on_change=lambda io,
-                value,
-                weak_self=weakref.proxy(self): weak_self.on_change(io, value),
+                on_change=lambda io, value, weak_self=weakref.proxy(self): (
+                    weak_self.on_change(io, value)
+                ),
                 on_init=lambda ios, weak_self=weakref.proxy(self): weak_self.on_init(
                     ios
                 ),

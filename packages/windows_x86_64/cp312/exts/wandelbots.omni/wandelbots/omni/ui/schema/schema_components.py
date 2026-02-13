@@ -1,25 +1,30 @@
+import asyncio
+import re
+
 import carb
-from .widgets import SchemaComponent
-import wandelbots.usd as wb_schema  # type: ignore
-from pxr import UsdPhysics, Usd, Sdf
-from wandelbots.omni.utils.teaching import GhostObjectUtils, TCPSource
-from wandelbots.omni.utils.prims import PrimUtils
-from wandelbots.omni.usd.schema_utils import SchemaUtils
-from wandelbots.omni.usd.tcp_utils import TcpUtils
-import wandelbots_api_client.v2 as wb_v2
-import wandelbots_api_client.v2.models as wb_models
-from wandelbots_api_client.v2.models.virtual_controller import VirtualController
+import omni.kit.notification_manager as nm
 import omni.kit.window.popup_dialog
 import omni.ui
-import asyncio
-import omni.kit.notification_manager as nm
-from wandelbots.omni.manipulators import (
-    get_motion_group_configuration_from_prim,
-    MotionGroupConfiguration,
-)
-from wandelbots.omni.utils.api import get_api_client_from_config
-from wandelbots.omni.ui.dialogs import PrimSelectDialog
+import wandelbots_api_client.v2 as wb_v2
+import wandelbots_api_client.v2.models as wb_models
 from omni.kit.async_engine import run_coroutine
+from pxr import Sdf, Usd, UsdPhysics
+from wandelbots_api_client.v2.models.virtual_controller import VirtualController
+
+import wandelbots.usd as wb_schema  # type: ignore
+from wandelbots.omni.manipulators import (
+    MotionGroupConfiguration,
+    get_motion_group_configuration_from_prim,
+)
+from wandelbots.omni.ui.dialogs import PrimSelectDialog
+from wandelbots.omni.ui.widgets.tcp_selector import TcpModel
+from wandelbots.omni.usd.schema_utils import SchemaUtils
+from wandelbots.omni.usd.tcp_utils import TcpUtils
+from wandelbots.omni.utils.api import get_api_client_from_config
+from wandelbots.omni.utils.prims import PrimUtils, WSPose
+from wandelbots.omni.utils.teaching import GhostObjectUtils, TCPSource
+
+from .widgets import SchemaComponent
 
 
 class ToolApiSchema(SchemaComponent):
@@ -161,6 +166,15 @@ class GhostObjectApiSchema(SchemaComponent):
             return False
         return prim_list[0].HasAPI(wb_schema.ToolAPI)
 
+    def can_create_tcp_prim_from_nova(payload: dict) -> bool:
+        """Check if a Isaac Sim TCP Prim can be created from NOVA."""
+        # selected prim must be a tool prim with ToolAPI
+        prim_list: list[Usd.Prim] = payload.get("prim_list", [])
+        if len(prim_list) == 0 or len(prim_list) > 1:
+            return False
+        tool_prim = SchemaUtils.find_parent_tool(prim_list[0])
+        return tool_prim is not None and tool_prim.HasAPI(wb_schema.ToolAPI)
+
     def can_create_nova_tcp_object(payload: dict) -> bool:
         """Check if a NOVA TCP can be created from the given payload."""
         prim_list: list[Usd.Prim] = payload.get("prim_list", [])
@@ -182,11 +196,11 @@ class GhostObjectApiSchema(SchemaComponent):
         run_coroutine(
             GhostObjectApiSchema.create_ghost_object_from_prim(prim_list[0])
         ).add_done_callback(
-            lambda fut: carb.log_error(
-                f"Error creating ghost object: {fut.exception()}"
+            lambda fut: (
+                carb.log_error(f"Error creating ghost object: {fut.exception()}")
+                if fut.exception()
+                else None
             )
-            if fut.exception()
-            else None
         )
 
     async def create_ghost_object_from_prim(tool_prim: Usd.Prim) -> bool:
@@ -257,6 +271,133 @@ class GhostObjectApiSchema(SchemaComponent):
             return await GhostObjectApiSchema.create_nova_tcp_from_tcp_prim(prim)
         elif GhostObjectUtils.is_ghost_object(prim):
             return await GhostObjectApiSchema.create_tcp_from_ghost_object(prim)
+
+    async def create_tcp_prim_from_nova(payload: dict) -> bool:
+        """Create an Isaac Sim TCP prim from NOVA virtual controller TCPs."""
+        prim_list: list[Usd.Prim] = payload.get("prim_list", [])
+        prim = prim_list[0]
+        tool_prim = SchemaUtils.find_parent_tool(prim)
+
+        motion_group_prim = SchemaUtils.find_tool_linked_motion_group(tool_prim)
+        if motion_group_prim is None:
+            nm.post_notification(
+                "Could not find linked motion group", nm.NotificationStatus.WARNING
+            )
+            return False
+
+        motion_group_config = get_motion_group_configuration_from_prim(
+            motion_group_prim
+        )
+        # Fetch motion group description to get TCP objects
+        async with get_api_client_from_config(
+            motion_group_config.motion_stream_configuration.get_api_configuration()
+        ) as api_client:
+            motion_group_api = wb_v2.MotionGroupApi(api_client)
+            try:
+                motion_group_desc = await motion_group_api.get_motion_group_description(
+                    cell=motion_group_config.motion_stream_configuration.cell,
+                    controller=motion_group_config.motion_stream_configuration.controller,
+                    motion_group=motion_group_config.motion_stream_configuration.motion_group,
+                )
+            except Exception:
+                nm.post_notification(
+                    "Failed to fetch motion group description. Check if you are connected to NOVA.",
+                    nm.NotificationStatus.WARNING,
+                )
+                return False
+
+            if not motion_group_desc.tcps:
+                nm.post_notification(
+                    "No TCPs found in motion group", nm.NotificationStatus.INFO
+                )
+                return False
+
+            tcps = motion_group_desc.tcps
+
+        carb.log_info(f"Retrieved {len(tcps)} TCPs from motion group: {list(tcps)}")
+
+        # Show dialog for user to select TCP (non-blocking)
+        GhostObjectApiSchema._show_tcp_selection_dialog(tcps, prim)
+
+        return True
+
+    @staticmethod
+    def _show_tcp_selection_dialog(
+        tcps: dict[str, wb_models.RobotTcpData], tool_prim: Usd.Prim
+    ):
+        """Show dialog to let user select a TCP from the list using TcpSelector pattern."""
+
+        # Create the model using imported TcpModel
+        tcp_model = TcpModel(tcps, select_first_tcp_fallback=True)
+
+        def _on_tcp_selected(dialog: omni.kit.window.popup_dialog.FormDialog):
+            selected_tcp_id = tcp_model.selected_tcp
+            if selected_tcp_id:
+                carb.log_info(f"Selected TCP ID: {selected_tcp_id}")
+
+                selected_tcp = tcps.get(selected_tcp_id)
+                if selected_tcp:
+                    GhostObjectApiSchema._create_tcp_prim_from_nova_tcp(
+                        selected_tcp, tool_prim
+                    )
+                else:
+                    nm.post_notification(
+                        f"Selected TCP '{selected_tcp_id}' not found",
+                        nm.NotificationStatus.WARNING,
+                    )
+            else:
+                carb.log_warn("No TCP selected")
+            dialog.destroy()
+
+        def _on_cancel(dialog: omni.kit.window.popup_dialog.FormDialog):
+            carb.log_info("TCP selection cancelled by user")
+            dialog.destroy()
+
+        # Create selection dialog
+        dialog = omni.kit.window.popup_dialog.FormDialog(
+            message="Select a TCP from the connected robot controller:",
+            title="Select TCP",
+            ok_handler=_on_tcp_selected,
+            cancel_handler=_on_cancel,
+            ok_label="Fetch TCP",
+            cancel_label="Cancel",
+            field_defs=[
+                omni.kit.window.popup_dialog.FormDialog.FieldDef(
+                    "tcp_selection",
+                    "TCP:",
+                    lambda **kwargs: omni.ui.ComboBox(tcp_model, **kwargs),
+                    0,  # Default value
+                )
+            ],
+        )
+
+        dialog.show()
+
+    @staticmethod
+    def _create_tcp_prim_from_nova_tcp(
+        selected_tcp: wb_models.RobotTcpData, tool_prim: Usd.Prim
+    ):
+        """Create an Isaac Sim TCP prim from NOVA TCP data."""
+        carb.log_info(
+            f"TCP details - Position: {selected_tcp.pose.position}, Orientation: {selected_tcp.pose.orientation}"
+        )
+
+        # Create TCP prim as child of tool_prim (sanitize name for USD compatibility)
+        sanitized_name = re.sub(r"[^0-9A-Za-z]+", "_", selected_tcp.name)
+        tcp_prim = TcpUtils.create_tcp_prim(tool_prim, name=f"tcp_{sanitized_name}")
+        # Set the pose using the TCP data from NOVA
+        # Position and orientation are already in the correct format
+        tcp_pose = WSPose(
+            pose=selected_tcp.pose.position + selected_tcp.pose.orientation
+        )
+        PrimUtils.set_prim_pose(tcp_prim.GetPrim().GetPath().pathString, tcp_pose)
+
+        carb.log_info(f"Created TCP prim at {tcp_prim.GetPrim().GetPath()}")
+        nm.post_notification(
+            f"TCP '{selected_tcp.name}' created successfully",
+            duration=3.0,
+            status=nm.NotificationStatus.INFO,
+        )
 
     async def create_nova_tcp_from_tcp_prim(tcp_prim: Usd.Prim) -> bool:
         """Create a NOVA TCP from the given payload."""

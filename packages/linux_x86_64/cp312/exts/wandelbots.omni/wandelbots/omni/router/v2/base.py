@@ -3,7 +3,7 @@ import re
 from fastapi import Body, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
-from wandelbots.omni.datatypes import Auth0Credentials
+from wandelbots.omni.datatypes import Auth0Credentials, AuthProvider, EntraIDCredentials
 from wandelbots.omni.router.v2 import (
     cameras_router,
     ui_router,
@@ -17,17 +17,36 @@ from wandelbots.omni.router.v2 import (
     nucleus_router,
 )
 from wandelbots.omni.utils.auth import (
-    store_auth_token,
+    store_auth_tokens,
     validate_request,
+    get_auth_configs,
 )
-from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.utils.base import get_versions_of_enabled_extensions
 import traceback
 
+API_TITLE = "Wandelbots NOVA - Isaac Sim Extension API"
+API_DESCRIPTION = (
+    "This extension enables seamless connection between NVIDIA Isaac Sim™ and Wandelbots NOVA. "
+    "Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, "
+    "allowing users to easily configure various robot models and teach them through an intuitive interface "
+    "or by leveraging their preferred programming languages via APIs. "
+    "Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa "
+    "in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\n"
+    "The API provides comprehensive capabilities including:\n"
+    "- **Stage Management**: Load, save, and manipulate USD stages\n"
+    "- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n"
+    "- **Cameras**: Configure virtual cameras and viewports for visualization\n"
+    "- **Motion Groups**: Define and control robot motion groups and kinematics\n"
+    "- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n"
+    "- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n"
+    "- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n"
+    "- **UI Control**: Interact with the Isaac Sim user interface programmatically"
+)
+
 omniservice_app = FastAPI(
-    title="Wandelbots Omniservice",
-    description="A microservice-based framework for managing Omniverse functionalities",
-    version="2.19.1",
+    title=API_TITLE,
+    description=API_DESCRIPTION,
+    version="2.26.0",
     docs_url=None,
     redoc_url=None,
 )
@@ -97,36 +116,54 @@ async def get_versions():
     },
 )
 async def authenticate(
-    credentials: Auth0Credentials = Body(
-        ..., description="Auth0 credentials from NOVA"
+    credentials: Auth0Credentials | EntraIDCredentials = Body(
+        ..., description="Authentication credentials from NOVA"
     ),
 ) -> None:
     """
-    Starting with 24.8: This endpoint allows you to authenticate via the provided access token of your NOVA instance.
+    This Endpoint allows you to authenticate with Wandelbots NOVA using your access token.
     """
     try:
-        protocol = "https" if credentials.is_secured else "http"
-        base_url = f"{protocol}://{credentials.host}/"
-        if credentials.access_token:
-            token_to_validate = credentials.access_token
+        # Get available auth configs
+        auth_configs = get_auth_configs()
+
+        # Validate identifier exists in auth configs
+        if credentials.id not in auth_configs:
+            available_identifiers = ", ".join(auth_configs.keys())
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid identifier '{credentials.id}'. Available identifiers: {available_identifiers}",
+            )
+
+        # Get auth config for the identifier
+        auth_config = auth_configs[credentials.id]
+
+        host = auth_config.domain
+        provider = auth_config.provider
+
+        if not credentials.access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="access_token is required",
+            )
+
+        if provider == AuthProvider.AUTH0:
+            base_url = f"https://api.{host.replace('auth', '')}/v1/instances"
         else:
-            token_to_validate = get_instances_api().get_auth_token_from_host(
-                credentials.host
-            )
+            base_url = f"https://{host}/instances"
 
-        await validate_request(token_to_validate, base_url)
-        if token_to_validate is not None:
-            auth_config_name = get_instances_api().get_auth_config_name_from_host(
-                credentials.host
-            )
-            if auth_config_name is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"No auth config found for host: {credentials.host}",
-                )
+        # Validate the token by making a request to the host
+        await validate_request(credentials.access_token, base_url, None)
 
-            store_auth_token(token=token_to_validate, auth_config_name=auth_config_name)
+        # Store the access token
+        token_response = {"access_token": credentials.access_token}
+        store_auth_tokens(token_response, credentials.id)
+        carb.log_info(
+            f"Successfully authenticated and stored token for id '{credentials.id}'"
+        )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -153,7 +190,7 @@ async def api_documentation():
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-    <title>Wandelbots Omniservice</title>
+    <title>Wandelbots NOVA - Isaac Sim Extension API</title>
     <!-- Embed elements Elements via Web Component -->
     <script src="https://unpkg.com/@stoplight/elements/web-components.min.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/@stoplight/elements/styles.min.css">

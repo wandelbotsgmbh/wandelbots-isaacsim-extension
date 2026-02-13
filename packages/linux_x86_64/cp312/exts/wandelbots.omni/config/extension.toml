@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp312"]
 target.platform = ["linux-x86_64"]
-version = "2.19.1"
+version = "2.26.0"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -81,6 +81,9 @@ exclude = ["Ogn*Database.py"]
 
 [[python.module]]
 name = "wandelbots.omni"
+
+[[python.module]]
+name = "wandelbots"
 
 [[python.module]]
 path = "pip_prebundle"

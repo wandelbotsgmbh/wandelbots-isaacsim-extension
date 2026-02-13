@@ -87,16 +87,16 @@ class NOVAInstancesService:
         instance_store.store_instance(instance)
         carb.log_verbose(f"Custom instance added: {instance.host}")
 
-    def sign_out(self, auth_config_name: str, callback: Optional[callable] = None):
+    def sign_out(self, auth_config_id: str, callback: Optional[callable] = None):
         carb.log_verbose("Signing out user - invalidating auth token")
-        invalidate_auth_token(auth_config_name)
+        invalidate_auth_token(auth_config_id)
         self._cloud_instances.clear()
         callback()
 
-    def is_signed_in(self, auth_config_name: str) -> bool:
-        auth_token = get_auth_token(auth_config_name)
+    def is_signed_in(self, auth_config_id: str) -> bool:
+        auth_token = get_auth_token(auth_config_id)
         if auth_token == "":
-            carb.log_verbose(f"Auth token is empty for config: {auth_config_name}")
+            carb.log_verbose(f"Auth token is empty for config: {auth_config_id}")
         return auth_token != "" and auth_token is not None
 
     def remove_instance(
@@ -286,12 +286,12 @@ class NOVAInstancesService:
 
     def toggle_instance_status(
         self,
-        auth_config_name: str,
+        auth_config_id: str,
         instance: NOVACloudInstance,
         callback: Callable[[], None] | None = None,
     ):
         self._instances_api.toggle_instance_status(
-            auth_config_name=auth_config_name, instance=instance
+            auth_config_id=auth_config_id, instance=instance
         )
         if callback:
             callback()

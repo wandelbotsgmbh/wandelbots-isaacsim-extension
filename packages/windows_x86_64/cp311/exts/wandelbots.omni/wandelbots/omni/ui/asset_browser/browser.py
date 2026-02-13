@@ -39,8 +39,9 @@ class WandelbotsAssetBrowserManager:
             if self._window is None:
                 self._window = WandelbotsAssetBrowserWindow()
                 self._window.set_visibility_changed_fn(
-                    lambda vis, ws=weakref.ref(self): ws()
-                    and ws()._on_window_visibility_changed(vis)
+                    lambda vis, ws=weakref.ref(self): (
+                        ws() and ws()._on_window_visibility_changed(vis)
+                    )
                 )
             else:
                 self._window.visible = True
@@ -67,10 +68,12 @@ class WandelbotsAssetBrowserManager:
                     omni.kit.menu.utils.MenuItemDescription(
                         name="Wandelbots NOVA Assets Browser",
                         ticked=VISIBLE_ON_STARTUP,
-                        ticked_fn=lambda ws=weakref.ref(self): ws()
-                        and ws()._is_window_visible(),
-                        onclick_fn=lambda ws=weakref.ref(self): ws()
-                        and ws()._toggle_window(),
+                        ticked_fn=lambda ws=weakref.ref(self): (
+                            ws() and ws()._is_window_visible()
+                        ),
+                        onclick_fn=lambda ws=weakref.ref(self): (
+                            ws() and ws()._toggle_window()
+                        ),
                     )
                 ],
             )

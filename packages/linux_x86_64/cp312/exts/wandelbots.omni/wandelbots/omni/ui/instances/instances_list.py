@@ -12,7 +12,11 @@ from wandelbots.omni.instances.models import (
 )
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.instances.instance import NOVAInstanceUIBuilder
-from .widgets import NOVACloudInstancesContainer, SignInWidget
+from wandelbots.omni.ui.instances.widgets import (
+    NOVACloudInstancesContainer,
+    SignInWidget,
+)
+from wandelbots.omni.utils.auth import get_auth_configs
 
 
 class NOVAInstanceListUIBuilder(BaseUIBuilder):
@@ -141,28 +145,28 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             for _, container in self._cloud_instances.items():
                 container.build_ui()
             any_not_signed_in = any(
-                not self._instances_service.is_signed_in(auth_config_name)
-                for auth_config_name in self._cloud_instances.keys()
+                not self._instances_service.is_signed_in(auth_config_id)
+                for auth_config_id in self._cloud_instances.keys()
             )
             if any_not_signed_in:
 
-                def _on_sign_in_callback(auth_config_name, weak_ref=weakref.ref(self)):
+                def _on_sign_in_callback(auth_config_id, weak_ref=weakref.ref(self)):
                     ref_instance = weak_ref()
                     if ref_instance:
-                        ref_instance._on_sign_in(auth_config_name)
+                        ref_instance._on_sign_in(auth_config_id)
 
                 SignInWidget(
                     self._instances_service,
                     _on_sign_in_callback,
                 )
 
-    def _on_sign_in(self, auth_config_name: str):
-        if auth_config_name not in self._cloud_instances:
+    def _on_sign_in(self, auth_config_id: str):
+        if auth_config_id not in self._cloud_instances:
             carb.log_error(
-                f"Auth config name {auth_config_name} not found in cloud instances containers."
+                f"Auth config name {auth_config_id} not found in cloud instances containers."
             )
             return
-        self._cloud_instances[auth_config_name].refresh_cloud_instances()
+        self._cloud_instances[auth_config_id].refresh_cloud_instances()
         defer_call(self._display_cloud_instances)
 
     def _display_instances(self):
@@ -209,6 +213,10 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         self._fetch_instances_data()
         self._display_instances()
 
+    def _get_auth_config_name(self, auth_config_id: str) -> str:
+        auth_configs = get_auth_configs()
+        return auth_configs.get(auth_config_id).name
+
     def _fetch_instances_data(self):
         try:
             # Clear previous lists to avoid duplications on refresh
@@ -216,17 +224,15 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             self._custom_instances.clear()
 
             self._cloud_instances = {
-                auth_config_name: NOVACloudInstancesContainer(
-                    auth_config_name,
-                    self._instances_service,
-                    on_sign_out_fn=lambda auth_config_name=auth_config_name,
-                    weak_ref=weakref.ref(self): weak_ref()._on_sign_out(
-                        auth_config_name
-                    )
-                    if weak_ref()
-                    else None,
+                auth_config_id: NOVACloudInstancesContainer(
+                    auth_config_id=auth_config_id,
+                    auth_config_name=self._get_auth_config_name(auth_config_id),
+                    instances_service=self._instances_service,
+                    on_sign_out_fn=lambda auth_config_id=auth_config_id, weak_ref=weakref.ref(self): (
+                        weak_ref()._on_sign_out(auth_config_id) if weak_ref() else None
+                    ),
                 )
-                for auth_config_name in self._instances_service.instances_api.get_cloud_instances().keys()
+                for auth_config_id in self._instances_service.instances_api.get_cloud_instances().keys()
             }
 
             custom_instances = (
@@ -295,9 +301,9 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             self._custom_instance_form.visible = True
             self._display_add_custom_instance_form()
 
-    def _on_sign_out(self, auth_config_name: str = None):
+    def _on_sign_out(self, auth_config_id: str = None):
         def on_complete():
             defer_call(self._display_header)
             defer_call(self._refresh_data)
 
-        self._instances_service.sign_out(auth_config_name, callback=on_complete)
+        self._instances_service.sign_out(auth_config_id, callback=on_complete)

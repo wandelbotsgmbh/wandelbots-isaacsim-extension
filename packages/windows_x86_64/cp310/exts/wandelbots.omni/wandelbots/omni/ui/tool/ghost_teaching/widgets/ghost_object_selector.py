@@ -101,10 +101,8 @@ class GhostObjectSelector:
 
         self._assign_go_subscription = (
             self.ghost_objects_model.subscribe_item_changed_fn(
-                lambda model,
-                item,
-                weak_self=weakref.proxy(self): weak_self._assign_ghost_object(
-                    model, item
+                lambda model, item, weak_self=weakref.proxy(self): (
+                    weak_self._assign_ghost_object(model, item)
                 )
             )
         )

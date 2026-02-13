@@ -24,6 +24,7 @@ from .store_collision_components_api import StoreCollisionComponentsApi
 from .store_collision_scenes_api import StoreCollisionScenesApi
 from .store_object_api import StoreObjectApi
 from .system_api import SystemApi
+from .version_api import VersionApi
 from .virtual_robot_api import VirtualRobotApi
 from .virtual_robot_behavior_api import VirtualRobotBehaviorApi
 from .virtual_robot_mode_api import VirtualRobotModeApi
@@ -54,6 +55,7 @@ __all__ = [
     "StoreCollisionScenesApi", 
     "StoreObjectApi", 
     "SystemApi", 
+    "VersionApi", 
     "VirtualRobotApi", 
     "VirtualRobotBehaviorApi", 
     "VirtualRobotModeApi", 

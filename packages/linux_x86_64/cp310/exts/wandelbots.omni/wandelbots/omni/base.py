@@ -1,9 +1,13 @@
 from fastapi import FastAPI
-from wandelbots.omni.router.v2.base import omniservice_app as v2_app
+from wandelbots.omni.router.v2.base import (
+    API_TITLE,
+    API_DESCRIPTION,
+    omniservice_app as v2_app,
+)
 
 omniservice_base_app = FastAPI(
-    title="Wandelbots Omniservice",
-    description="A microservice-based framework for managing Omniverse functionalities",
+    title=API_TITLE,
+    description=API_DESCRIPTION,
     docs_url=None,
     redoc_url=None,
 )

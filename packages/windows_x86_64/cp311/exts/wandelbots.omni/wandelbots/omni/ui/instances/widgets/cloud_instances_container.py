@@ -77,16 +77,18 @@ def _build_frame_header(
 class NOVACloudInstancesContainer:
     def __init__(
         self,
+        auth_config_id: str,
         auth_config_name: str,
         instances_service: NOVAInstancesService,
         on_sign_out_fn: Optional[Callable],
     ):
         self.container: ui.VStack = None
+        self._auth_config_id = auth_config_id
         self._auth_config_name = auth_config_name
         self._instances_service = instances_service
         self._cloud_instances: list[NOVACloudInstance] = (
             self._instances_service.instances_api.get_cloud_instances_by_auth(
-                auth_config_name
+                auth_config_id
             )
         )
         self._one_of_many_providers = (
@@ -95,7 +97,7 @@ class NOVACloudInstancesContainer:
         self._on_sign_out_fn = on_sign_out_fn
 
     def build_ui(self):
-        if not self._instances_service.is_signed_in(self._auth_config_name):
+        if not self._instances_service.is_signed_in(self._auth_config_id):
             return
 
         self.container = ui.VStack()
@@ -122,7 +124,7 @@ class NOVACloudInstancesContainer:
 
                             title = "No instances available. Please create one."
                             if self._one_of_many_providers:
-                                title = f"({self._auth_config_name}) {title}"
+                                title = f"[{self._auth_config_name}] {title}"
                             ui.Label(
                                 title,
                                 width=ui.Fraction(1),
@@ -142,13 +144,13 @@ class NOVACloudInstancesContainer:
     def refresh_cloud_instances(self):
         self._cloud_instances = (
             self._instances_service.instances_api.get_cloud_instances_by_auth(
-                self._auth_config_name
+                self._auth_config_id
             )
         )
 
     def _display_cloud_instances_section(self):
         """Display cloud instances or sign-in prompt."""
-        if not self._instances_service.is_signed_in(self._auth_config_name):
+        if not self._instances_service.is_signed_in(self._auth_config_id):
             return
 
         if len(self._cloud_instances) == 0:
@@ -156,14 +158,14 @@ class NOVACloudInstancesContainer:
             return
 
         with ui.CollapsableFrame(
-            title=f"({self._auth_config_name}) Cloud Instances"
+            title=f"[{self._auth_config_name}] Cloud Instances"
             if self._one_of_many_providers
             else "Cloud Instances",
             height=0,
-            build_header_fn=lambda collapsed,
-            text,
-            weak_self=weakref.proxy(self): _build_frame_header(
-                collapsed, text, on_sign_out_fn=weak_self._on_sign_out_fn
+            build_header_fn=lambda collapsed, text, weak_self=weakref.proxy(self): (
+                _build_frame_header(
+                    collapsed, text, on_sign_out_fn=weak_self._on_sign_out_fn
+                )
             ),
         ):
             with ui.VStack(spacing=5, height=0):

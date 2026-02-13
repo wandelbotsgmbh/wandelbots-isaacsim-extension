@@ -1,4 +1,6 @@
-from typing import cast
+from typing import Callable, cast
+import weakref
+import carb.events
 import numpy as np
 import isaacsim.core.utils.prims as prims_utils
 from wandelbots.omni.datatypes import (
@@ -12,7 +14,7 @@ from wandelbots.omni.datatypes import (
 from wandelbots.omni.environment import host_database
 from isaacsim.core.prims import RigidPrim
 from isaacsim.sensors.camera import Camera
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, Sdf
 import carb
 import omni.usd
 from wandelbots.omni.utils.scene import SceneUtils
@@ -23,6 +25,8 @@ from wandelbots.omni.utils.math import (
     pose_to_matrix as math_pose_to_matrix,
     matrix_to_pose as math_matrix_to_pose,
 )
+from omni.usd import get_watcher
+import omni.timeline
 
 
 class PrimUtils:
@@ -62,7 +66,7 @@ class PrimUtils:
             else xform.GetLocalTransformation()
         )
 
-        # Orthnormalize the transformation matrix to avoid scaling issues
+        # Orthonormalize the transformation matrix to avoid scaling issues
         if not transformation.Orthonormalize():
             carb.log_warn(f"Transform for prim {prim.GetPath()} orthonormalize failed.")
         position = np.array(transformation.ExtractTranslation())
@@ -95,7 +99,11 @@ class PrimUtils:
         prim = PrimUtils.get_prim(prim_path, stage)
         if prim is None or not prim.IsValid():
             raise ValueError(f"Prim at path {prim_path} is not valid.")
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI) and prim.GetAttribute(
+            "physics:rigidBodyEnabled"
+        ).Get(Usd.TimeCode.Default()):
+            # RigidPrim throws when "physics:rigidBodyEnabled" is false
+            # since its static then we can just get the pose via the xformable method
             prim = RigidPrim(prim_path)
             poses = (
                 prim.get_world_poses()
@@ -301,3 +309,122 @@ class PrimUtils:
         rotation: Gf.Rotation = world_transform.ExtractRotation()
 
         return translation, rotation, scale
+
+
+class PrimPoseWatcher:
+    def __init__(
+        self,
+        prim: Usd.Prim,
+        pose_changed_fn: Callable[[Pose], None],
+        relative_prim: Usd.Prim = None,
+        max_rotation_dif_rad: float = 0.01,  # radians
+        max_translation_dif_m: float = 0.001,  # meters
+    ):
+        self._stage: Usd.Stage = prim.GetStage()
+        self._prim = prim
+        self._pose_changed_fn = pose_changed_fn
+        self._relative_prim = relative_prim
+        self._change_subscriptions: list[carb.Subscription] = []
+        self._last_pose: Pose | None = None
+        self._max_rotation_dif = max_rotation_dif_rad  # radians
+        self._max_translation_dif = max_translation_dif_m * SceneUtils.get_stage_units(
+            self._stage
+        )
+
+        self._timeline = omni.timeline.get_timeline_interface()
+        self._timeline_stop_reset_applied = False
+        carb.log_verbose(f"{self} listening to timeline events")
+
+        def _on_timeline_events(event: carb.events.IEvent, weak_self=weakref.ref(self)):
+            weak_self_instance = weak_self()
+            if not weak_self_instance:
+                return
+            if (
+                event.type == omni.timeline.TimelineEventType.PLAY.value
+                or event.type == omni.timeline.TimelineEventType.STOP.value
+            ):
+                weak_self_instance._pose_changed_fn(weak_self_instance.current_pose)
+                weak_self_instance._timeline_stop_reset_applied = False
+            elif (
+                weak_self_instance._timeline.is_stopped()
+                and not weak_self_instance._timeline_stop_reset_applied
+            ):
+                # The timeline stops, but the position reset happens one frame later so we wait for the next tick.
+                weak_self_instance._pose_changed_fn(weak_self_instance.current_pose)
+                weak_self_instance._timeline_stop_reset_applied = True
+
+        self._timeline_sub = (
+            self._timeline.get_timeline_event_stream().create_subscription_to_pop(
+                lambda event, weak_self=weakref.ref(self): (
+                    _on_timeline_events(event=event) if weak_self() else None
+                )
+            )
+        )
+
+        carb.log_verbose(f"Subscribing to {prim} prim changes.")
+
+        def _on_prim_changed(path: Sdf.Path = None, weak_self=weakref.ref(self)):
+            path_str: str = path.pathString
+            if not (
+                path_str.endswith(":translate")
+                or path_str.endswith(":rotate")
+                or path_str.endswith(":orient")
+            ):
+                return
+
+            weak_self_instance = weak_self()
+            if not weak_self_instance:
+                return
+
+            current_pose = weak_self_instance.current_pose
+
+            if weak_self_instance._last_pose:
+                translation_dif = np.linalg.norm(
+                    np.array(current_pose.pose[:3])
+                    - np.array(weak_self_instance._last_pose.pose[:3])
+                )
+                no_translation_dif = (
+                    translation_dif <= weak_self_instance._max_translation_dif
+                )
+
+                rotation_dif = np.linalg.norm(
+                    np.array(current_pose.pose[3:])
+                    - np.array(weak_self_instance._last_pose.pose[3:])
+                )
+                no_rotation_dif = rotation_dif <= weak_self_instance._max_rotation_dif
+
+                if no_translation_dif and no_rotation_dif:
+                    return
+
+            weak_self_instance._pose_changed_fn(current_pose)
+            weak_self_instance._last_pose = current_pose
+
+        subscribe_prim = self._prim
+        while subscribe_prim:
+            carb.log_verbose(f"Subscribing to prim changes for {subscribe_prim}.")
+            self._change_subscriptions.append(
+                get_watcher().subscribe_to_change_info_path(
+                    subscribe_prim.GetPath(),
+                    _on_prim_changed,
+                )
+            )
+            subscribe_prim = subscribe_prim.GetParent()
+
+    @property
+    def current_pose(self) -> Pose:
+        if self._relative_prim:
+            return PrimUtils.get_relative_prim_pose(
+                self._relative_prim.GetPrimPath().pathString,
+                self._prim.GetPath().pathString,
+            )
+        return PrimUtils.get_prim_pose(
+            self._prim.GetPrimPath().pathString,
+            coordinate_system="world",
+        )
+
+    def __del__(self):
+        carb.log_verbose(f"Unsubscribing from {self._prim} prim changes.")
+        for subscription in self._change_subscriptions:
+            subscription.unsubscribe()
+        self._change_subscriptions.clear()
+        self._timeline_sub.unsubscribe()

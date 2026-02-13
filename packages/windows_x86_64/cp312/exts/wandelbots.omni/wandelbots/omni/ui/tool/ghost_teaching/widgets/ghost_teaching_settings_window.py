@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import field
 from typing import Any, Callable, Literal
+import weakref
 from attr import dataclass
 import omni.ui as ui
 import omni.kit.app
@@ -13,9 +14,13 @@ from .motion_command_selector import (
     MotionCommandsModel,
 )
 import carb.settings
+import wandelbots.omni.ui.colors as color_utils
+from wandelbots.omni.ui.overlay.ghost_teaching.ghost_teaching_overlay import (
+    CARB_OVERLAY_COLOR,
+    CARB_OVERLAY_VISIBLE,
+)
+from wandelbots.omni.utils.teaching import CARB_SETTINGS_PREFIX
 
-
-CARB_SETTINGS_PREFIX = "/persistent/exts/wandelbots.omni/ghost_teaching"
 CARB_STAY_OPEN = f"{CARB_SETTINGS_PREFIX}/stay_open"
 CARB_OPEN_WITH_GHOST_OBJECT = f"{CARB_SETTINGS_PREFIX}/open_with_ghost_object"
 CARB_SELECT_GHOST_OBJECT_IN_SCENE = (
@@ -58,6 +63,9 @@ class SettingsModel(Observable):
     velocity: int = 200
     acceleration: int = 1000
     motion_command: Literal["cartesian_p2p", "joint_p2p", "line"] = "cartesian_p2p"
+    # Overlay settings
+    overlay_visible: bool = True
+    overlay_color: str = "#A936DA16"
 
 
 class GhostTeachingSettingsWindow(ui.Window):
@@ -106,6 +114,7 @@ class GhostTeachingSettingsWindow(ui.Window):
             with ui.VStack(height=0, spacing=8):
                 build_section("Ghost teaching", self._build_ghost_teaching_settings)
                 build_section("Tool bar", self._build_tool_bar_settings)
+                build_section("Overlay", self._build_overlay_settings)
 
     def _build_tool_bar_settings(self):
         with ui.HStack(spacing=8):
@@ -151,6 +160,55 @@ class GhostTeachingSettingsWindow(ui.Window):
                 self.model.select_ghost_object_in_scene = m.get_value_as_bool()
 
             int_drag.model.add_value_changed_fn(set_select_in_scene)
+
+    def _build_overlay_settings(self):
+        settings = carb.settings.get_settings()
+        with ui.HStack(spacing=8):
+            ui.Label("Visible", width=ui.Fraction(1))
+            ui.Spacer(width=ui.Fraction(1))
+            int_drag = ui.CheckBox(
+                model=ui.SimpleBoolModel(self.model.overlay_visible),
+                name="Visible",
+                width=20,
+                tooltip="If enabled, the ghost object overlay will be visible in the viewport",
+            )
+
+            def set_overlay_visible(m: ui.SimpleBoolModel):
+                self.model.overlay_visible = m.get_value_as_bool()
+                settings.set(CARB_OVERLAY_VISIBLE, self.model.overlay_visible)
+
+            int_drag.model.add_value_changed_fn(set_overlay_visible)
+
+        with ui.HStack(spacing=8):
+            ui.Label("Mesh color", width=ui.Fraction(1))
+            ui.Spacer(width=ui.Fraction(1))
+
+            def _overlay_color_changed(
+                model: ui.AbstractItemModel,
+                item: ui.AbstractItem,
+                weak_self=weakref.ref(self),
+            ):
+                self_instance = weak_self()
+
+                if not self_instance:
+                    return
+
+                color = []
+                for item in model.get_item_children():
+                    val = model.get_item_value_model(item).get_value_as_float()
+                    color.append(val)
+
+                self_instance.model.overlay_color = color_utils.float_array_to_hex(
+                    color
+                )
+                settings.set(CARB_OVERLAY_COLOR, self_instance.model.overlay_color)
+
+            color_picker = ui.ColorWidget(
+                *color_utils.hex_to_float_array(self.model.overlay_color),
+                width=120,
+                tooltip="Color of the ghost object overlay",
+            )
+            color_picker.model.add_end_edit_fn(_overlay_color_changed)
 
     def _build_ghost_teaching_settings(self):
         with ui.HStack(spacing=8):
@@ -256,6 +314,13 @@ def load_ghost_teaching_carb_settings() -> SettingsModel:
     if settings.get(CARB_MOTION_COMMAND) is not None:
         settings_model.motion_command = settings.get_as_string(CARB_MOTION_COMMAND)
 
+    if settings.get(CARB_OVERLAY_VISIBLE) is not None:
+        settings_model.overlay_visible = settings.get_as_bool(CARB_OVERLAY_VISIBLE)
+    if (
+        settings.get(CARB_OVERLAY_COLOR) is not None
+        and settings.get(CARB_OVERLAY_COLOR) != ""
+    ):
+        settings_model.overlay_color = settings.get_as_string(CARB_OVERLAY_COLOR)
     return settings_model
 
 
@@ -265,3 +330,5 @@ def save_ghost_teaching_carb_settings(model: SettingsModel):
     settings.set(CARB_OPEN_WITH_GHOST_OBJECT, model.open_with_ghost_object)
     settings.set(CARB_SELECT_GHOST_OBJECT_IN_SCENE, model.select_ghost_object_in_scene)
     settings.set(CARB_MOTION_COMMAND, model.motion_command)
+    settings.set(CARB_OVERLAY_VISIBLE, model.overlay_visible)
+    settings.set(CARB_OVERLAY_COLOR, model.overlay_color)

@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from collections.abc import MutableMapping
 import omni.kit.app
@@ -151,38 +152,149 @@ class InstanceStore(BaseStore):
                 )
         return instances
 
+    def cleanup_instances(self):
+        """Remove instances with missing or invalid data."""
+        invalid_hosts = []
+        for host, instance_data in self._data.items():
+            try:
+                NOVACustomInstance(**instance_data)
+            except Exception as e:
+                carb.log_warn(
+                    f"Invalid instance data for host {host}, marking for removal: {e}"
+                )
+                invalid_hosts.append(host)
+
+        for host in invalid_hosts:
+            del self._data[host]
+            carb.log_info(f"Removed invalid instance for host: {host}")
+
+        if invalid_hosts:
+            self.save_data()
+            carb.log_info(f"Cleaned up {len(invalid_hosts)} invalid instances.")
+
 
 @dataclass
-class CredentialStore(BaseStore):
+class CredentialStore:
+    """Store credentials using carb settings with auth_config_id as key."""
+
+    SETTINGS_PREFIX = "/persistent/wandelbots/credentials"
+
     def __init__(self):
-        super().__init__(file_name="credentials.json")
+        self._settings = carb.settings.get_settings()
 
-    def store_token(self, auth_config_name: str, token: str):
-        self.load_data()
-        if not auth_config_name or not token:
+    def _get_config_path(self, auth_config_id: str) -> str:
+        """Get the settings path for an auth config."""
+        # Sanitize auth_config_id to be settings-path friendly
+        sanitized_name = auth_config_id.replace(".", "_").replace(":", "_")
+        return f"{self.SETTINGS_PREFIX}/{sanitized_name}"
+
+    def _get_token_data(self, auth_config_id: str) -> dict:
+        """Get token data dict for an auth config."""
+        path = self._get_config_path(auth_config_id)
+        token_json = self._settings.get(f"{path}/data")
+        if token_json:
+            try:
+                return json.loads(token_json)
+            except json.JSONDecodeError:
+                carb.log_error(
+                    f"Failed to decode token data for auth config {auth_config_id}"
+                )
+                return {}
+        return {}
+
+    def _set_token_data(self, auth_config_id: str, data: dict):
+        """Set token data dict for an auth config."""
+        path = self._get_config_path(auth_config_id)
+        self._settings.set(f"{path}/data", json.dumps(data))
+
+    def store_token(self, auth_config_id: str, token: str, expires_in: int = None):
+        """Store access token for an auth config."""
+        if not auth_config_id or not token:
             raise ValueError("Auth name and token must be provided.")
-        self._data[auth_config_name] = token
-        self.save_data()
 
-    def get_token(self, auth_config_name: str) -> str:
-        self.load_data()
-        if not auth_config_name:
+        data = self._get_token_data(auth_config_id)
+        data["access_token"] = token
+
+        # Store expiration timestamp if expires_in is provided
+        if expires_in is not None:
+            expiration_time = time.time() + expires_in
+            data["expires_at"] = expiration_time
+
+        self._set_token_data(auth_config_id, data)
+        carb.log_verbose(f"Stored access token for auth config: {auth_config_id}")
+
+    def store_refresh_token(self, auth_config_id: str, refresh_token: str):
+        """Store refresh token for an auth config."""
+        if not auth_config_id or not refresh_token:
+            raise ValueError("Auth name and refresh token must be provided.")
+
+        data = self._get_token_data(auth_config_id)
+        data["refresh_token"] = refresh_token
+        self._set_token_data(auth_config_id, data)
+        carb.log_verbose(f"Stored refresh token for auth config: {auth_config_id}")
+
+    def get_token(self, auth_config_id: str) -> str:
+        """Get access token for an auth config."""
+        if not auth_config_id:
             raise ValueError("Auth name must be provided.")
-        if auth_config_name not in self._data:
+
+        data = self._get_token_data(auth_config_id)
+        if not data:
             carb.log_verbose(
-                f"No token found for {auth_config_name}. Authentication required."
+                f"No token found for {auth_config_id}. Authentication required."
             )
             return None
-        return self._data[auth_config_name]
 
-    def remove_token(self, auth_config_name: str):
-        if not auth_config_name:
+        return data.get("access_token")
+
+    def get_refresh_token(self, auth_config_id: str) -> str:
+        """Get refresh token for an auth config."""
+        if not auth_config_id:
             raise ValueError("Auth name must be provided.")
-        if auth_config_name in self._data:
-            del self._data[auth_config_name]
-            self.save_data()
-            carb.log_info(f"Token removed for auth: {auth_config_name}")
+
+        data = self._get_token_data(auth_config_id)
+        return data.get("refresh_token")
+
+    def get_token_expiration(self, auth_config_id: str) -> float | None:
+        """Get token expiration timestamp for an auth config."""
+        if not auth_config_id:
+            raise ValueError("Auth name must be provided.")
+
+        data = self._get_token_data(auth_config_id)
+        return data.get("expires_at")
+
+    def is_token_expired(
+        self, auth_config_id: str, grace_period_in_seconds: int = 300
+    ) -> bool:
+        """Check if token is expired or will expire soon."""
+        expires_at = self.get_token_expiration(auth_config_id)
+        if expires_at is None:
+            # No expiration info - assume not expired
+            return False
+
+        # Consider expired if current time + buffer >= expiration time
+        return (time.time() + grace_period_in_seconds) >= expires_at
+
+    def remove_token(self, auth_config_id: str):
+        """Remove all tokens for an auth config."""
+        if not auth_config_id:
+            raise ValueError("Auth name must be provided.")
+
+        path = self._get_config_path(auth_config_id)
+        if self._settings.get(f"{path}/data"):
+            self._settings.set(f"{path}/data", "")
+            carb.log_info(f"Token removed for auth config: {auth_config_id}")
         else:
             carb.log_warn(
-                f"No token found for auth: {auth_config_name} - nothing to remove"
+                f"No token found for auth config: {auth_config_id} - nothing to remove"
             )
+
+    def clear(self):
+        """Clear all stored credentials."""
+        carb.log_verbose("Clearing credential store")
+        # Get all credential paths and remove them
+        all_settings = self._settings.get_settings_dictionary(self.SETTINGS_PREFIX)
+        if all_settings:
+            for key in all_settings:
+                self._settings.set(f"{self.SETTINGS_PREFIX}/{key}", "")
+        carb.log_info("All credentials cleared")

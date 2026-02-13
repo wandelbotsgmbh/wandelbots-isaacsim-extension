@@ -1,8 +1,15 @@
 import pathlib
 from enum import Enum
-from typing import Literal, Optional, Union
-from pydantic import BaseModel, SecretStr, Field, conlist
+from typing import Literal, Union
+from pydantic import BaseModel, Field, conlist
 import wandelbots_api_client.v2.models as nova_models
+
+DEFAULT_AUTH0_IDENTIFIER = "default"
+
+
+class AuthProvider(str, Enum):
+    AUTH0 = "auth0"
+    ENTRA = "entra"
 
 
 class UsdStageModel(BaseModel):
@@ -40,16 +47,24 @@ class QuatPose(BaseModel):
 
 
 class Auth0Credentials(BaseModel):
-    host: str
-    is_secured: bool = True
-    access_token: Optional[str]
+    id: str = Field(
+        DEFAULT_AUTH0_IDENTIFIER,
+        description="Provide the id to find the matching Auth0 auth configuration.",
+    )
+    access_token: str = Field(
+        ...,
+        description="Provide the access token obtained for authentication",
+    )
 
 
-class BasicAuthCredentials(BaseModel):
-    host: str
-    is_secured: bool = True
-    username: Optional[str]
-    password: Optional[SecretStr]
+class EntraIDCredentials(BaseModel):
+    id: str = Field(
+        description="Provide the id to find the matching Entra ID auth configuration.",
+    )
+    access_token: str = Field(
+        ...,
+        description="Provide the access token obtained for authentication",
+    )
 
 
 class CustomPrimData(BaseModel):
@@ -99,12 +114,14 @@ SYNTHETIC_DATA_CAPTURE_TYPES = Literal[
 COORDINATE_SYSTEM = Literal["world", "local"]
 ROTATION_TYPES = Literal["cartesian", "quaternions"]
 
-PROJECT_MDL_DIR = pathlib.Path(".wandelbots") / "mdl"
+PROJECT_MDL_DIR = pathlib.Path(".wandelbots", "mdl")
 
-GHOST_MATERIAL_MDL_EXT_FILE = pathlib.Path(__file__).parent / "assets" / "wb_ghost.mdl"
-GHOST_MATERIAL_MDL_PROJECT_FILE = PROJECT_MDL_DIR / "wb_ghost.mdl"
+GHOST_MATERIAL_MDL_EXT_FILE = pathlib.Path(__file__).parent.joinpath(
+    "assets", "wb_ghost.mdl"
+)
+GHOST_MATERIAL_MDL_PROJECT_FILE = pathlib.Path(PROJECT_MDL_DIR, "wb_ghost.mdl")
 
 
 SHADER_IDENTIFIER = "GhostTeaching"
 
-GIZMO_USD_FILE = str(pathlib.Path(__file__).parent / "assets" / "gizmo.usd")
+GIZMO_USD_FILE = str(pathlib.Path(__file__).parent.joinpath("assets", "gizmo.usd"))

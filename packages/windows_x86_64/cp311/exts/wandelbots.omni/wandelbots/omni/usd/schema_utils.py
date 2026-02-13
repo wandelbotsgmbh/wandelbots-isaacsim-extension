@@ -1,4 +1,4 @@
-import wandelbots.usd as wb_schema
+import wandelbots.usd as wb_schema  # type: ignore
 import carb
 from pxr import Sdf, Usd, UsdPhysics
 from .tcp_utils import TcpUtils
@@ -10,8 +10,10 @@ class SchemaUtils:
         """
         Get the TCP prim path of a motion group.
         """
+        if not motion_group.IsValid():
+            return None
         if not motion_group.HasAPI(wb_schema.MotionGroupAPI):
-            carb.log_error(
+            carb.log_warn(
                 f"Motion group {motion_group.GetPath()} does not have MotionGroupAPI."
             )
             return None
@@ -33,6 +35,8 @@ class SchemaUtils:
         """
         Traverse up the hierarchy to find the parent motion group of a child prim.
         """
+        if not child_prim.IsValid():
+            return None
         if child_prim.HasAPI(wb_schema.MotionGroupAPI):
             return child_prim
 
@@ -47,6 +51,8 @@ class SchemaUtils:
         """
         Traverse up the hierarchy to find the parent motion group of a child prim.
         """
+        if not child_prim.IsValid():
+            return None
         if child_prim.HasAPI(wb_schema.ToolAPI):
             return child_prim
 
@@ -62,7 +68,7 @@ class SchemaUtils:
         Get the motion group linked to the tool prim.
         """
         if not tool_prim.HasAPI(wb_schema.ToolAPI):
-            carb.log_error(f"Tool prim {tool_prim.GetPath()} does not have ToolAPI.")
+            carb.log_warn(f"Tool prim {tool_prim.GetPath()} does not have ToolAPI.")
             return None
 
         tool_api = wb_schema.ToolAPI.Get(tool_prim.GetStage(), tool_prim.GetPath())
@@ -100,6 +106,9 @@ class SchemaUtils:
         Traverse all linked prims starting from the root prim. A link is defined by a physics joint.
         The root prim is excluded from the result.
         """
+        if not root_prim.IsValid():
+            carb.log_verbose(f"Invalid root prim {root_prim.GetPath()} provided.")
+            return []
         stage: Usd.Stage = root_prim.GetStage()
 
         scene_joints: list[UsdPhysics.Joint] = []
@@ -160,6 +169,9 @@ class SchemaUtils:
 
     @staticmethod
     def get_flange_tcp_from_tool_tcp(tool_tcp: Usd.Prim) -> Usd.Prim | None:
+        if not tool_tcp.IsValid():
+            carb.log_error(f"Invalid tool TCP prim {tool_tcp.GetPath()} provided.")
+            return None
         tool_prim = SchemaUtils.find_parent_tool(tool_tcp)
         if not tool_prim:
             carb.log_error(
@@ -173,3 +185,23 @@ class SchemaUtils:
             )
             return None
         return SchemaUtils.find_motion_group_tcp(motion_group_prim)
+
+    @staticmethod
+    def list_motion_group_tools(motion_group: Usd.Prim) -> list[Usd.Prim]:
+        if not motion_group.IsValid():
+            return []
+        stage: Usd.Stage = motion_group.GetStage()
+
+        tool_prims: list[Usd.Prim] = []
+        tool_prim: Usd.Prim
+        for tool_prim in stage.Traverse():
+            if not tool_prim.HasAPI(wb_schema.ToolAPI):
+                continue
+            linked_motion_group = SchemaUtils.find_tool_linked_motion_group(tool_prim)
+            if (
+                linked_motion_group
+                and linked_motion_group.GetPath() == motion_group.GetPath()
+            ):
+                tool_prims.append(tool_prim)
+
+        return tool_prims

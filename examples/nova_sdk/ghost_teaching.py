@@ -43,7 +43,11 @@ async def fetch_poses(isaacsim_api_url: str, reference_prim: str) -> dict[str, P
         return found_poses
 
 
-async def generate_ghost_objects_file(isaacsim_api_url: str, reference_prim: str, output_file_path: str = "ghost_objects.py"):
+async def generate_ghost_objects_file(
+    isaacsim_api_url: str,
+    reference_prim: str,
+    output_file_path: str = "ghost_objects.py",
+):
     """Fetch poses and generate ghost_objects.py with enum."""
     if not isaacsim_api_url or isaacsim_api_url == "":
         print("Error: Please provide the url to the isaac sim api.")

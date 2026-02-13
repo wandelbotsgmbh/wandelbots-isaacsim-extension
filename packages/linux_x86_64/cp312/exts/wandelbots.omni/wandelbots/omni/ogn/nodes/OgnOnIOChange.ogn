@@ -6,7 +6,6 @@
         "categories": {
             "Wandelbots NOVA": "Wandelbots NOVA"
         },
-        "icon": "logo.svg",
         "metadata": {
             "uiName": "On IO Change"
         },

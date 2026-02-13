@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import os
 from pathlib import Path
 import webbrowser
@@ -22,11 +23,11 @@ from wandelbots.omni.io import (
     BusIOStreamService,
 )
 from wandelbots.omni.manipulators import get_motion_group_service, MotionGroupService
+import wandelbots.omni.ui.overlay as overlay
 from wandelbots.omni.utils.base import get_current_version
 from wandelbots.omni.ui.utils import make_menu_item_description
 import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
-from wandelbots.omni.environment import credential_store
 from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
 import wandelbots.omni.ui.tool
 import weakref
@@ -69,10 +70,10 @@ class OmniService(omni.ext.IExt):
         self._load_carb_settings()
 
         self._create_menu(ext_id=ext_id)
-        self._load_data()
 
         self.register_snippets(ext_id)
         self._tools_subscription = wandelbots.omni.ui.tool.register_tools()
+        self._load_overlays()
 
         self._asset_browser_manager = WandelbotsAssetBrowserManager()
         self._generate_schema()
@@ -134,7 +135,7 @@ class OmniService(omni.ext.IExt):
         host_database.clear_all()
 
     def on_shutdown(self) -> None:
-        self._save_data()
+        self._deregister_bundled_packages()
         carb.log_verbose("Unmount Omniservice")
         main.deregister_mount("/omniservice")
         omniservice_base_app.openapi_schema = None
@@ -162,6 +163,8 @@ class OmniService(omni.ext.IExt):
         self.schema_extension = None
         self._tools_subscription = None
         self._asset_browser_manager = None
+        if self._overlay_registry:
+            self._overlay_registry.clear_overlays()
 
     def _create_menu(self, ext_id):
         self._menu_items = [
@@ -169,9 +172,10 @@ class OmniService(omni.ext.IExt):
                 ext_id=ext_id,
                 name="Connected Instances",
                 onclick_fun=lambda ext=weakref.proxy(self): ext._open_connect_to_nova(),
-                on_ticked_fn=lambda ext=weakref.proxy(self): ext.instance_list_window
-                is not None
-                and ext.instance_list_window.is_visible,
+                on_ticked_fn=lambda ext=weakref.proxy(self): (
+                    ext.instance_list_window is not None
+                    and ext.instance_list_window.is_visible
+                ),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
@@ -187,9 +191,9 @@ class OmniService(omni.ext.IExt):
             make_menu_item_description(
                 ext_id=ext_id,
                 name="Developer Portal ...",
-                onclick_fun=lambda ext=weakref.proxy(
-                    self
-                ): ext._open_developer_portal(),
+                onclick_fun=lambda ext=weakref.proxy(self): (
+                    ext._open_developer_portal()
+                ),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
@@ -199,12 +203,6 @@ class OmniService(omni.ext.IExt):
             ),
         ]
         add_menu_items(self._menu_items, self.menu_item_name)
-
-    def _load_data(self):
-        credential_store.load_data()
-
-    def _save_data(self):
-        credential_store.save_data()
 
     def _open_omniservice_api(self):
         port = self._get_port()
@@ -291,3 +289,34 @@ class OmniService(omni.ext.IExt):
     def _get_port():
         settings = carb.settings.acquire_settings_interface()
         return settings.get_as_int("/exts/omni.services.transport.server.http/port")
+
+    def _load_overlays(self):
+        self._overlay_registry = overlay.get_overlay_registry()
+        self._overlay_registry.register_overlay(
+            overlay.GHOST_TEACHING_OVERLAY_NAME,
+            overlay.GhostTeachingOverlay(
+                name="wandelbots.omni.ui.ghost_teaching_overlay"
+            ),
+        )
+        self._overlay_registry.register_overlay(
+            overlay.COLLISION_WORLD_OVERLAY_NAME,
+            overlay.CollisionWorldOverlay(
+                name="wandelbots.omni.ui.collision_world_overlay"
+            ),
+        )
+
+    def _deregister_bundled_packages(self) -> None:
+        try:
+            pre_bundle_path = (
+                Path(__file__).absolute().parents[2].joinpath("pip_prebundle")
+            )
+            if not pre_bundle_path.exists():
+                raise FileNotFoundError(
+                    f"Pre-bundle path does not exist: {pre_bundle_path}"
+                )
+            sys.path = [p for p in sys.path if p != str(pre_bundle_path)]
+            carb.log_verbose(
+                f"Deregistered bundled packages from {str(pre_bundle_path)}"
+            )
+        except FileNotFoundError as e:
+            carb.log_error(f"{str(e)} Skipping deregistration of bundled packages.")

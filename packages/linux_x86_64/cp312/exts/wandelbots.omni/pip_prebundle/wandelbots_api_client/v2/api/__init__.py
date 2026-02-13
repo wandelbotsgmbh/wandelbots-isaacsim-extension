@@ -19,6 +19,7 @@ from .system_api import SystemApi
 from .trajectory_caching_api import TrajectoryCachingApi
 from .trajectory_execution_api import TrajectoryExecutionApi
 from .trajectory_planning_api import TrajectoryPlanningApi
+from .version_api import VersionApi
 from .virtual_controller_api import VirtualControllerApi
 from .virtual_controller_behavior_api import VirtualControllerBehaviorApi
 from .virtual_controller_inputs_outputs_api import VirtualControllerInputsOutputsApi
@@ -43,6 +44,7 @@ __all__ = [
     "TrajectoryCachingApi", 
     "TrajectoryExecutionApi", 
     "TrajectoryPlanningApi", 
+    "VersionApi", 
     "VirtualControllerApi", 
     "VirtualControllerBehaviorApi", 
     "VirtualControllerInputsOutputsApi"

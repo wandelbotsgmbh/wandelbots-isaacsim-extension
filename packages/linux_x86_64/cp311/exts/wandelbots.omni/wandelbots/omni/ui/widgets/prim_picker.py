@@ -97,11 +97,9 @@ class PrimPicker:
                     height=20,
                     alignment=ui.Alignment.CENTER,
                     width=ui.Fraction(1),
-                    mouse_released_fn=lambda a1,
-                    a2,
-                    a3,
-                    a4,
-                    a=weakref.proxy(self): a._highlight_prim(),
+                    mouse_released_fn=lambda a1, a2, a3, a4, a=weakref.proxy(self): (
+                        a._highlight_prim()
+                    ),
                 )
                 ui.Button(
                     clicked_fn=lambda a=weakref.proxy(self): a._clear(),

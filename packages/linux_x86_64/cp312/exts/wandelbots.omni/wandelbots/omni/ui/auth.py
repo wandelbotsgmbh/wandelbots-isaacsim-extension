@@ -5,21 +5,18 @@ import carb
 from wandelbots.omni.ui.utils import defer_call
 import omni.kit.clipboard as clipboard
 from wandelbots.omni.utils.auth import (
-    store_auth_token,
+    store_auth_tokens,
     poll_token_endpoint,
     get_device_code_info,
     get_auth_config,
-)
-from wandelbots_api_client.authorization import (
-    Auth0DeviceAuthorization,
-    Auth0DeviceCodeInfo,
+    create_auth_controller,
 )
 from wandelbots.omni.ui.colors import NOVAColor
 from omni.kit.async_engine import run_coroutine
 
 
 class Auth0UIBuilder:
-    def __init__(self, auth_config_name: str):
+    def __init__(self, auth_config_id: str):
         self._container = None
         self._callback = None
         self._dismissed = False
@@ -30,27 +27,69 @@ class Auth0UIBuilder:
         self._error_headline_lbl = (
             "Authentication not possible. Please try again later."
         )
-        self._auth_config_name = auth_config_name
-        self._auth_config = get_auth_config(auth_config_name)
+        self._auth_config_id = auth_config_id
+        self._auth_config = get_auth_config(auth_config_id)
         self._polling = False
-        self._auth_controller = Auth0DeviceAuthorization(self._auth_config)
+        self._device_code = None
+        self._auth_controller = create_auth_controller(self._auth_config)
 
-    def build_ui(self, device_code_info=Auth0DeviceCodeInfo):
-        verification_url = f"{device_code_info.verification_uri}?user_code={device_code_info.user_code}"
+    def build_ui(self, device_code_info: dict):
+        verification_url = device_code_info.get(
+            "verification_uri"
+        ) or device_code_info.get("verification_uri_complete")
+        user_code = device_code_info.get("user_code", "")
+
+        # Store device code and interval for polling
+        self._device_code = device_code_info.get("device_code")
+        self._interval = device_code_info.get("interval", 5)
+        self._expires_in = device_code_info.get("expires_in", 900)
+
+        # Build complete verification URL
+        if user_code and "?" not in verification_url:
+            verification_url = f"{verification_url}?user_code={user_code}"
+
         with self._container:
-            with ui.VStack(spacing=5):
+            with ui.VStack(spacing=10, alignment=ui.Alignment.CENTER):
+                ui.Label(
+                    "Authenticate by following these steps:",
+                    style={"font_size": 16},
+                    alignment=ui.Alignment.CENTER,
+                )
+                ui.Label(
+                    "1. Click 'Open in browser' below (or 'Copy URL' to paste it in your browser)",
+                    word_wrap=True,
+                    alignment=ui.Alignment.CENTER,
+                )
+                ui.Label(
+                    "2. If asked, enter this code on the website:",
+                    word_wrap=True,
+                    alignment=ui.Alignment.CENTER,
+                )
+
                 with ui.HStack():
-                    ui.Spacer(width=15)
-                    ui.Label(
-                        "Copy URL or click open in browser to proceed:",
-                    )
-                    ui.Spacer(width=10)
-                with ui.HStack():
-                    ui.Spacer(width=10)
+                    ui.Spacer()
                     ui.StringField(
-                        ui.SimpleStringModel(verification_url), read_only=True
+                        ui.SimpleStringModel(user_code),
+                        read_only=True,
+                        height=60,
+                        style={
+                            "font_size": 24,
+                            "alignment": ui.Alignment.CENTER,
+                            "padding": 20,
+                            "color": 0xFFFFFFFF,
+                            "background_color": 0xFF3C3C3C,
+                        },
                     )
-                    ui.Spacer(width=10)
+                    ui.Spacer()
+
+                ui.Label(
+                    "3. Complete the authentication in your browser",
+                    word_wrap=True,
+                    alignment=ui.Alignment.CENTER,
+                )
+
+                ui.Spacer(height=5)
+
                 with ui.HStack(spacing=5):
                     ui.Spacer(width=5)
                     ui.Button(
@@ -60,6 +99,7 @@ class Auth0UIBuilder:
                     ui.Button(
                         "Copy URL",
                         height=30,
+                        tooltip=f"Copies the verification URL to your clipboard: {verification_url}",
                         clicked_fn=lambda: self._on_copy_to_clipboard(verification_url),
                     )
                     ui.Button(
@@ -69,6 +109,7 @@ class Auth0UIBuilder:
                             "background_color": NOVAColor.PRIMARY_MAIN.color,
                             "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
                         },
+                        tooltip=f"Opens the verification URL in your default web browser: {verification_url}",
                         clicked_fn=lambda: self._on_open_in_browser(verification_url),
                     )
                     ui.Spacer(width=5)
@@ -77,8 +118,13 @@ class Auth0UIBuilder:
         """Async function to check authentication status and update UI"""
         try:
             carb.log_info("Starting token polling...")
-            token = await poll_token_endpoint(self._auth_controller)
-            store_auth_token(token, self._auth_config_name)
+            token_response = await poll_token_endpoint(
+                self._auth_controller,
+                self._device_code,
+                self._interval,
+                self._expires_in,
+            )
+            store_auth_tokens(token_response, self._auth_config_id)
             self._polling = False
             self._callback(True)
 

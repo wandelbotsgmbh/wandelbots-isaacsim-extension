@@ -1,0 +1,62 @@
+Metadata-Version: 2.4
+Name: wandelbots_api_client
+Version: 25.10.0
+Summary: Wandelbots Python Client: Interact with robots in an easy and intuitive way. 
+Home-page: 
+Author: Copyright (c) 2025 Wandelbots GmbH
+Author-email: "Copyright (c) 2025 Wandelbots GmbH" <contact@wandelbots.com>
+License-Expression: Apache-2.0
+Project-URL: homepage, https://wandelbots.com/
+Classifier: Typing :: Typed
+Classifier: Topic :: Software Development
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Unix
+Classifier: Operating System :: MacOS
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: urllib3>=1.25.3
+Requires-Dist: python-dateutil>=2.8.2
+Requires-Dist: aiohttp>=3.8.4
+Requires-Dist: aiohttp-retry>=2.8.3
+Requires-Dist: pydantic>=2
+Requires-Dist: websockets
+Requires-Dist: typing-extensions>=4.7.1
+Requires-Dist: furl
+Requires-Dist: pyhumps
+Requires-Dist: pydantic_core
+Requires-Dist: annotated-types
+Requires-Dist: pydantic[email]
+Provides-Extra: dev
+Requires-Dist: pytest>=7.2.1; extra == "dev"
+Requires-Dist: tox>=3.9.0; extra == "dev"
+Requires-Dist: flake8>=4.0.0; extra == "dev"
+Requires-Dist: types-python-dateutil>=2.8.19.14; extra == "dev"
+Requires-Dist: mypy==1.4.1; extra == "dev"
+Dynamic: author
+Dynamic: license-file
+
+# wandelbots-api-client
+Interact with robots in an easy and intuitive way.
+
+- Compatible API version: 1.1.0 (can be found at the home screen of your instance -> API)
+- Package version: 25.10.0
+
+## Requirements.
+Python >=3.11, Python < 4.0
+
+## Installation
+
+```bash
+pip install wandelbots-api-client
+```
+
+OR with uv:
+
+```bash
+uv init
+uv add wandelbots-api-client
+```
+
+

@@ -83,9 +83,9 @@ class ActionItem:
                                 image_url=get_icon("play.svg"),
                                 width=ui.Pixel(30),
                                 height=ui.Pixel(30),
-                                clicked_fn=lambda a=weakref.proxy(
-                                    self
-                                ): a._play_trajectory_fn(self.plan_action.trajectory),
+                                clicked_fn=lambda a=weakref.proxy(self): (
+                                    a._play_trajectory_fn(self.plan_action.trajectory)
+                                ),
                             )
                         ui.Button(
                             image_url=get_icon("arrow_down.svg"),

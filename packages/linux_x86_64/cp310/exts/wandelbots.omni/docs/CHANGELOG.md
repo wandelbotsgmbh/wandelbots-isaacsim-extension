@@ -1,5 +1,72 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.26.0 (2026-02-12)
+
+### Features
+
+* **CSI-2393:** Create isaac sim tcp from NOVA tcp
+
+## 2.25.1 (2026-02-12)
+
+### Bug Fixes
+
+* Enhance GhostTeachingFollowService stability and error handling
+
+## 2.25.0 (2026-02-12)
+
+### Features
+
+* Implement OAuth2 authentication capability with device code flow support
+
+## 2.24.2 (2026-02-12)
+
+### Bug Fixes
+
+* Add wandelbots module to config.
+
+## 2.24.1 (2026-02-11)
+
+### Bug Fixes
+
+* relative path definition for ghost material
+* Update wandelbots-api-client dependency to 25.10.0
+
+## 2.24.0 (2026-02-05)
+
+### Features
+
+* **CSI-1905:** Render collision scene
+
+## 2.23.1 (2026-02-05)
+
+### Bug Fixes
+
+* **CSI-2179:** Fetch number of vertices per mesh face before creating mesh
+
+## 2.23.0 (2026-01-27)
+
+### Features
+
+* Update API title and description for the Wandelbots NOVA - Isaac Sim Extension
+
+## 2.22.0 (2026-01-23)
+
+### Features
+
+* Refactor validate_request function to streamline authentication handling
+
+## 2.21.0 (2026-01-23)
+
+### Features
+
+* **CSI-2278:** Add functionality to follow ghost object while placement
+
+## 2.20.0 (2026-01-22)
+
+### Features
+
+* **CSI-2352:** Ghost teaching overlay
+
 ## 2.19.1 (2026-01-19)
 
 ### Bug Fixes
