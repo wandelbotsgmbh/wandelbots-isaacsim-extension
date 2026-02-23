@@ -1,5 +1,11 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.26.1 (2026-02-18)
+
+### Bug Fixes
+
+* **CSI-2433:** added toggle switch to multiple motion group controllers in connected instance tab
+
 ## 2.26.0 (2026-02-12)
 
 ### Features

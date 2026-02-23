@@ -304,6 +304,25 @@ class NOVAInstanceUIBuilder:
                         for motion_group in controller.motion_groups:
                             title = f"{motion_group.motion_group_model_name} ({motion_group.name})"
 
+                            # Find connected motion group prim path for toggle
+                            motion_groups = (
+                                self._instances_service.find_connected_motion_group_by(
+                                    host=instance.host,
+                                    cell=controller.cell_name,
+                                    controller=controller.name,
+                                    motion_group=motion_group.name,
+                                )
+                            )
+                            if len(motion_groups) > 1:
+                                carb.log_warn(
+                                    f"Multiple connected motion groups found for {motion_group.name} in controller {controller.name} on instance {instance.display_name}"
+                                )
+                            motion_group_prim_path = (
+                                (motion_groups[0]).prim_path
+                                if len(motion_groups)
+                                else None
+                            )
+
                             with ui.CollapsableFrame(
                                 title=title,
                                 collapsed=True,
@@ -313,6 +332,15 @@ class NOVAInstanceUIBuilder:
                                     "font-size": "20px",
                                     "background_color": NOVAColor.BACKGROUND_DEFAULT.color,
                                 },
+                                build_header_fn=lambda collapsed, text, prim_path=motion_group_prim_path, weak_self=weakref.ref(self): (
+                                    _build_frame_header(
+                                        collapsed,
+                                        text,
+                                        motion_group_prim_path=prim_path,
+                                    )
+                                    if weak_self()
+                                    else None
+                                ),
                             ):
                                 self._display_motion_group(
                                     motion_group=motion_group,
