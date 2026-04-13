@@ -16,6 +16,7 @@ from wandelbots.omni.manipulators import (
     MotionGroupConfiguration,
     get_motion_group_configuration_from_prim,
 )
+from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 from wandelbots.omni.ui.dialogs import PrimSelectDialog
 from wandelbots.omni.ui.widgets.tcp_selector import TcpModel
 from wandelbots.omni.usd.schema_utils import SchemaUtils
@@ -470,7 +471,25 @@ class GhostObjectApiSchema(SchemaComponent):
     async def create_tcp_from_ghost_object(ghost_object_prim: Usd.Prim) -> bool:
         """Create a NOVA TCP from the given payload."""
 
-        ghost_object = GhostObjectUtils.get_ghost_object_from_prim(ghost_object_prim)
+        # Get motion group to determine reference frame
+        motion_group_prim = (
+            GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(
+                ghost_object_prim
+            )
+        )
+        if motion_group_prim:
+            reference_prim = get_link_0_from_motion_group_prim(
+                motion_group_prim, fallback_to_motion_group=False
+            )
+            reference_prim_path = (
+                reference_prim.GetPath().pathString if reference_prim else None
+            )
+        else:
+            reference_prim_path = None
+
+        ghost_object = GhostObjectUtils.get_ghost_object_from_prim(
+            ghost_object_prim, reference_prim_path
+        )
         if ghost_object is None:
             nm.post_notification(
                 f"Prim '{ghost_object_prim.GetPath().pathString}' is not a ghost object"

@@ -80,7 +80,7 @@ def get_input_value(db: OgnWriteBusIODatabase, value_type: IOValueType) -> IOVal
     if value_type == IOValueType.IO_VALUE_BOOLEAN:
         return IOBooleanValue(io=db.inputs.io_id, value=db.inputs.value_bool)
     if value_type == IOValueType.IO_VALUE_ANALOG_INTEGER:
-        return IOIntegerValue(io=db.inputs.io_id, value=db.inputs.value_int)
+        return IOIntegerValue(io=db.inputs.io_id, value=str(db.inputs.value_int))
     if value_type == IOValueType.IO_VALUE_ANALOG_FLOAT:
         return IOFloatValue(io=db.inputs.io_id, value=db.inputs.value_float)
     raise ValueError(f"{value_type} Bus IO value type is not supported")
@@ -91,7 +91,7 @@ def set_output_value(db: OgnWriteBusIODatabase, value: IOValue):
         db.outputs.value_bool = value.value
         return
     if isinstance(value, IOIntegerValue):
-        db.outputs.value_int = value.value
+        db.outputs.value_int = int(value.value)
         return
     if isinstance(value, IOFloatValue):
         db.outputs.value_float = value.value

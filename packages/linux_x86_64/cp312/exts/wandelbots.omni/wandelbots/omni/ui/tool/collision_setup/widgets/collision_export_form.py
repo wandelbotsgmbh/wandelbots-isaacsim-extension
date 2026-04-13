@@ -78,7 +78,9 @@ class CollisionExportForm:
         )
 
         self._build_ui()
-        run_coroutine(self._prefill_form())
+        run_coroutine(self._prefill_form()).add_done_callback(
+            lambda _: self._deferred_build_ui()
+        )
 
     def _build_ui(self):
         self.frame.clear()
@@ -391,6 +393,9 @@ class CollisionExportForm:
         except asyncio.CancelledError:
             carb.log_info("Collision export task was cancelled.")
         except Exception as e:
+            import traceback
+
+            traceback.print_exc()
             carb.log_warn(f"Collision export task failed with error: {e}")
             nm.post_notification(
                 text=f"Collision export failed: {e}",

@@ -14,6 +14,25 @@ from nova.program import ProgramPreconditions
 from nova.types import MotionSettings, Pose
 import wandelbots_isaacsim_api as isaac_sim_api
 import wandelbots_isaacsim_api.collision.utils as collision_utils
+import wandelbots_api_client as nova_api_client
+
+
+def convert_collider_to_dict(collider: nova_api_client.models.Collider) -> dict:
+    """Convert wandelbots_api_client Collider to a dict suitable for nova.api"""
+    # The ColliderShape wrapper needs to be unwrapped to get the actual shape
+    shape_instance = collider.shape.actual_instance
+    shape_dict = shape_instance.model_dump(mode="json", by_alias=True)
+
+    pose_dict = None
+    if collider.pose:
+        pose_dict = collider.pose.model_dump(mode="json", by_alias=True)
+
+    result = {"shape": shape_dict}
+    if pose_dict:
+        result["pose"] = pose_dict
+    if collider.margin is not None:
+        result["margin"] = collider.margin
+    return result
 
 
 async def build_collision_world(
@@ -46,12 +65,15 @@ async def build_collision_world(
 
     # The api does not allow slashes in the collider names, so we replace them with underscores
     # Convert Isaac Sim colliders to Nova API colliders by serializing to dict
+    converted_colliders: dict[str, dict] = {}
     for collider_id, collider in scene_colliders.items():
-        # collider is already a nova_api.models.Collider, use it directly
+        # Unwrap ColliderShape and convert to dict for nova.api
+        collider_dict = convert_collider_to_dict(collider)
+        converted_colliders[collider_id] = collider_dict
         await store_collision_components_api.store_collider(
             cell=cell_name,
             collider=collider_id.replace("/", "_"),
-            collider2=collider,
+            collider2=collider_dict,
         )
 
     # define TCP collider geometry
@@ -81,7 +103,7 @@ async def build_collision_world(
 
     # assemble scene
     collision_setup = api.models.CollisionSetup(
-        colliders=api.models.ColliderDictionary(scene_colliders),
+        colliders=api.models.ColliderDictionary(converted_colliders),
         link_chain=api.models.LinkChain(
             list(api.models.Link(link) for link in robot_link_colliders)
         ),

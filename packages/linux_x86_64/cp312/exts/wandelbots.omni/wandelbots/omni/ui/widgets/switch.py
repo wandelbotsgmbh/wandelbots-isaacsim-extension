@@ -20,6 +20,22 @@ DEFAULT_SWITCH_STYLE = {
 }
 
 
+WARNING_SWITCH_STYLE = {
+    "Switch::switch_base": {
+        "background_color": NOVAColor.BACKGROUND_ELEVATION_2.color,
+    },
+    "Switch::switch_selected": {
+        "background_color": NOVAColor.WARNING_MAIN.color,
+    },
+    "Switch::switch_toggle": {
+        "background_color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+    },
+    "Switch::switch_base_hover": {
+        "background_color": NOVAColor.ACTION_HOVER.color,
+    },
+}
+
+
 class Switch:
     def __init__(
         self,

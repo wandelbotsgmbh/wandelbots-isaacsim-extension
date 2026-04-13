@@ -14,6 +14,7 @@ import omni.usd
 import omni.kit.context_menu
 from wandelbots.omni.usd import TcpUtils
 from wandelbots.omni.ui.utils import get_icon
+from wandelbots.omni.ui.create_context_menu.robot import RobotSpawnWindow
 
 
 class SchemaExtensionUI:
@@ -24,10 +25,10 @@ class SchemaExtensionUI:
     """
 
     def __init__(self):
-        self._stage_create_menu_subscription = None
         self._stage_menu_subscription = None
         self._add_menu_items = []
         self._frame_widget = PropertyGroupFrameWidget(id="wb_schema_nova_schema_widget")
+        self._robot_spawn_window = RobotSpawnWindow()
 
         for component in schema_components:
             self._frame_widget.add_schema(component)
@@ -44,9 +45,10 @@ class SchemaExtensionUI:
 
     def unregister(self):
         carb.log_verbose("Unregister Wandelbots NOVA schema UI")
+        self._stage_menu_subscription = None
         self._unregister_property_windows()
         self._unregister_prim_menu()
-        self._stage_create_menu_subscription = None
+        self._robot_spawn_window = None
 
     def _register_create_menu(self):
         create_menu_dict = {
@@ -66,6 +68,12 @@ class SchemaExtensionUI:
                     {
                         "name": "TCP",
                         "onclick_fn": TcpUtils.create_tcp_from_payload,
+                    },
+                    {
+                        "name": "Robot",
+                        "onclick_fn": lambda payload, weak_self=weakref.proxy(self): (
+                            weak_self._robot_spawn_window.open(payload)
+                        ),
                     },
                 ]
             },
@@ -115,10 +123,11 @@ class SchemaExtensionUI:
 
     def _unregister_prim_menu(self):
         # remove menus to property window path/+add and context menus +add submenu.
+        if not self._add_menu_items:
+            return
         for item in self._add_menu_items:
             PrimPathWidget.remove_button_menu_entry(item)
-
-        self._add_menu_items = None
+        self._add_menu_items = []
 
     def _prim_add_api(self, component: SchemaComponent, payload: PrimSelectionPayload):
         component.apply(

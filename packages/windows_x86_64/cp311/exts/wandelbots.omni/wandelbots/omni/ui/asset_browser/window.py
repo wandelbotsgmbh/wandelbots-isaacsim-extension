@@ -12,7 +12,7 @@ class WandelbotsAssetBrowserWindow(ui.Window):
     """Clean asset browser window using native TreeFolderBrowserWidget functionality"""
 
     def __init__(self):
-        super().__init__("Wandelbots NOVA Assets", visible=True)
+        super().__init__("Wandelbots NOVA Assets", visible=False)
         self.frame.set_build_fn(self._build_ui)
         self.deferred_dock_in("Content")
 

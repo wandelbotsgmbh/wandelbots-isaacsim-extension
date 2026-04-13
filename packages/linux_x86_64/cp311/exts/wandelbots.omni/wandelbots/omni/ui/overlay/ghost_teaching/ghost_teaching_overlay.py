@@ -1,5 +1,5 @@
 import weakref
-from typing import cast
+from typing import Callable, cast
 
 import carb
 import carb.dictionary
@@ -9,6 +9,7 @@ import omni.kit.notification_manager as nm
 import omni.ui as ui
 import omni.ui_scene as ui_scene
 import omni.usd
+from omni.usd import get_watcher
 import wandelbots_api_client.v2 as wb
 from omni.kit.app import SettingChangeSubscription
 from omni.kit.async_engine import run_coroutine
@@ -23,10 +24,16 @@ from wandelbots.omni.core.collision.collision_export_service import (
 from wandelbots.omni.datatypes import Pose, WSPose
 from wandelbots.omni.ui.overlay.manipulators import MotionGroupMesh
 from wandelbots.omni.ui.overlay.overlay import ViewportOverlay
+from wandelbots.omni.utils.kinematics import (
+    InverseKinematicsResult,
+    fetch_joint_configs_for_pose,
+)
 from wandelbots.omni.utils.api import get_api_client_from_config
+from wandelbots.omni.manipulators import get_motion_group_current_joint_positions
 from wandelbots.omni.utils.prims import PrimPoseWatcher
 from wandelbots.omni.utils.teaching import (
     CARB_SETTINGS_PREFIX,
+    PREFERRED_JOINT_VALUES_ATTR,
     GhostObject,
     GhostObjectUtils,
 )
@@ -34,6 +41,7 @@ from wandelbots.omni.utils.teaching import (
 
 CARB_OVERLAY_VISIBLE = f"{CARB_SETTINGS_PREFIX}/overlay_visible"
 CARB_OVERLAY_COLOR = f"{CARB_SETTINGS_PREFIX}/overlay_color"
+CARB_MAX_JOINT_CONFIGS = f"{CARB_SETTINGS_PREFIX}/max_joint_configs"
 
 GHOST_TEACHING_OVERLAY_NAME = "GhostTeachingOverlay"
 
@@ -46,13 +54,22 @@ class GhostTeachingOverlay(ViewportOverlay):
         self._viewport: ViewportWindow | None = None
         self._view_vstack: ui.VStack | None = None
         self._scene_view: ui_scene.SceneView | None = None
-        self._motion_group_colliders: dict[
-            str, list[MotionGroupMesh]
-        ] = {}  # motion_group_path -> list of meshes
+        self._motion_group_colliders: dict[str, list[MotionGroupMesh]] = {}
         self._pose_watcher: PrimPoseWatcher | None = None
         self._selected_ghost_object: Usd.Prim | None = (
             self._get_selected_ghost_object_prim()
         )
+        self._cached_joints: list[list[float]] = []
+        self._cached_joint_limits: list[tuple[float, float]] = []
+        self._cached_description: wb.models.MotionGroupDescription | None = None
+        self._active_colliders: list[MotionGroupMesh] = []
+        self._stream_config = None
+        self._motion_group_prim_path: str | None = None
+        self._tcp_offset: WSPose | None = None
+        self._collision_setups: dict[str, wb.models.CollisionSetup] = {}
+        self.joint_configs_changed_fn: (
+            Callable[[InverseKinematicsResult], None] | None
+        ) = None
 
         self._stage_event_subscription = (
             cast(
@@ -156,36 +173,33 @@ class GhostTeachingOverlay(ViewportOverlay):
             )
             return
 
-        tcp_offset: WSPose | None = GhostObjectUtils.get_ghost_object_tcp_offset(
+        self._tcp_offset = GhostObjectUtils.get_ghost_object_tcp_offset(
             self._selected_ghost_object
         )
-        if tcp_offset is None:
+        if self._tcp_offset is None:
             carb.log_warn(
                 f"Could not find TCP offset for ghost object at {self._selected_ghost_object.GetPath()}"
             )
             return
 
-        motion_group_colliders = await self._fetch_motion_group_colliders(
+        self._active_colliders = await self._fetch_motion_group_colliders(
             stage, motion_group_prim
         )
-
-        if len(motion_group_colliders) == 0:
+        if len(self._active_colliders) == 0:
             return
 
         carb.log_verbose("Loading motion group collider meshes...")
 
         if motion_group_prim.GetPath().pathString not in self._motion_group_colliders:
             if self.visible:
-                # We load them anyway because it easier to already have them in cache and just toggle the scene visibility
-                # We just do not show the user that we are fetching in the background
                 nm.post_notification(
                     text=f"Loading {motion_group_prim.GetPath().pathString} collider mesh",
                 )
             with self._scene_view.scene:
-                for mesh in motion_group_colliders:
+                for mesh in self._active_colliders:
                     await mesh.load_meshes()
             self._motion_group_colliders[motion_group_prim.GetPath().pathString] = (
-                motion_group_colliders
+                self._active_colliders
             )
         else:
             for mesh in self._motion_group_colliders[
@@ -201,14 +215,28 @@ class GhostTeachingOverlay(ViewportOverlay):
             for mesh in meshes:
                 mesh.visible = False
 
-        stream_config = motion_group_colliders[
+        self._stream_config = self._active_colliders[
             0
         ].motion_group_configuration.motion_stream_configuration
+        self._motion_group_prim_path = motion_group_prim.GetPath().pathString
 
-        api_client_config = stream_config.get_api_configuration()
+        # Fetch and cache the motion group description once per selection so it
+        # does not need to be re-fetched on every IK call as the ghost is moved.
+        try:
+            api_config = self._stream_config.get_api_configuration()
+            async with get_api_client_from_config(api_config) as api_client:
+                self._cached_description = await wb.MotionGroupApi(
+                    api_client
+                ).get_motion_group_description(
+                    cell=self._stream_config.cell,
+                    controller=self._stream_config.controller,
+                    motion_group=self._stream_config.motion_group,
+                )
+        except Exception as e:
+            carb.log_warn(f"Could not pre-fetch motion group description: {e}")
+            self._cached_description = None
 
-        collision_setups: dict[str, wb.models.CollisionSetup] = {}
-
+        self._collision_setups = {}
         if EXPERIMENTAL_COLLISION_SETUP_INTEGRATION:
             collision_world_overlay: overlay.CollisionWorldOverlay = (
                 overlay.get_overlay_registry().get_overlay(
@@ -217,92 +245,152 @@ class GhostTeachingOverlay(ViewportOverlay):
             )
             if collision_world_overlay.selection:
                 selection = collision_world_overlay.selection
-                selection.collision_setup_name
-                collision_setups[
+                self._collision_setups[
                     "ghost_teaching"
                 ] = await get_collision_export_service().get_collision_setup(
                     selection.motion_group_prim, selection.collision_setup_name
                 )
 
-        async def _pose_changed_fn(pose: Pose, weak_self=weakref.ref(self)):
-            weak_self_instance = weak_self()
-            if not weak_self_instance:
-                return
+        self._cached_joints.clear()
 
-            async with get_api_client_from_config(api_client_config) as api_client:
-                joint_limits = motion_group_colliders[
-                    0
-                ].motion_group_description.operation_limits.auto_limits
-                joint_position_limits = (
-                    [joint.position for joint in joint_limits.joints]
-                    if joint_limits
-                    else None
-                )
+        self._preferred_values_sub = get_watcher().subscribe_to_change_info_path(
+            self._selected_ghost_object.GetPath(),
+            lambda path=None, weak_self=weakref.ref(self): (
+                weak_self()._on_ghost_prim_changed(path) if weak_self() else None
+            ),
+        )
 
-                joints = await _fetch_joint_configurations(
-                    api_client, pose, joint_position_limits
-                )
-
-                if len(joints) == 0:
-                    carb.log_verbose(
-                        f"No inverse kinematics solution found for motion group at {motion_group_prim.GetPath().pathString}"
-                    )
-                    for mesh in motion_group_colliders:
-                        mesh.visible = False
-                    return
-
-                # render joint configs
-
-                if len(joints) > len(motion_group_colliders):
-                    carb.log_warn(
-                        f"Number of joint configurations returned by IK ({len(joints)}) exceeds the number of motion group collider meshes ({len(motion_group_colliders)}). Consider increasing the number of collider meshes."
-                    )
-
-                for idx, joint_configuration in enumerate(
-                    joints[: len(motion_group_colliders)]
-                ):
-                    motion_group_colliders[idx].set_joint_values(joint_configuration)
-                    motion_group_colliders[idx].visible = True
-
-                # hide unused motion group meshes
-                for idx in range(
-                    len(joints),
-                    len(motion_group_colliders),
-                ):
-                    motion_group_colliders[idx].set_joint_values(
-                        [0.0 for _ in range(motion_group_colliders[idx].joint_count)]
-                    )
-                    motion_group_colliders[idx].visible = False
-
-        async def _fetch_joint_configurations(
-            api_client, pose, joint_position_limits
-        ) -> list[list[float]]:
-            try:
-                response = await wb.KinematicsApi(api_client).inverse_kinematics(
-                    cell=stream_config.cell,
-                    inverse_kinematics_request=wb.models.InverseKinematicsRequest(
-                        motion_group_model=motion_group_colliders[
-                            0
-                        ].motion_group_description.motion_group_model,
-                        joint_position_limits=joint_position_limits,
-                        tcp_poses=[pose.to_nova_pose()],
-                        tcp_offset=tcp_offset.to_nova_pose(),
-                        collision_setups=collision_setups,
-                    ),
-                )
-                return response.joints[0]
-            except Exception as e:
-                carb.log_verbose(f"Joint configurations could not be calculated: {e}")
-                return []
+        self._max_joint_configs_sub = SettingChangeSubscription(
+            CARB_MAX_JOINT_CONFIGS,
+            lambda value, change_type, weak_self=weakref.ref(self): (
+                weak_self()._apply_joint_configs()
+                if weak_self() and change_type == carb.settings.ChangeEventType.CHANGED
+                else None
+            ),
+        )
 
         self._pose_watcher = GhostObjectUtils.create_ghost_object_pose_watcher(
             ghost_object_prim=self._selected_ghost_object,
-            pose_changed_fn=lambda pose: run_coroutine(_pose_changed_fn(pose)),
+            pose_changed_fn=lambda pose, weak_self=weakref.ref(self): (
+                run_coroutine(weak_self()._on_pose_changed(pose))
+                if weak_self()
+                else None
+            ),
         )
 
-        await _pose_changed_fn(self._pose_watcher.current_pose)
+        await self._on_pose_changed(self._pose_watcher.current_pose)
 
-    async def _fetch_motion_group_colliders(self, stage, motion_group_prim):
+    async def _on_pose_changed(self, pose: Pose):
+        preferred = GhostObjectUtils.get_preferred_joint_values(
+            self._selected_ghost_object
+        )
+
+        ik_result = await fetch_joint_configs_for_pose(
+            stream_config=self._stream_config,
+            pose=pose,
+            tcp_offset=self._tcp_offset,
+            preferred_joint_values=preferred,
+            collision_setups=self._collision_setups or None,
+            description=self._cached_description,
+        )
+
+        if len(ik_result.joint_configs) == 0:
+            carb.log_verbose("No inverse kinematics solution found")
+            for mesh in self._active_colliders:
+                mesh.visible = False
+            return
+
+        if len(ik_result.joint_configs) > len(self._active_colliders):
+            carb.log_warn(
+                f"IK returned {len(ik_result.joint_configs)} configs but only {len(self._active_colliders)} meshes available."
+            )
+
+        self._cached_joints.clear()
+        self._cached_joints.extend(ik_result.joint_configs)
+        self._cached_joint_limits = ik_result.joint_limits
+
+        if self._motion_group_prim_path:
+            mg_prim = (
+                omni.usd.get_context()
+                .get_stage()
+                .GetPrimAtPath(self._motion_group_prim_path)
+            )
+            current_positions = get_motion_group_current_joint_positions(mg_prim)
+            self._cached_joints.sort(
+                key=lambda c: (
+                    sum((a - b) ** 2 for a, b in zip(c, current_positions))
+                    if current_positions
+                    else 0
+                )
+            )
+
+        self._apply_joint_configs()
+        if self.joint_configs_changed_fn:
+            self.joint_configs_changed_fn(
+                InverseKinematicsResult(
+                    joint_configs=list(self._cached_joints),
+                    joint_limits=list(self._cached_joint_limits),
+                )
+            )
+
+    def _on_ghost_prim_changed(self, path=None):
+        if not path or PREFERRED_JOINT_VALUES_ATTR not in path.pathString:
+            return
+        self._apply_joint_configs()
+        if self.joint_configs_changed_fn:
+            self.joint_configs_changed_fn(
+                InverseKinematicsResult(
+                    joint_configs=list(self._cached_joints),
+                    joint_limits=list(self._cached_joint_limits),
+                )
+            )
+
+    def _apply_joint_configs(self):
+        joints = self._cached_joints
+        colliders = self._active_colliders
+        if not joints:
+            for mesh in colliders:
+                mesh.visible = False
+            return
+
+        max_display = (
+            carb.settings.get_settings().get_as_int(CARB_MAX_JOINT_CONFIGS) or 9
+        )
+        stored_preferred = GhostObjectUtils.get_preferred_joint_values(
+            self._selected_ghost_object
+        )
+        preferred_idx = None
+        if stored_preferred is not None:
+            for i, config in enumerate(joints):
+                if len(config) == len(stored_preferred) and all(
+                    abs(a - b) < 1e-4 for a, b in zip(config, stored_preferred)
+                ):
+                    preferred_idx = i
+                    break
+        base_color = color_utils.hex_to_float_array(self.overlay_color)
+
+        usable = joints[: min(len(colliders), max_display)]
+
+        order = list(range(len(usable)))
+        if preferred_idx is not None and preferred_idx < len(usable):
+            order.remove(preferred_idx)
+            order.append(preferred_idx)
+
+        for mesh_slot, joint_idx in enumerate(order):
+            colliders[mesh_slot].set_joint_values(usable[joint_idx])
+            colliders[mesh_slot].visible = True
+            colliders[mesh_slot].color = base_color
+            colliders[mesh_slot].filled = joint_idx == preferred_idx
+
+        for idx in range(len(usable), len(colliders)):
+            colliders[idx].set_joint_values(
+                [0.0 for _ in range(colliders[idx].joint_count)]
+            )
+            colliders[idx].visible = False
+
+    async def _fetch_motion_group_colliders(
+        self, stage: Usd.Stage, motion_group_prim: Usd.Prim
+    ) -> list[MotionGroupMesh]:
         try:
             return self._motion_group_colliders.get(
                 motion_group_prim.GetPath().pathString,
@@ -312,7 +400,7 @@ class GhostTeachingOverlay(ViewportOverlay):
                             motion_group_prim.GetPath().pathString
                         ),
                         color=color_utils.hex_to_float_array(self.overlay_color),
-                        filled=True,
+                        filled=False,
                     )
                     for _ in range(9)
                 ],
@@ -332,6 +420,7 @@ class GhostTeachingOverlay(ViewportOverlay):
 
     def _reset_selection(self):
         self._selected_ghost_object = None
+        self._cached_description = None
         for meshes in self._motion_group_colliders.values():
             for mesh in meshes:
                 mesh.visible = False
@@ -352,7 +441,7 @@ class GhostTeachingOverlay(ViewportOverlay):
             if prim.IsValid() and GhostObjectUtils.is_ghost_object(prim)
         ]
 
-        if len(ghost_objects) == 0:
+        if not ghost_objects:
             return None
         return ghost_objects[0]
 
@@ -370,6 +459,14 @@ class GhostTeachingOverlay(ViewportOverlay):
             self._reset_selection()
 
     @property
+    def cached_joints(self) -> list[list[float]]:
+        return list(self._cached_joints)
+
+    @property
+    def cached_joint_limits(self) -> list[tuple[float, float]]:
+        return list(self._cached_joint_limits)
+
+    @property
     def visible(self) -> bool:
         settings: carb.settings.ISettings = carb.settings.get_settings()
         return settings.get_as_bool(CARB_OVERLAY_VISIBLE)
@@ -377,4 +474,7 @@ class GhostTeachingOverlay(ViewportOverlay):
     @property
     def overlay_color(self) -> str:
         settings: carb.settings.ISettings = carb.settings.get_settings()
-        return settings.get_as_string(CARB_OVERLAY_COLOR)
+        setting_color = settings.get_as_string(CARB_OVERLAY_COLOR)
+        if not setting_color or setting_color == "":
+            return "#A936DA16"
+        return setting_color

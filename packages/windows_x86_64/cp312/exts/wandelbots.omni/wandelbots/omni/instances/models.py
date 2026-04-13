@@ -7,8 +7,9 @@ import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.utils.api import get_api_client
 from wandelbots.omni.ui.colors import NOVAColor
 from packaging.version import Version
+from wandelbots_api_client import __version__ as _api_client_version
 
-MIN_VERSION = Version("25.8.0")
+MIN_VERSION = Version(_api_client_version)
 
 
 class NOVAInstance(BaseModel):
@@ -45,7 +46,7 @@ class NOVAInstance(BaseModel):
         if self.version is None:
             return False
         try:
-            return Version(self.version) >= MIN_VERSION
+            return self.version >= MIN_VERSION
         except Exception:
             return False
 
@@ -140,7 +141,7 @@ class NOVAMotionGroupData(BaseModel):
 
 class NOVAControllerData(BaseModel):
     name: str
-    description: ControllerDescription
+    description: Optional[ControllerDescription] = None
     cell_name: str
     motion_groups: list[NOVAMotionGroupData] = []
 

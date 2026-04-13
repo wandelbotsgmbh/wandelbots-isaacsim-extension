@@ -1,16 +1,38 @@
 from functools import cached_property
 from typing import Literal
+import urllib.parse
+import carb
 from wandelbots.omni.utils.api import ApiConfiguration
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from wandelbots.omni.utils.api import get_api_client_from_config
 from wandelbots.omni.instances.instances_api import get_instances_api
 
 
 class MotionStreamConfiguration(BaseModel):
-    host: str = Field(example="127.0.0.1", description="NOVA instance origin")
+    host: str = Field(
+        example="https://xyz.instance.wandelbots.io",
+        description="NOVA instance origin. May include protocol (http:// or https://).",
+    )
     secure_connection: bool = Field(
         default=False, description="Wether connection to NOVA instance is secure"
     )
+
+    @model_validator(mode="after")
+    def _sanitize_host(self) -> "MotionStreamConfiguration":
+        parsed = urllib.parse.urlparse(self.host)
+        if parsed.scheme not in ("http", "https"):
+            return self
+        if (parsed.scheme == "https") != self.secure_connection:
+            carb.log_warn(
+                f"Host protocol '{parsed.scheme}://' does not match "
+                f"secure_connection={self.secure_connection}. "
+                "Please check the 'secure_connection' parameter."
+            )
+        self.host = (
+            parsed.netloc or parsed.path
+        )  # netloc = hostname[:port], path as fallback for scheme-less URLs
+        return self
+
     cell: str = Field(example="cell")
     motion_group: str = Field(example="0@ur10e")
     controller: str = Field(

@@ -11,11 +11,11 @@ from wandelbots.omni.instances.models import (
     NOVAInstance,
 )
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.instances.instance import NOVAInstanceUIBuilder
-from wandelbots.omni.ui.instances.widgets import (
+from wandelbots.omni.ui.instances.instance import InstanceWidget
+from wandelbots.omni.ui.instances.widgets.cloud_instances_container import (
     NOVACloudInstancesContainer,
-    SignInWidget,
 )
+from wandelbots.omni.ui.instances.widgets.sign_in_widget import SignInWidget
 from wandelbots.omni.utils.auth import get_auth_configs
 
 
@@ -23,16 +23,18 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
     def __init__(self):
         super().__init__(
             title="Wandelbots NOVA | Connected Instances",
-            width=500,
+            width=600,
             height=600,
         )
         self._instances_service = NOVAInstancesService()
         self._custom_instances: list[NOVACustomInstance] = []
+        self._orphan_hosts: set[str] = set()
         self._cloud_instances: dict[str, NOVACloudInstancesContainer] = {}
         self._cloud_instances_container: Optional[ui.VStack] = None
         self._custom_instances_container: Optional[ui.VStack] = None
         self._host_error_message = ""
         self._current_context = {}
+        self._instance_widgets: list[InstanceWidget] = []
         self._style = get_style()
 
     def build_ui(self):
@@ -86,7 +88,11 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
                     height=20,
                     style={"color": NOVAColor.ACTION_ACTIVE.color},
                     tooltip="Click to add a Wandelbots NOVA instance which is reachable within your network.",
-                    clicked_fn=self._on_toggle_add_custom_instance_form,
+                    clicked_fn=lambda weak_self=weakref.ref(self): (
+                        weak_self()._on_toggle_add_custom_instance_form()
+                        if weak_self()
+                        else None
+                    ),
                 )
                 ui.Button(
                     image_url=get_icon("refresh.svg"),
@@ -96,14 +102,19 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
                         "color": NOVAColor.ACTION_ACTIVE.color,
                     },
                     tooltip="Click to refresh instance data",
-                    clicked_fn=self._refresh_data,
+                    clicked_fn=lambda weak_self=weakref.ref(self): (
+                        weak_self()._refresh_data() if weak_self() else None
+                    ),
                 )
 
     def _display_add_custom_instance_form(self):
-        def _on_cancel():
-            self._custom_instance_form.visible = False
-            self._host_input.model.set_value("")
-            self._host_error_message = ""
+        def _on_cancel(weak_self=weakref.ref(self)):
+            self_instance = weak_self()
+            if not self_instance:
+                return
+            self_instance._custom_instance_form.visible = False
+            self_instance._host_input.model.set_value("")
+            self_instance._host_error_message = ""
 
         self._custom_instance_form.clear()
         with self._custom_instance_form:
@@ -118,12 +129,20 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
                             placeholder="e.g., https://172.31.10.110"
                         )
                         self._host_input.model.add_end_edit_fn(
-                            self._on_host_input_end_edit
+                            lambda model, weak_self=weakref.ref(self): (
+                                weak_self()._on_host_input_end_edit(model)
+                                if weak_self()
+                                else None
+                            )
                         )
                         ui.Button(
                             "Add",
                             width=50,
-                            clicked_fn=lambda: self._on_add_custom_instance(),
+                            clicked_fn=lambda weak_self=weakref.ref(self): (
+                                weak_self()._on_add_custom_instance()
+                                if weak_self()
+                                else None
+                            ),
                         )
                         ui.Button("Cancel", width=50, clicked_fn=lambda: _on_cancel())
                         ui.Spacer(width=5)
@@ -171,6 +190,7 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
 
     def _display_instances(self):
         """Display all loaded instances in the UI."""
+        self._instance_widgets.clear()
         try:
             defer_call(self._display_cloud_instances)
             defer_call(self._display_custom_instances)
@@ -200,14 +220,24 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             ui.Spacer(width=ui.Percent(2))
 
     def _display_instance(self, instance: NOVAInstance):
-        return NOVAInstanceUIBuilder(
+        is_orphan = instance.host in self._orphan_hosts
+        widget = InstanceWidget(
             instance=instance,
             instances_service=self._instances_service,
-            on_remove=self._on_remove_custom_instance,
-            on_toggle_status=self._refresh_data,
-        ).build_ui()
-
-    # Data management methods
+            on_remove=None
+            if is_orphan
+            else (
+                lambda inst, weak_self=weakref.ref(self): (
+                    weak_self()._on_remove_custom_instance(inst)
+                    if weak_self()
+                    else None
+                )
+            ),
+            on_toggle_status=lambda weak_self=weakref.ref(self): (
+                weak_self()._refresh_data() if weak_self() else None
+            ),
+        )
+        self._instance_widgets.append(widget)
 
     def _refresh_data(self):
         self._fetch_instances_data()
@@ -239,6 +269,21 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
                 self._instances_service.instances_api.get_custom_instances()
             )
             for instance in custom_instances:
+                self._custom_instances.append(instance)
+
+            # Discover instances referenced on stage prims but not yet in any
+            # instance list (e.g. from a saved USD whose NOVA instance was
+            # removed or is unreachable).
+            known_hosts: set[str] = set()
+            for instance in self._custom_instances:
+                known_hosts.add(instance.host)
+            for container in self._cloud_instances.values():
+                for cloud_inst in getattr(container, "_cloud_instances", []):
+                    known_hosts.add(cloud_inst.host)
+
+            orphan_instances = self._instances_service.list_stage_instances(known_hosts)
+            self._orphan_hosts = {inst.host for inst in orphan_instances}
+            for instance in orphan_instances:
                 self._custom_instances.append(instance)
 
             carb.log_info(

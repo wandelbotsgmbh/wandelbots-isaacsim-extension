@@ -1,4 +1,3 @@
-import weakref
 import carb
 import omni.ui as ui
 from typing import Callable
@@ -90,8 +89,8 @@ class SignInWidget:
                             height=20,
                             width=ui.Percent(20),
                             style={"background_color": NOVAColor.PRIMARY_MAIN.color},
-                            clicked_fn=lambda weak_self=weakref.proxy(self): (
-                                weak_self._on_sign_in(auth_config_id())
+                            clicked_fn=lambda _self=self: _self._on_sign_in(
+                                auth_config_id()
                             ),
                         )
                         ui.Spacer(width=5)

@@ -27,6 +27,7 @@ from wandelbots.omni.utils.math import (
 )
 from omni.usd import get_watcher
 import omni.timeline
+from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 
 
 class PrimUtils:
@@ -326,6 +327,8 @@ class PrimPoseWatcher:
         self._relative_prim = relative_prim
         self._change_subscriptions: list[carb.Subscription] = []
         self._last_pose: Pose | None = None
+        self._timeline_sub: carb.Subscription | None = None
+        self._stage_event_sub: carb.Subscription | None = None
         self._max_rotation_dif = max_rotation_dif_rad  # radians
         self._max_translation_dif = max_translation_dif_m * SceneUtils.get_stage_units(
             self._stage
@@ -334,36 +337,63 @@ class PrimPoseWatcher:
         self._timeline = omni.timeline.get_timeline_interface()
         self._timeline_stop_reset_applied = False
         carb.log_verbose(f"{self} listening to timeline events")
+        weak_self = weakref.ref(self)
 
-        def _on_timeline_events(event: carb.events.IEvent, weak_self=weakref.ref(self)):
-            weak_self_instance = weak_self()
-            if not weak_self_instance:
+        def _on_stage_events(event: carb.events.IEvent):
+            instance = weak_self()
+            if not instance:
                 return
+
+            if event.type in (
+                int(omni.usd.StageEventType.OPENED),
+                int(omni.usd.StageEventType.CLOSED),
+            ):
+                instance._cleanup()
+
+        self._stage_event_sub = (
+            omni.usd.get_context()
+            .get_stage_event_stream()
+            .create_subscription_to_pop(_on_stage_events)
+        )
+
+        def _on_timeline_events(event: carb.events.IEvent):
+            instance = weak_self()
+            if not instance:
+                return
+
+            # Check if prims are still valid, cleanup if not
+            if not instance._has_valid_prims():
+                carb.log_verbose(
+                    f"PrimPoseWatcher: Prims for {instance._prim.GetPath()} are no longer valid, cleaning up"
+                )
+                instance._cleanup()
+                return
+
+            current_pose = instance.current_pose
+
             if (
                 event.type == omni.timeline.TimelineEventType.PLAY.value
                 or event.type == omni.timeline.TimelineEventType.STOP.value
             ):
-                weak_self_instance._pose_changed_fn(weak_self_instance.current_pose)
-                weak_self_instance._timeline_stop_reset_applied = False
+                instance._pose_changed_fn(current_pose)
+                instance._timeline_stop_reset_applied = False
             elif (
-                weak_self_instance._timeline.is_stopped()
-                and not weak_self_instance._timeline_stop_reset_applied
+                instance._timeline.is_stopped()
+                and not instance._timeline_stop_reset_applied
             ):
                 # The timeline stops, but the position reset happens one frame later so we wait for the next tick.
-                weak_self_instance._pose_changed_fn(weak_self_instance.current_pose)
-                weak_self_instance._timeline_stop_reset_applied = True
+                instance._pose_changed_fn(current_pose)
+                instance._timeline_stop_reset_applied = True
 
         self._timeline_sub = (
             self._timeline.get_timeline_event_stream().create_subscription_to_pop(
-                lambda event, weak_self=weakref.ref(self): (
-                    _on_timeline_events(event=event) if weak_self() else None
-                )
+                _on_timeline_events
             )
         )
 
         carb.log_verbose(f"Subscribing to {prim} prim changes.")
 
-        def _on_prim_changed(path: Sdf.Path = None, weak_self=weakref.ref(self)):
+        def _on_prim_changed(path: Sdf.Path = None):
             path_str: str = path.pathString
             if not (
                 path_str.endswith(":translate")
@@ -372,34 +402,33 @@ class PrimPoseWatcher:
             ):
                 return
 
-            weak_self_instance = weak_self()
-            if not weak_self_instance:
+            instance = weak_self()
+            if not instance:
                 return
 
-            current_pose = weak_self_instance.current_pose
+            current_pose = instance.current_pose
 
-            if weak_self_instance._last_pose:
+            if instance._last_pose:
                 translation_dif = np.linalg.norm(
                     np.array(current_pose.pose[:3])
-                    - np.array(weak_self_instance._last_pose.pose[:3])
+                    - np.array(instance._last_pose.pose[:3])
                 )
-                no_translation_dif = (
-                    translation_dif <= weak_self_instance._max_translation_dif
-                )
+                no_translation_dif = translation_dif <= instance._max_translation_dif
 
                 rotation_dif = np.linalg.norm(
                     np.array(current_pose.pose[3:])
-                    - np.array(weak_self_instance._last_pose.pose[3:])
+                    - np.array(instance._last_pose.pose[3:])
                 )
-                no_rotation_dif = rotation_dif <= weak_self_instance._max_rotation_dif
+                no_rotation_dif = rotation_dif <= instance._max_rotation_dif
 
                 if no_translation_dif and no_rotation_dif:
                     return
 
-            weak_self_instance._pose_changed_fn(current_pose)
-            weak_self_instance._last_pose = current_pose
+            instance._pose_changed_fn(current_pose)
+            instance._last_pose = current_pose
 
-        subscribe_prim = self._prim
+        subscribe_prim = get_link_0_from_motion_group_prim(self._prim)
+
         while subscribe_prim:
             carb.log_verbose(f"Subscribing to prim changes for {subscribe_prim}.")
             self._change_subscriptions.append(
@@ -410,8 +439,50 @@ class PrimPoseWatcher:
             )
             subscribe_prim = subscribe_prim.GetParent()
 
+        if self._relative_prim:
+            carb.log_verbose(
+                f"Subscribing to relative prim changes for {self._relative_prim}."
+            )
+            self._change_subscriptions.append(
+                get_watcher().subscribe_to_change_info_path(
+                    self._relative_prim.GetPath(),
+                    _on_prim_changed,
+                )
+            )
+
+    def _has_valid_prims(self) -> bool:
+        return self._prim.IsValid() and (
+            not self._relative_prim or self._relative_prim.IsValid()
+        )
+
+    def _cleanup(self):
+        """Unsubscribe from all watcher events."""
+        carb.log_verbose(f"Cleaning up PrimPoseWatcher for {self._prim.GetPath()}")
+
+        # Unsubscribe from all prim change subscriptions
+        for subscription in self._change_subscriptions:
+            subscription.unsubscribe()
+        self._change_subscriptions.clear()
+
+        # Unsubscribe from timeline events
+        if self._timeline_sub:
+            self._timeline_sub.unsubscribe()
+            self._timeline_sub = None
+
+        # Unsubscribe from stage events
+        if self._stage_event_sub:
+            self._stage_event_sub.unsubscribe()
+            self._stage_event_sub = None
+
     @property
     def current_pose(self) -> Pose:
+        # Check if prims are still valid, cleanup if not
+        if not self._has_valid_prims():
+            self._cleanup()
+            raise RuntimeError(
+                f"Cannot get pose: prims for {self._prim.GetPath()} are no longer valid"
+            )
+
         if self._relative_prim:
             return PrimUtils.get_relative_prim_pose(
                 self._relative_prim.GetPrimPath().pathString,
@@ -423,8 +494,4 @@ class PrimPoseWatcher:
         )
 
     def __del__(self):
-        carb.log_verbose(f"Unsubscribing from {self._prim} prim changes.")
-        for subscription in self._change_subscriptions:
-            subscription.unsubscribe()
-        self._change_subscriptions.clear()
-        self._timeline_sub.unsubscribe()
+        self._cleanup()

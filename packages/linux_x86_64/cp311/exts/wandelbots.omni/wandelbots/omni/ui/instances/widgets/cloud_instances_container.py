@@ -1,4 +1,3 @@
-import weakref
 import carb
 import omni.ui as ui
 from typing import Callable, Optional
@@ -8,7 +7,7 @@ from wandelbots.omni.instances.models import (
     NOVACloudInstance,
 )
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.instances.instance import NOVAInstanceUIBuilder
+from wandelbots.omni.ui.instances.instance import InstanceWidget
 from omni.kit.window.property.templates.header_context_menu import (
     GroupHeaderContextMenu,
     GroupHeaderContextMenuEvent,
@@ -95,11 +94,13 @@ class NOVACloudInstancesContainer:
             len(self._instances_service.instances_api.get_cloud_instances().keys()) > 1
         )
         self._on_sign_out_fn = on_sign_out_fn
+        self._instance_widgets: list[InstanceWidget] = []
 
     def build_ui(self):
         if not self._instances_service.is_signed_in(self._auth_config_id):
             return
 
+        self._instance_widgets.clear()
         self.container = ui.VStack()
         with self.container:
             if len(self._cloud_instances) > 0:
@@ -162,10 +163,8 @@ class NOVACloudInstancesContainer:
             if self._one_of_many_providers
             else "Cloud Instances",
             height=0,
-            build_header_fn=lambda collapsed, text, weak_self=weakref.proxy(self): (
-                _build_frame_header(
-                    collapsed, text, on_sign_out_fn=weak_self._on_sign_out_fn
-                )
+            build_header_fn=lambda collapsed, text, _self=self: _build_frame_header(
+                collapsed, text, on_sign_out_fn=_self._on_sign_out_fn
             ),
         ):
             with ui.VStack(spacing=5, height=0):
@@ -174,12 +173,11 @@ class NOVACloudInstancesContainer:
                         ui.Spacer(width=10)
                         ui.Label("No instances available. Create one.")
                 for instance in self._cloud_instances:
-                    NOVAInstanceUIBuilder(
+                    widget = InstanceWidget(
                         instance=instance,
                         instances_service=self._instances_service,
-                        on_remove=None,
-                        on_toggle_status=None,
-                    ).build_ui()
+                    )
+                    self._instance_widgets.append(widget)
 
                     if instance != self._cloud_instances[-1]:
                         self._display_separator()

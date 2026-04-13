@@ -2,12 +2,17 @@ import asyncio
 import json
 
 import carb
-import torch
 import omni.timeline
+import omni.usd
+import torch
+from pxr import UsdGeom
 import wandelbots_api_client.v2 as wb
 import wandelbots_api_client.v2.models as wb_models
+from wandelbots_api_client.v2.models import JointTypeEnum
 from isaacsim.core.utils.types import ArticulationAction
+
 from wandelbots.omni.core.networks import ReconnectingWebsocket
+from wandelbots.omni.manipulators.utils import get_articulation_joint_indices
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
 
 from .motion_group import MotionGroup, MotionStreamConfiguration
@@ -22,10 +27,10 @@ class MotionStreamConnector:
         self.api_configuration: ApiConfiguration = (
             self.configuration.get_api_configuration()
         )
-
         self.stream: ReconnectingWebsocket | None = None
 
         self.stream_joint_count: int = None
+        self.joint_indices: list[int] | None = None
         self.timeline = omni.timeline.get_timeline_interface()
 
     @property
@@ -83,8 +88,12 @@ class MotionStreamConnector:
             token=self.api_configuration.access_token,
         )
 
-        result = await self.get_motion_group_state()
-        self.stream_joint_count = len(result.joint_position)
+        state = await self.get_motion_group_state()
+        self.stream_joint_count = len(state.joint_position)
+
+        self.joint_indices = get_articulation_joint_indices(self.motion_group)
+        await self.motion_group.get_dh_parameters()
+
         carb.log_info(
             f"Start {self.configuration.motion_group} jointCount={self.stream_joint_count} externalJoints={self.is_external_joint_stream}"
         )
@@ -204,14 +213,15 @@ class MotionStreamConnector:
         await self.send_joint_positions(self._last_joints)
 
     def get_joint_positions(self) -> list[float]:
-        return [
-            float(x) for x in list(self.motion_group.articulation.get_joint_positions())
-        ][: self.stream_joint_count]
+        all_positions = self.motion_group.articulation.get_joint_positions()
+        if self.joint_indices is None:
+            return [float(x) for x in list(all_positions)][: self.stream_joint_count]
+        return [float(all_positions[i]) for i in self.joint_indices]
 
     def apply_joints(self, joint_positions: list[float]):
         """
         This function is called when the user changes one of the float fields
-        to control a motion_group joint position target.  The index of the joint and the new
+        to control a motion_group joint position target. The index of the joint and the new
         desired value are passed in as arguments.
 
         This function assumes that there is a guarantee it is called safely.
@@ -223,7 +233,10 @@ class MotionStreamConnector:
         Args:
             joint_positions (float): New position target for motion_group joints (needs to match joint count)
         """
-        if not self.motion_group.articulation.is_valid():
+        if (
+            not self.motion_group.articulation
+            or not self.motion_group.articulation.is_valid()
+        ):
             carb.log_error(f"Invalid articulation for {(self.motion_group.identifier)}")
             return
 
@@ -239,10 +252,26 @@ class MotionStreamConnector:
             )
             return
 
+        # scale joint values from mm to stage units for isaac sim if there are any prismatic joints in the motion group (not necessary for revolute joints, since they are represented in radians which is the same in the API and Isaac Sim)
+        dh_parameters = self.motion_group.motion_group_dh_parameters
+        if any(
+            dh_param.type == JointTypeEnum.PRISMATIC_JOINT for dh_param in dh_parameters
+        ):
+            stage = omni.usd.get_context().get_stage()
+            meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
+            mm_to_stage_units = 0.001 / meters_per_unit
+            for i, dh_param in enumerate(dh_parameters):
+                if dh_param.type == JointTypeEnum.PRISMATIC_JOINT:
+                    joint_positions[i] *= mm_to_stage_units
         joint_positions_array = torch.tensor(joint_positions, dtype=torch.float32)
-        joint_indices_array = torch.tensor(
-            range(len(joint_positions)), dtype=torch.long
-        )
+
+        # Use computed joint_indices for merged articulation, or sequential if not computed
+        if self.joint_indices is not None:
+            joint_indices_array = torch.tensor(self.joint_indices, dtype=torch.long)
+        else:
+            joint_indices_array = torch.tensor(
+                range(len(joint_positions)), dtype=torch.long
+            )
 
         motion_group_action = ArticulationAction(
             joint_positions=joint_positions_array,

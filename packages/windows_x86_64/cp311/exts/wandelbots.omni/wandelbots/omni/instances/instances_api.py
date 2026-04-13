@@ -22,6 +22,7 @@ from wandelbots_api_client.v2.api.motion_group_api import MotionGroupApi
 import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.environment import instance_store
 from wandelbots.omni.utils.auth import get_auth_configs
+from packaging.version import Version
 
 
 class NOVAInstancesAPI:
@@ -145,6 +146,8 @@ class NOVAInstancesAPI:
                 instance.is_reachable = False
                 return []
 
+            instance.is_reachable = True
+
             # Fetch cells for the instance
             cell_names = await self._fetch_cells(api_client)
             cells = await self._fetch_cells_data(api_client, cell_names)
@@ -190,7 +193,7 @@ class NOVAInstancesAPI:
             carb.log_verbose("Fetching instance version...")
             system_api = wb_v2.SystemApi(api_client=api_client)
             version = await system_api.get_system_version()
-            return version
+            return Version(version)
         except Exception as e:
             carb.log_warn(f"Error fetching instance version: {e}")
             return None

@@ -23,12 +23,15 @@ from wandelbots.omni.datatypes import (
     TCPSource,
     WSPose,
 )
+from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 from wandelbots.omni.usd import SchemaUtils, TcpUtils
 from wandelbots.omni.utils.mesh import MeshUtils
 from wandelbots.omni.utils.prims import PrimPoseWatcher, PrimUtils, RelativePoseMode
 
 
 CARB_SETTINGS_PREFIX = "/persistent/exts/wandelbots.omni/ghost_teaching"
+
+PREFERRED_JOINT_VALUES_ATTR = "preferredJointValues"
 
 
 class GhostObjectUtils:
@@ -242,6 +245,9 @@ class GhostObjectUtils:
             prim_path=ghost_prim.GetPath().pathString,
             robot_prim_path=robot_prim_path,
             pose=ws_pose,
+            preferred_joint_values=GhostObjectUtils.get_preferred_joint_values(
+                ghost_prim
+            ),
         )
 
     def get_ghost_objects(relative_to_prim: str = None) -> list[GhostObject]:
@@ -417,11 +423,14 @@ class GhostObjectUtils:
             carb.log_verbose(
                 f"Could not find motion group prim linked to ghost object at {ghost_object_prim.GetPath()}"
             )
+            return None
+
+        relative_prim = get_link_0_from_motion_group_prim(motion_group_prim)
 
         return PrimPoseWatcher(
             prim=ghost_object_prim,
             pose_changed_fn=pose_changed_fn,
-            relative_prim=motion_group_prim,
+            relative_prim=relative_prim,
         )
 
     @staticmethod
@@ -437,6 +446,16 @@ class GhostObjectUtils:
                 prim_path = selected_prim.GetPath().pathString
                 return ghost_objects.get(prim_path, None)
         return None
+
+    @staticmethod
+    def get_preferred_joint_values(ghost_object_prim: Usd.Prim) -> list[float] | None:
+        """Read ``preferredJointValues`` from a ghost-object prim."""
+        if not ghost_object_prim or not ghost_object_prim.IsValid():
+            return None
+        attr = ghost_object_prim.GetAttribute(PREFERRED_JOINT_VALUES_ATTR)
+        if not attr or not attr.HasValue():
+            return None
+        return list(attr.Get())
 
 
 class RefreshGhostMaterialsCommand(omni.kit.commands.Command):

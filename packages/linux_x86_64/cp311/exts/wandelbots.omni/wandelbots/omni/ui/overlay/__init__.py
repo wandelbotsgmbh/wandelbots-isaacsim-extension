@@ -10,6 +10,10 @@ from .collision_world.collision_world_overlay import (
     COLLISION_WORLD_OVERLAY_NAME,
     CollisionWorldOverlay,
 )
+from .robot_overlay.robot_overlay import (
+    RobotOverlay,
+    ROBOT_OVERLAY_NAME,
+)
 
 __all__ = [
     "get_overlay_registry",
@@ -18,4 +22,6 @@ __all__ = [
     "GHOST_TEACHING_OVERLAY_NAME",
     "COLLISION_WORLD_OVERLAY_NAME",
     "CollisionWorldOverlay",
+    "RobotOverlay",
+    "ROBOT_OVERLAY_NAME",
 ]

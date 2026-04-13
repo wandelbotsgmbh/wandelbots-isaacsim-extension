@@ -65,6 +65,15 @@ class ManipulatorMesh(sc.Manipulator):
         self._color_array = self._calculate_color_array()
         self.invalidate()
 
+    @property
+    def filled(self) -> bool:
+        return self._filled
+
+    @filled.setter
+    def filled(self, value: bool):
+        self._filled = value
+        self.invalidate()
+
     def _calculate_color_array(self) -> list[list[color_utils.ColorRGBA]]:
         return [[self._color for _ in face] for face in self._face_boundaries]
 

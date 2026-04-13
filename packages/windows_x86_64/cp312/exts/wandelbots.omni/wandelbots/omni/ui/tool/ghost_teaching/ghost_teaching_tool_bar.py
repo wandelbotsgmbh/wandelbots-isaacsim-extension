@@ -13,11 +13,14 @@ from .widgets.ghost_object_selector import GhostObjectSelector
 from omni.kit.async_engine import run_coroutine
 import omni.kit.menu.utils
 from wandelbots.omni.utils.teaching import GhostObjectUtils, GhostObject
+from wandelbots.omni.utils.kinematics import fetch_joint_configs_for_pose
+from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.teaching.ghost_teaching_follow_service import (
     GhostTeachingFollowService,
 )
 
 from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
+from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 import omni.kit.notification_manager as nm
 import omni.usd
 from wandelbots.omni.ui.widgets import TcpSelector
@@ -33,6 +36,8 @@ from .widgets.move_to_button import MoveToButton, MoveToExecuteSettings
 import wandelbots_api_client.v2.models as wb_models
 import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
 from .utils import GhostObjectsSubscription
+from .widgets.joint_config_selector import JointConfigSelector
+import wandelbots.omni.ui.overlay as overlay
 
 WINDOW_MENU_ROOT = "Tools"
 
@@ -51,6 +56,7 @@ class GhostTeachingToolBar:
         self._ghost_object_selector: GhostObjectSelector = None
         self._deferred_build_task: asyncio.Task = None
         self._follow_button: ui.Button = None
+        self._joint_config_selector: JointConfigSelector | None = None
         self._selected_ghost_object_path: str = None
         self._ghost_objects_subscription: GhostObjectsSubscription = (
             GhostObjectsSubscription(
@@ -167,12 +173,45 @@ class GhostTeachingToolBar:
                                 can_select_from_scene=True,
                             )
 
+                    # Joint config selector
+                    selected_ghost = (
+                        GhostObjectUtils.get_selected_ghost_object_from_scene(
+                            self._ghost_objects
+                        )
+                    )
+                    if selected_ghost:
+                        stage = omni.usd.get_context().get_stage()
+                        ghost_prim = stage.GetPrimAtPath(selected_ghost.prim_path)
+                        if ghost_prim and ghost_prim.IsValid():
+                            ghost_overlay: overlay.GhostTeachingOverlay = (
+                                overlay.get_overlay_registry().get_overlay(
+                                    overlay.GHOST_TEACHING_OVERLAY_NAME
+                                )
+                            )
+                            with ui.HStack(
+                                width=ui.Pixel(160),
+                                visible=self.settings.motion_command == "joint_p2p",
+                            ):
+                                self._joint_config_selector = JointConfigSelector(
+                                    ghost_object_prim=ghost_prim,
+                                    initial_joint_configs=ghost_overlay.cached_joints
+                                    if ghost_overlay
+                                    else [],
+                                    initial_joint_limits=ghost_overlay.cached_joint_limits
+                                    if ghost_overlay
+                                    else [],
+                                )
+                            if ghost_overlay:
+                                ghost_overlay.joint_configs_changed_fn = (
+                                    self._joint_config_selector.update_joint_configs
+                                )
+
                     # Recreating the button would lead to losing the move to task and blocking the motion group control so we recycle the existing one
                     if self._move_to_button is None:
                         self._move_to_button = MoveToButton(
                             configure_execution_fn=lambda weak_self=weakref.proxy(self): (
                                 weak_self._get_planning_configuration()
-                            )
+                            ),
                         )
                     else:
                         self._move_to_button._build_ui()
@@ -356,33 +395,75 @@ class GhostTeachingToolBar:
             return None
         target_pose = self._ghost_objects[self._selected_ghost_object_path].pose
 
-        motion_command = None
-        if self.settings.motion_command == "joint_p2p":
-            motion_command = asyncio.get_event_loop().run_until_complete(
-                planner_utils.create_joint_p2p_command_from_pose(
-                    motion_stream_configuration,
-                    tcp=self._tcp_selector.selected_tcp,
-                    target_pose=target_pose,
-                )
-            )
-        elif self.settings.motion_command == "cartesian_p2p":
+        ghost_prim = (
+            omni.usd.get_context()
+            .get_stage()
+            .GetPrimAtPath(self._selected_ghost_object_path)
+        )
+        preferred_joints = GhostObjectUtils.get_preferred_joint_values(ghost_prim)
+
+        cmd_type = self.settings.motion_command
+
+        # Cartesian commands need only the target pose — no IK needed.
+        if cmd_type == "cartesian_p2p":
             motion_command = wb_models.MotionCommand(
                 path=wb_models.MotionCommandPath(
                     wb_models.PathCartesianPTP(target_pose=target_pose.to_nova_pose())
                 )
             )
-        elif self.settings.motion_command == "line":
+        elif cmd_type == "line":
             motion_command = wb_models.MotionCommand(
                 path=wb_models.MotionCommandPath(
-                    wb_models.PathLine(
-                        target_pose=target_pose.to_nova_pose(),
+                    wb_models.PathLine(target_pose=target_pose.to_nova_pose())
+                )
+            )
+        else:
+            # Always use the selected TCP from the dropdown for IK — look up its offset by name.
+            tcp_name = self._tcp_selector.selected_tcp if self._tcp_selector else None
+            tcp_offset_obj = (
+                asyncio.get_event_loop().run_until_complete(
+                    planner_utils.get_tcp_offset_by_name(
+                        motion_stream_configuration, tcp_name
                     )
                 )
+                if tcp_name
+                else None
+            )
+            # fetch_joint_configs_for_pose expects a WSPose for the tcp_offset argument.
+            tcp_offset_ws = (
+                WSPose(
+                    pose=[
+                        *tcp_offset_obj.pose.position,
+                        *tcp_offset_obj.pose.orientation,
+                    ]
+                )
+                if tcp_offset_obj is not None
+                else None
+            )
+
+            ik_result = asyncio.get_event_loop().run_until_complete(
+                fetch_joint_configs_for_pose(
+                    stream_config=motion_stream_configuration,
+                    pose=target_pose,
+                    tcp_offset=tcp_offset_ws,
+                    preferred_joint_values=preferred_joints,
+                )
+            )
+            motion_command = (
+                wb_models.MotionCommand(
+                    path=wb_models.MotionCommandPath(
+                        wb_models.PathJointPTP(
+                            target_joint_position=ik_result.joint_configs[0]
+                        )
+                    )
+                )
+                if ik_result.joint_configs
+                else None
             )
 
         if motion_command is None:
             carb.log_error(
-                f"Unsupported motion command type: {self.settings.motion_command}"
+                f"Could not build motion command for '{self.settings.motion_command}': no IK solution found"
             )
             return None
 
@@ -400,13 +481,17 @@ class GhostTeachingToolBar:
             self._ghost_objects = {}
             self._selected_ghost_object_path = None
             return
+
+        motion_group_path = self._motion_group_prim.GetPath().pathString
+        reference_prim = get_link_0_from_motion_group_prim(self._motion_group_prim)
+        reference_prim_path = reference_prim.GetPath().pathString
+
         self._ghost_objects: dict[str, GhostObject] = {
             ghost_object.prim_path: ghost_object
             for ghost_object in GhostObjectUtils.get_ghost_objects(
-                relative_to_prim=self._motion_group_prim.GetPath().pathString
+                relative_to_prim=reference_prim_path
             )
-            if ghost_object.robot_prim_path
-            == self._motion_group_prim.GetPath().pathString
+            if ghost_object.robot_prim_path == motion_group_path
         }
         carb.log_verbose(
             f"Refresh found ghost objects: {list(self._ghost_objects.keys())} {len(self._ghost_objects)}"
@@ -474,8 +559,22 @@ class GhostTeachingToolBar:
                 self.hide()
             return
 
+        # Get motion group to determine reference frame
+        motion_group_prim = (
+            GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(selected_prim)
+        )
+        if motion_group_prim:
+            reference_prim = get_link_0_from_motion_group_prim(
+                motion_group_prim, fallback_to_motion_group=False
+            )
+            reference_prim_path = (
+                reference_prim.GetPath().pathString if reference_prim else None
+            )
+        else:
+            reference_prim_path = None
+
         ghost_object: GhostObject = GhostObjectUtils.get_ghost_object_from_prim(
-            selected_prim, None
+            selected_prim, reference_prim_path
         )
 
         if not ghost_object:
@@ -557,6 +656,8 @@ class GhostTeachingToolBar:
                 self._ghost_object_selector.can_select_in_scene = (
                     self.settings.select_ghost_object_in_scene
                 )
+        if property_name == "motion_command":
+            self._deferred_build_ui()
         save_ghost_teaching_carb_settings(self._settings_model)
 
     @property

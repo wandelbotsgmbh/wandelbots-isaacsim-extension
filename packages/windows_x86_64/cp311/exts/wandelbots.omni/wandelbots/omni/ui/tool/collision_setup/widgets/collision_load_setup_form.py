@@ -13,7 +13,9 @@ import omni.usd
 from wandelbots.omni.ui.overlay.collision_world.utils import (
     CARB_OVERLAY_RENDER_MODE,
     get_overlay_color,
+    get_overlay_render_link_chain,
     set_overlay_color,
+    set_overlay_render_link_chain,
 )
 from wandelbots.omni.ui.tool.collision_setup.widgets import settings_string_values_model
 from wandelbots.omni.ui.widgets import (
@@ -69,7 +71,9 @@ class CollisionLoadSetupForm:
         )
 
         self._build_ui()
-        run_coroutine(self._prefetch_collision_setup())
+        run_coroutine(self._prefetch_collision_setup()).add_done_callback(
+            lambda _: self._deferred_build_ui()
+        )
 
     def _build_ui(self):
         self.frame.clear()
@@ -242,6 +246,18 @@ class CollisionLoadSetupForm:
                                     ("Selected", "Selected"),
                                     ("All", "All"),
                                 ],
+                            )
+                        )
+                    ui.Label("Show link chain")
+                    with ui.VStack(height=20):
+                        ui.Spacer(height=4)
+                        model = ui.SimpleBoolModel(get_overlay_render_link_chain())
+                        ui.CheckBox(
+                            model,
+                        )
+                        model.add_value_changed_fn(
+                            lambda value: set_overlay_render_link_chain(
+                                value.get_value_as_bool()
                             )
                         )
 

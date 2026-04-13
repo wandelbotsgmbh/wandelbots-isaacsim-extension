@@ -51,6 +51,7 @@ CollisionShape = ConvexHull | Sphere | Box | Capsule | Cylinder | Plane
 class Collider(pydantic.BaseModel):
     shape: CollisionShape
     pose: nova_models.Pose
+    prim_path: str
 
 
 def plane_to_collider(prim: Usd.Prim) -> Collider | None:
@@ -71,6 +72,7 @@ def plane_to_collider(prim: Usd.Prim) -> Collider | None:
                 coordinate_system="world",
             ),
         ).to_nova_pose(),
+        prim_path=prim.GetPath().pathString,
     )
 
 
@@ -87,6 +89,7 @@ def sphere_to_collider(prim: Usd.Prim) -> Collider:
                 prim_path, rotation_type="cartesian", coordinate_system="world"
             ),
         ).to_nova_pose(),
+        prim_path=prim_path,
     )
 
 
@@ -108,6 +111,7 @@ def cube_to_collider(prim: Usd.Prim) -> Collider:
                 prim_path, rotation_type="cartesian", coordinate_system="world"
             ),
         ).to_nova_pose(),
+        prim_path=prim_path,
     )
 
 
@@ -143,6 +147,7 @@ def cylinder_to_collider(prim: Usd.Prim) -> Collider | None:
                 prim_path, rotation_type="cartesian", coordinate_system="world"
             ),
         ).to_nova_pose(),
+        prim_path=prim_path,
     )
 
 
@@ -158,7 +163,7 @@ def capsule_to_collider(prim: Usd.Prim) -> Collider | None:
         carb.log_warn(
             f"Unsupported axis {axis} for prim {prim.GetPath()}. Expected 'Z'."
         )
-        return True
+        return None
 
     _, _, scale = PrimUtils.get_world_transform_xform(prim)
     if scale[0] != scale[1] or scale[0] != scale[2]:
@@ -179,6 +184,7 @@ def capsule_to_collider(prim: Usd.Prim) -> Collider | None:
                 prim_path, rotation_type="cartesian", coordinate_system="world"
             ),
         ).to_nova_pose(),
+        prim_path=prim_path,
     )
 
 
@@ -273,6 +279,7 @@ def get_convex_hull_colliders(
                         coordinate_system="world",
                     ),
                 ).to_nova_pose(),
+                prim_path=prim.GetPath().pathString,
             )
 
     physx_cooking_instance.request_convex_collision_representation(

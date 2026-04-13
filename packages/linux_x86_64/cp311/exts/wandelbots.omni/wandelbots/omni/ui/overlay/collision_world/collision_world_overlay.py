@@ -7,13 +7,17 @@ from omni.kit.viewport.window import ViewportWindow
 import omni.ui as ui
 import omni.ui_scene as ui_scene
 from wandelbots.omni.core.collision.collision_export_service import (
+    get_api_client_from_config,
     get_collision_export_service,
+    get_motion_group_configuration_from_prim,
 )
 from wandelbots.omni.ui.overlay.collision_world.utils import (
     CARB_OVERLAY_COLOR,
+    CARB_OVERLAY_RENDER_LINK_CHAIN,
     CARB_OVERLAY_RENDER_MODE,
     RenderMode,
     get_overlay_color,
+    get_overlay_render_link_chain,
     get_overlay_render_mode,
     set_overlay_color,
     set_overlay_render_mode,
@@ -38,7 +42,7 @@ from wandelbots.omni.ui.overlay.manipulators import (
 )
 from wandelbots.omni.datatypes import Pose
 import wandelbots.omni.ui.colors as color_utils
-
+import wandelbots_api_client.v2 as wb
 
 COLLISION_WORLD_OVERLAY_NAME = "CollisionWorldOverlay"
 
@@ -130,6 +134,22 @@ class CollisionWorldOverlay(ViewportOverlay):
             on_render_mode_changed,
         )
 
+        def on_render_link_chain_changed(
+            value: bool,
+            change_type: carb.settings.ChangeEventType,
+            weak_self=weakref.ref(self),
+        ):
+            self_instance = weak_self()
+            if not self_instance:
+                return
+            if change_type == carb.settings.ChangeEventType.CHANGED:
+                self_instance._update_collider_visibility()
+
+        self._render_link_chain_setting_subscription = SettingChangeSubscription(
+            CARB_OVERLAY_RENDER_LINK_CHAIN,
+            on_render_link_chain_changed,
+        )
+
     def _update_collider_visibility(self):
         if self._selection is None:
             return
@@ -176,6 +196,11 @@ class CollisionWorldOverlay(ViewportOverlay):
                 elif render_mode == "Selected":
                     mesh.visible = is_in_selection_range(collider_id)
                 mesh.invalidate()
+
+            # Link chain
+            loaded_collision_setup.link_chain_manipulator.visible = (
+                get_overlay_render_link_chain()
+            )
 
     def attach_to_viewport(self, viewport: ViewportWindow):
         self._viewport = viewport
@@ -241,14 +266,20 @@ class CollisionWorldOverlay(ViewportOverlay):
 
         carb.log_verbose("Motion group collider meshes loaded.")
 
-        tool_manipulators = self._collision_setups[
-            self._selection.collision_setup_name
-        ].tool_manipulators
+        manipulators = self._collision_setups[self._selection.collision_setup_name]
+        tool_manipulators = manipulators.tool_manipulators
+        link_chain_manipulator = manipulators.link_chain_manipulator
 
         collision_setup = await self._collision_export_service.get_collision_setup(
             motion_group_prim=self._selection.motion_group_prim,
             setup_name=self._selection.collision_setup_name,
         )
+
+        motion_stream_configuration = get_motion_group_configuration_from_prim(
+            self._selection.motion_group_prim
+        ).motion_stream_configuration
+
+        api_client_config = motion_stream_configuration.get_api_configuration()
 
         async def _pose_changed_fn(pose: Pose, weak_self=weakref.ref(self)):
             weak_self_instance = weak_self()
@@ -274,6 +305,17 @@ class CollisionWorldOverlay(ViewportOverlay):
                         unit_factor,  # Scale vertices from mm
                     )
                 )
+
+            async with get_api_client_from_config(api_client_config) as api_client:
+                state = await wb.MotionGroupApi(
+                    api_client
+                ).get_current_motion_group_state(
+                    cell=motion_stream_configuration.cell,
+                    controller=motion_stream_configuration.controller,
+                    motion_group=motion_stream_configuration.motion_group,
+                )
+                link_chain_manipulator.set_joint_values(state.joint_position)
+                link_chain_manipulator.visible = get_overlay_render_link_chain()
 
         tcp_prim = SchemaUtils.find_motion_group_tcp(self._selection.motion_group_prim)
         if not tcp_prim:
@@ -377,9 +419,11 @@ class CollisionWorldOverlay(ViewportOverlay):
         link_chain_manipulator = MotionGroupMesh(
             motion_group_prim=self._selection.motion_group_prim,
             color=color_utils.hex_to_float_array(self.overlay_color),
-            filled=True,
+            filled=False,
         )
-        await link_chain_manipulator.load_meshes()
+        await link_chain_manipulator.load_meshes(
+            link_chain_colliders=collision_setup.link_chain
+        )
 
         loaded_collision_setup = LoadedCollisionSetup(
             setup_name=collision_setup_name,

@@ -15,6 +15,7 @@ from wandelbots.omni.router.v2 import (
     collision_world_router,
     colliders_router,
     nucleus_router,
+    robot_overlay_router,
 )
 from wandelbots.omni.utils.auth import (
     store_auth_tokens,
@@ -46,7 +47,7 @@ API_DESCRIPTION = (
 omniservice_app = FastAPI(
     title=API_TITLE,
     description=API_DESCRIPTION,
-    version="2.26.1",
+    version="2.34.3",
     docs_url=None,
     redoc_url=None,
 )
@@ -79,6 +80,14 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return PlainTextResponse(exc.detail, status_code=exc.status_code)
 
 
+@omniservice_app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    message = f"{type(exc).__name__}: {exc}"
+    carb.log_error(f"{request.method} {request.url.path} 500 {message}")
+    carb.log_verbose(traceback.format_exc())
+    return PlainTextResponse(message, status_code=500)
+
+
 omniservice_app.include_router(router=stage_router)
 omniservice_app.include_router(router=prims_router)
 omniservice_app.include_router(router=cameras_router)
@@ -87,6 +96,7 @@ omniservice_app.include_router(router=teaching_router)
 omniservice_app.include_router(router=motion_groups_router)
 omniservice_app.include_router(router=trajectory_router)
 omniservice_app.include_router(router=collision_world_router)
+omniservice_app.include_router(router=robot_overlay_router)
 omniservice_app.include_router(router=colliders_router)
 omniservice_app.include_router(router=nucleus_router)
 
@@ -148,7 +158,7 @@ async def authenticate(
             )
 
         if provider == AuthProvider.AUTH0:
-            base_url = f"https://api.{host.replace('auth', '')}/v1/instances"
+            base_url = f"https://api.{host.removeprefix('auth.')}/v1/instances"
         else:
             base_url = f"https://{host}/instances"
 

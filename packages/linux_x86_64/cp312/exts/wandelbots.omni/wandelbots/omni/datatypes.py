@@ -95,6 +95,7 @@ class GhostObject(BaseModel):
     prim_path: str
     robot_prim_path: str | None
     pose: WSPose
+    preferred_joint_values: list[float] | None = None
 
 
 Pose = Union[WSPose, QuatPose]

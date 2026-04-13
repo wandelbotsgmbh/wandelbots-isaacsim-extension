@@ -8,12 +8,13 @@ import json
 from attr import dataclass
 import omni.kit.notification_manager as nm
 from pxr import Usd
+import omni.usd
 import carb
 from wandelbots.omni.manipulators import (
     get_motion_group_configuration_from_prim,
     MotionStreamConfiguration,
 )
-from wandelbots.omni.utils.teaching import GhostObject
+from wandelbots.omni.utils.teaching import GhostObject, GhostObjectUtils
 from wandelbots.omni.visualization import (
     get_trajectory_builder,
     TrajectoryBuilder,
@@ -43,6 +44,49 @@ def _get_websocket_kwargs(access_token: str | None = None) -> dict:
     return _to_header_params(get_base_headers(access_token))
 
 
+async def _resolve_joints_for_pose(
+    kinematics_api: wb.KinematicsApi,
+    cell: str,
+    nova_pose: wb_models.Pose,
+    ik_common: dict,
+    preferred: list[float] | None,
+) -> list[float] | None:
+    response = await kinematics_api.inverse_kinematics(
+        cell=cell,
+        inverse_kinematics_request=wb_models.InverseKinematicsRequest(
+            tcp_poses=[nova_pose],
+            reference_joint_position=preferred,
+            **ik_common,
+        ),
+    )
+    if not response.joints or not response.joints[0]:
+        return None
+    return response.joints[0][0]
+
+
+def _handle_plan_failure(action_name: str, data: dict):
+    detail = data.get("detail")
+    if not detail:
+        carb.log_warn(f"{action_name} Planning failed: {data}")
+        return
+    planning_failed = detail[0].get("data", {})
+    if "collisions" in planning_failed:
+        for collision in [
+            wb_models.Collision.from_dict(x) for x in planning_failed["collisions"]
+        ]:
+            carb.log_warn(
+                f" - Collision with {collision.id_of_a} and {collision.id_of_b}"
+            )
+        carb.log_warn(f" - Joint position: {planning_failed['joint_position']}")
+        nm.post_notification(
+            text=f"[{action_name}] Collision at [{planning_failed['joint_position']}]",
+            duration=5.0,
+            status=nm.NotificationStatus.WARNING,
+        )
+    else:
+        carb.log_warn(f"{action_name} Planning failed: {planning_failed}")
+
+
 async def plan_path(
     motion_group_prim: Usd.Prim,
     tcp_name: str,
@@ -52,22 +96,15 @@ async def plan_path(
 ):
     carb.log_info("Planning path...")
 
+    if not plan_actions:
+        carb.log_warn("No actions to plan.")
+        return
+
     motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
-
     stream_config = motion_group.motion_stream_configuration
+
     async with get_api_client_from_config(stream_config.get_api_configuration()) as api:
-        tcps = await wb.VirtualControllerApi(api).list_virtual_controller_tcps(
-            cell=stream_config.cell,
-            controller=stream_config.controller,
-            motion_group=stream_config.motion_group,
-        )
-
-        tcp: wb_models.RobotTcp = None
-        for virtual_tcp in tcps:
-            if virtual_tcp.id == tcp_name:
-                tcp = virtual_tcp
-                break
-
+        # 1. Fetch motion group description (model, TCP map, joint limits, operation limits).
         motion_group_description: wb_models.MotionGroupDescription = (
             await wb.MotionGroupApi(api).get_motion_group_description(
                 cell=stream_config.cell,
@@ -76,88 +113,106 @@ async def plan_path(
             )
         )
 
+        # 2. Resolve TCP offset
+        tcp_offset_pose = (
+            motion_group_description.tcps[tcp_name].pose
+            if tcp_name in motion_group_description.tcps
+            else None
+        )
+        if tcp_offset_pose is None:
+            carb.log_warn(
+                f"Selected TCP '{tcp_name}' not found. Available TCPs: {list(motion_group_description.tcps.keys())}"
+            )
+            nm.post_notification(
+                text=f"Selected TCP '{tcp_name}' not found. Please select a valid TCP.",
+                duration=5.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+
+        collision_setup = await wb.StoreCollisionSetupsApi(
+            api
+        ).get_stored_collision_setup(
+            cell=stream_config.cell, setup=collision_setup_name
+        )
+
+        # 3. Build MotionGroupSetup once outside the loop — TCP, collision setup and limits are shared by every segment.
+        motion_group_setup = wb_models.MotionGroupSetup(
+            motion_group_model=motion_group_description.motion_group_model,
+            tcp_offset=tcp_offset_pose,
+            collision_setups={collision_setup_name: collision_setup},
+            cycle_time=8,
+            global_limits=motion_group_description.operation_limits.auto_limits,
+        )
+        motion_group_setup.global_limits.tcp.velocity = 200
+        motion_group_setup.global_limits.tcp.acceleration = 1000
+
+        # 4. Collect shared IK kwargs once — same model, TCP and limits for every IK call.
+        ik_common = dict(
+            motion_group_model=motion_group_setup.motion_group_model,
+            tcp_offset=motion_group_setup.tcp_offset,
+            mounting=motion_group_setup.mounting,
+            collision_setups=motion_group_setup.collision_setups,
+            joint_position_limits=[
+                limit.position for limit in motion_group_setup.global_limits.joints
+            ],
+        )
+
         planning_api = wb.TrajectoryPlanningApi(api)
         kinematics_api = wb.KinematicsApi(api)
         trajectory_builder: TrajectoryBuilder = get_trajectory_builder()
-        collision_api = wb.StoreCollisionSetupsApi(api)
-        collision_setup = await collision_api.get_stored_collision_setup(
-            cell=stream_config.cell,
-            setup=collision_setup_name,
-        )
-        collision_setups = {collision_setup_name: collision_setup}
-        for action_idx in range(0, len(plan_actions) - 1):
+        stage = omni.usd.get_context().get_stage()
+
+        for action_idx in range(len(plan_actions) - 1):
             action_name = f"[{action_idx}->{action_idx + 1}]"
-            motion_group_setup = wb_models.MotionGroupSetup(
-                motion_group_model=motion_group_description.motion_group_model,
-                tcp_offset=wb_models.Pose(
-                    position=tcp.position, orientation=tcp.orientation
-                ),
-                collision_setups=collision_setups,
-                cycle_time=8,
-                global_limits=motion_group_description.operation_limits.auto_limits,
-            )
-            motion_group_setup.global_limits.tcp.velocity = 200
-            motion_group_setup.global_limits.tcp.acceleration = 1000
 
-            start_pose = plan_actions[action_idx].ghost_object.pose.to_nova_pose()
-            target_pose = plan_actions[action_idx + 1].ghost_object.pose.to_nova_pose()
+            start_action = plan_actions[action_idx]
+            target_action = plan_actions[action_idx + 1]
 
-            inverse_kinematic_request = wb_models.InverseKinematicsRequest(
-                tcp_poses=[
-                    wb_models.Pose(
-                        position=start_pose.position,
-                        orientation=start_pose.orientation,
-                    ),
-                    wb_models.Pose(
-                        position=target_pose.position,
-                        orientation=target_pose.orientation,
-                    ),
-                ],
-                motion_group_model=motion_group_setup.motion_group_model,
-                tcp_offset=motion_group_setup.tcp_offset,
-                mounting=motion_group_setup.mounting,
-                collision_setups=collision_setups,
-                joint_position_limits=[
-                    limit.position for limit in motion_group_setup.global_limits.joints
-                ],
+            # 5. Read preferred joint configs stored on each ghost prim by the overlay.
+            start_preferred = GhostObjectUtils.get_preferred_joint_values(
+                stage.GetPrimAtPath(start_action.ghost_object.prim_path)
             )
-            joints_response = await kinematics_api.inverse_kinematics(
-                cell=stream_config.cell,
-                inverse_kinematics_request=inverse_kinematic_request,
+            target_preferred = GhostObjectUtils.get_preferred_joint_values(
+                stage.GetPrimAtPath(target_action.ghost_object.prim_path)
             )
 
-            if len(joints_response.joints[0]) == 0:
-                message = f"{action_name} Could not find joint solution for start pose {start_pose}"
+            # 6. IK with reference biases toward the preferred config; returns closest valid solution if the ghost moved.
+            start_joints = await _resolve_joints_for_pose(
+                kinematics_api,
+                stream_config.cell,
+                start_action.ghost_object.pose.to_nova_pose(),
+                ik_common,
+                start_preferred,
+            )
+            if start_joints is None:
+                message = f"{action_name} Could not find joint solution for start pose"
                 carb.log_warn(message)
                 nm.post_notification(
-                    text=message,
-                    duration=5.0,
-                    status=nm.NotificationStatus.WARNING,
+                    text=message, duration=5.0, status=nm.NotificationStatus.WARNING
                 )
                 continue
-            if len(joints_response.joints[1]) == 0:
-                message = f"{action_name} Could not find joint solution for target pose {target_pose}"
+
+            target_joints = await _resolve_joints_for_pose(
+                kinematics_api,
+                stream_config.cell,
+                target_action.ghost_object.pose.to_nova_pose(),
+                ik_common,
+                target_preferred,
+            )
+            if target_joints is None:
+                message = f"{action_name} Could not find joint solution for target pose"
                 carb.log_warn(message)
                 nm.post_notification(
-                    text=message,
-                    duration=5.0,
-                    status=nm.NotificationStatus.WARNING,
+                    text=message, duration=5.0, status=nm.NotificationStatus.WARNING
                 )
                 continue
-            start_joints = joints_response.joints[0][0]
-            target_joints = joints_response.joints[1][0]
+
             carb.log_info(
                 f"{action_name} Planning from {start_joints} to {target_joints}"
             )
 
-            algorithm = wb_models.MidpointInsertionAlgorithm(
-                algorithm_name="MidpointInsertionAlgorithm"
-            )
-            if True:
-                algorithm = wb_models.RRTConnectAlgorithm(
-                    algorithm_name="RRTConnectAlgorithm",
-                )
-
+            # 7. RRTConnect: find a collision-free joint-space path between the two resolved configs.
             planning_response_raw = (
                 await planning_api.plan_collision_free_without_preload_content(
                     cell=stream_config.cell,
@@ -165,37 +220,24 @@ async def plan_path(
                         start_joint_position=start_joints,
                         target=target_joints,
                         motion_group_setup=motion_group_setup,
-                        algorithm=wb_models.CollisionFreeAlgorithm(algorithm),
+                        algorithm=wb_models.CollisionFreeAlgorithm(
+                            wb_models.RRTConnectAlgorithm(
+                                algorithm_name="RRTConnectAlgorithm"
+                            )
+                        ),
                     ),
                 )
             )
             data = await planning_response_raw.json()
 
-            carb.log_info(f"{action_name} Received planning response")
             if planning_response_raw.status != 200:
-                planning_failed = data["detail"][0]["data"]
-                if "collisions" in planning_failed:
-                    for collision in [
-                        wb_models.Collision.from_dict(x)
-                        for x in planning_failed["collisions"]
-                    ]:
-                        carb.log_warn(
-                            f" - Collision with {collision.id_of_a} and {collision.id_of_b}"
-                        )
-                    carb.log_warn(
-                        f" - Joint position: {planning_failed['joint_position']}"
-                    )
-                    nm.post_notification(
-                        text=f"[{action_name}] Collision at [{planning_failed['joint_position']}]",
-                        duration=5.0,
-                        status=nm.NotificationStatus.WARNING,
-                    )
-                else:
-                    carb.log_warn(f"{action_name} Planning failed: {planning_failed}")
+                _handle_plan_failure(action_name, data)
                 continue
-            joint_trajectory = wb_models.JointTrajectory.from_dict(data["response"])
-            plan_actions[action_idx + 1].trajectory = joint_trajectory
 
+            joint_trajectory = wb_models.JointTrajectory.from_dict(data["response"])
+            target_action.trajectory = joint_trajectory
+
+            # 8. FK on the planned trajectory to compute TCP poses for viewport preview.
             poses_response = await kinematics_api.forward_kinematics(
                 cell=stream_config.cell,
                 forward_kinematics_request=wb_models.ForwardKinematicsRequest(

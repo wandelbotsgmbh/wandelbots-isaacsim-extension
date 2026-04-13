@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots NOVA - Isaac Sim Extension API",
         "description": "This extension enables seamless connection between NVIDIA Isaac Sim\u2122 and Wandelbots NOVA. Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, allowing users to easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs. Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\nThe API provides comprehensive capabilities including:\n- **Stage Management**: Load, save, and manipulate USD stages\n- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n- **Cameras**: Configure virtual cameras and viewports for visualization\n- **Motion Groups**: Define and control robot motion groups and kinematics\n- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n- **UI Control**: Interact with the Isaac Sim user interface programmatically",
-        "version": "2.26.1"
+        "version": "2.34.3"
     },
     "paths": {
         "/stage/scene": {
@@ -2742,6 +2742,47 @@
                 }
             }
         },
+        "/overlays/robot/visibility": {
+            "put": {
+                "tags": [
+                    "Robot Overlay (Experimental)"
+                ],
+                "summary": "Set Robot Overlay Visibility",
+                "description": "Show or hide the robot ghost for the given motion group.",
+                "operationId": "set_robot_overlay_visibility",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RobotOverlayVisibility"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "503": {
+                        "description": "Overlay not ready"
+                    },
+                    "400": {
+                        "description": "joint_positions required when visible is true"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/prims/physics/colliders/": {
             "patch": {
                 "tags": [
@@ -3390,12 +3431,17 @@
                     },
                     "pose": {
                         "$ref": "#/components/schemas/Pose"
+                    },
+                    "prim_path": {
+                        "type": "string",
+                        "title": "Prim Path"
                     }
                 },
                 "type": "object",
                 "required": [
                     "shape",
-                    "pose"
+                    "pose",
+                    "prim_path"
                 ],
                 "title": "Collider"
             },
@@ -3569,6 +3615,20 @@
                     },
                     "pose": {
                         "$ref": "#/components/schemas/WSPose"
+                    },
+                    "preferred_joint_values": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "number"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Preferred Joint Values"
                     }
                 },
                 "type": "object",
@@ -3715,8 +3775,8 @@
                     "host": {
                         "type": "string",
                         "title": "Host",
-                        "description": "NOVA instance origin",
-                        "example": "127.0.0.1"
+                        "description": "NOVA instance origin. May include protocol (http:// or https://).",
+                        "example": "https://xyz.instance.wandelbots.io"
                     },
                     "secure_connection": {
                         "type": "boolean",
@@ -3988,6 +4048,42 @@
                     "inverse_both"
                 ],
                 "title": "RelativePoseMode"
+            },
+            "RobotOverlayVisibility": {
+                "properties": {
+                    "motion_group_prim_path": {
+                        "type": "string",
+                        "title": "Motion Group Prim Path",
+                        "description": "USD prim path of the motion group.",
+                        "example": "/World/Robot/motion_group_0"
+                    },
+                    "visible": {
+                        "type": "boolean",
+                        "title": "Visible",
+                        "description": "Whether to show or hide the robot overlay."
+                    },
+                    "joint_positions": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "type": "number"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Joint Positions",
+                        "description": "Joint positions in radians. Required when visible is true."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "motion_group_prim_path",
+                    "visible"
+                ],
+                "title": "RobotOverlayVisibility"
             },
             "SemanticSegmentationData": {
                 "properties": {

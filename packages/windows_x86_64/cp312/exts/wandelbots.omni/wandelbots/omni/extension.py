@@ -304,6 +304,10 @@ class OmniService(omni.ext.IExt):
                 name="wandelbots.omni.ui.collision_world_overlay"
             ),
         )
+        self._overlay_registry.register_overlay(
+            overlay.ROBOT_OVERLAY_NAME,
+            overlay.RobotOverlay(name="wandelbots.omni.ui.robot_overlay"),
+        )
 
     def _deregister_bundled_packages(self) -> None:
         try:

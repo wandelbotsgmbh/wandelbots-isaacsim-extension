@@ -3,19 +3,20 @@ from copy import deepcopy
 
 import carb
 import omni.timeline
-from pxr import Sdf
+import omni.usd
+from pxr import Sdf, Usd
+
+import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.manipulators import (
     MotionGroup,
     MotionGroupConfiguration,
-    is_prim_motion_group,
     get_motion_group_configuration_from_prim,
+    is_prim_motion_group,
 )
+
 from .motion_stream_configuration import MotionStreamConfiguration
 from .motion_stream_connector import MotionStreamConnector
 from .utils import get_scene_motion_group_prim_paths
-import omni.usd
-from pxr import Usd
-import wandelbots.usd as wb_schema  # type: ignore
 
 
 class MotionGroupService:
@@ -137,12 +138,17 @@ class MotionGroupService:
                             f"Skipping stream for {motion_group_prim_path} as it is not enabled"
                         )
                         continue
-                    stream = self._get_motion_group_stream(motion_group_prim_path)
-                    if not stream:
-                        stream = await self._create_stream(motion_group_prim_path)
-                    else:
-                        stream.motion_group.configuration.refresh_from_prim(self._stage)
-                    await self._start_stream(stream)
+
+                    # Always recreate stream to ensure MotionGroup reflects current articulation structure
+                    # This handles cases where articulations are connected/disconnected between runs
+                    await self._remove_stream(motion_group_prim_path)
+                    stream = await self._create_stream(motion_group_prim_path)
+                    try:
+                        await self._start_stream(stream)
+                    except Exception as start_ex:
+                        # Clean up the created stream if starting failed
+                        await self._remove_stream(motion_group_prim_path)
+                        raise start_ex
                 except Exception as ex:
                     carb.log_error(f"Failed to stream {motion_group_prim_path}. {ex}")
 

@@ -65,6 +65,15 @@ class CollisionSetupSelector:
             if len(self._collision_setups) == 0:
                 ui.Label("No collision setups found")
                 return
+
+            first_setup = self._collision_setups[0]
+            if (
+                len(self._collision_setups) == 1
+                and self._selected_collision_setup != first_setup
+            ):
+                self._selected_collision_setup = first_setup
+                self._collision_setup_changed_fn(self._selected_collision_setup)
+
             self._collision_setups_model = CollisionSetupModel(
                 self._selected_collision_setup, self._collision_setups
             )

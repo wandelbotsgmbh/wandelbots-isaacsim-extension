@@ -14,11 +14,19 @@ from wandelbots.omni.instances.models import (
     NOVACustomInstance,
     NOVACloudInstance,
     NOVAControllerData,
+    NOVACellData,
 )
+from wandelbots.omni.instances.stage_discovery import (
+    filter_unknown_host_instances,
+    list_cells_for_host,
+)
+from wandelbots.omni.instances.events import push_motion_group_connection_changed
 from wandelbots.omni.environment import instance_store
 from wandelbots.omni.manipulators import (
     is_prim_motion_group,
     get_motion_group_service,
+    get_motion_group_configuration_from_prim,
+    get_scene_motion_group_prim_paths,
     MotionGroupConfiguration,
     MotionStreamConfiguration,
 )
@@ -162,6 +170,14 @@ class NOVAInstancesService:
                     )
                     identifier = motion_group_config.identifier
                     self.remove_from_connected_motion_group(identifier)
+                    push_motion_group_connection_changed(
+                        host=motion_group_config.motion_stream_configuration.host,
+                        cell=motion_group_config.motion_stream_configuration.cell,
+                        controller=motion_group_config.motion_stream_configuration.controller,
+                        motion_group=motion_group_config.motion_stream_configuration.motion_group,
+                        prim_path=motion_group_config.prim_path,
+                        action="disconnected",
+                    )
                     success = True
                 except Exception as e:
                     carb.log_error(
@@ -233,6 +249,14 @@ class NOVAInstancesService:
                     )
                     identifier = motion_group_config.identifier
                     self.add_to_connected_motion_groups(identifier, motion_group_config)
+                    push_motion_group_connection_changed(
+                        host=instance.host,
+                        cell=controller.cell_name,
+                        controller=controller.name,
+                        motion_group=motion_group_name,
+                        prim_path=prim_path,
+                        action="connected",
+                    )
                     carb.log_verbose(
                         f"Successfully connected {identifier} to {prim_path}"
                     )
@@ -327,6 +351,63 @@ class NOVAInstancesService:
             results.append(connected_motion_group)
 
         return results
+
+    def _get_stage_motion_group_configurations(self) -> list[MotionGroupConfiguration]:
+        stage = stage_utils.get_current_stage()
+        if stage is None:
+            return []
+
+        motion_group_configs: list[MotionGroupConfiguration] = []
+        for prim_path in get_scene_motion_group_prim_paths(
+            include_prims_without_api=False
+        ):
+            prim = stage.GetPrimAtPath(prim_path)
+            config = get_motion_group_configuration_from_prim(prim)
+            if config is not None:
+                motion_group_configs.append(config)
+        return motion_group_configs
+
+    def list_stage_instances(
+        self,
+        known_hosts: set[str],
+    ) -> list[NOVACustomInstance]:
+        """Crawl the stage for prims with MotionGroupAPI whose host is not in
+        *known_hosts* and return a `NOVACustomInstance` per unknown host."""
+        motion_group_configs = self._get_stage_motion_group_configurations()
+        instances = filter_unknown_host_instances(motion_group_configs, known_hosts)
+        for inst in instances:
+            carb.log_verbose(f"Discovered orphan instance from stage: {inst.host}")
+        return instances
+
+    def list_cells_from_stage(
+        self,
+        host: str,
+    ) -> list[NOVACellData]:
+        """Build cell / controller / motion-group data purely from the stage
+        prims that reference *host*.  Used as a fallback when the NOVA
+        instance is unreachable."""
+        motion_group_configs = self._get_stage_motion_group_configurations()
+        return list_cells_for_host(motion_group_configs, host)
+
+    def find_stage_config_for_motion_group(
+        self,
+        host: str,
+        cell: str,
+        controller: str,
+        motion_group: str,
+    ) -> Optional[MotionGroupConfiguration]:
+        """Return the stage configuration whose host, cell, controller and
+        motion-group match the given values, or ``None``."""
+        for config in self._get_stage_motion_group_configurations():
+            sc = config.motion_stream_configuration
+            if (
+                sc.host == host
+                and sc.cell == cell
+                and sc.controller == controller
+                and sc.motion_group == motion_group
+            ):
+                return config
+        return None
 
     @property
     def instances_api(self) -> NOVAInstancesAPI:

@@ -259,3 +259,25 @@ def nova_pose_to_scene_matrix(pose: list[float], stage_meters_per_unit: float = 
         tz,
         1.0,
     )
+
+
+def numpy_to_scene_matrix44(matrix44: np.ndarray) -> sc.Matrix44:
+    # sc.Matrix44 expects column-major order
+    return sc.Matrix44(
+        matrix44[0, 0],
+        matrix44[1, 0],
+        matrix44[2, 0],
+        matrix44[3, 0],  # column 0
+        matrix44[0, 1],
+        matrix44[1, 1],
+        matrix44[2, 1],
+        matrix44[3, 1],  # column 1
+        matrix44[0, 2],
+        matrix44[1, 2],
+        matrix44[2, 2],
+        matrix44[3, 2],  # column 2
+        matrix44[0, 3],
+        matrix44[1, 3],
+        matrix44[2, 3],
+        matrix44[3, 3],  # column 3
+    )

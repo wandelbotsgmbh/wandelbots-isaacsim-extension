@@ -186,7 +186,7 @@ class ActionPlannerWindow:
                             motion_group=stream_config.motion_group,
                             tcp_changed_fn=assign_tcp,
                             selected_tcp=self._selected_tcp,
-                            select_first_tcp_fallback=False,
+                            select_first_tcp_fallback=True,
                         )
                     ui.Label(
                         "Collision setup", tooltip="Collision setup to use for planning"

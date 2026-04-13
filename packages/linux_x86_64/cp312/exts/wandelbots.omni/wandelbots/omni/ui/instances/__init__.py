@@ -1,4 +1,4 @@
-from .motion_group_ui_builder import MotionGroupUIBuilder
+from .motion_group_widget import MotionGroupWidget
 from .instances_list import NOVAInstanceListUIBuilder
 
-__all__ = ["NOVAInstanceListUIBuilder", "MotionGroupUIBuilder"]
+__all__ = ["NOVAInstanceListUIBuilder", "MotionGroupWidget"]

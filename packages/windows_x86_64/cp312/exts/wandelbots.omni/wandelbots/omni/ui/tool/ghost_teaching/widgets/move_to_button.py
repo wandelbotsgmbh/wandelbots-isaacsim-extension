@@ -16,7 +16,9 @@ from wandelbots.omni.ui.colors import NOVAColor
 
 class MoveToButton:
     def __init__(
-        self, configure_execution_fn: Callable[[], MoveToExecuteSettings | None]
+        self,
+        configure_execution_fn: Callable[[], MoveToExecuteSettings | None],
+        on_released_fn: Callable[[], None] | None = None,
     ):
         """
 
@@ -27,6 +29,7 @@ class MoveToButton:
         self._move_to_pressed = False
         self._move_to_state = MoveToState.IDLE
         self._configure_execution_fn = configure_execution_fn
+        self._on_released_fn = on_released_fn
         self._standstill_subscription: planner_utils.MotionGroupStandstillSubscription = None
         self._enabled = True
         self._is_following = False
@@ -118,6 +121,8 @@ class MoveToButton:
     ):
         self._move_to_pressed = False
         self._stop_move_to()
+        if self._on_released_fn:
+            self._on_released_fn()
 
     def _stop_move_to(self):
         if self._move_to_task is not None:

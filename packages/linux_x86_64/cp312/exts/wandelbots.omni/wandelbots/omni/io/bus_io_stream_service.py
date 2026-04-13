@@ -5,6 +5,7 @@ import weakref
 from typing import Callable, Optional
 
 import carb
+from tenacity import RetryCallState, retry, stop_after_attempt, wait_exponential
 from wandelbots_api_client.v2.api.bus_inputs_outputs_api import BUSInputsOutputsApi
 from wandelbots_api_client.v2.models.io_value import (
     IOValue,
@@ -20,9 +21,18 @@ from wandelbots.omni.utils.api import (
 from wandelbots.omni.core.networks.nats_connector import (
     NatsSubscriptionService,
 )
+from wandelbots.omni.instances.instances_api import get_instances_api
+from wandelbots_api_client.v2.exceptions import ApiException
 
 OnInitCallback = Callable[[dict[str, IOValue]], None]
 OnChangeCallback = Callable[[str, IOValue], None]
+
+
+def _log_bus_io_retry_state(state: RetryCallState):
+    carb.log_error(
+        f"Bus IO connection error #{state.attempt_number} ({state.outcome.exception()}). "
+        f"Reconnecting in {state.upcoming_sleep}s"
+    )
 
 
 def get_io_value_from_dict(io_value_dict: dict) -> IOValue | None:
@@ -273,8 +283,6 @@ class BusIOStream:
             carb.log_error(f"Failed to decode Bus IO NATS message as JSON: {ex}")
         except EOFError as ex:
             carb.log_warn(f"EOF while reading NATS message for cell {self.cell}: {ex}")
-            # EOF typically means connection was interrupted mid-message
-            # The reconnect callback will handle resubscription
         except Exception as ex:
             carb.log_error(
                 f"Failed to process Bus IO NATS message for cell {self.cell}: {ex}",
@@ -296,67 +304,82 @@ class BusIOStream:
 
             carb.log_info(f"Start Bus IO NATS stream for {self.cell}")
 
-            # Initialize cache with current values
             self.io_cache = {}
             ios = list(self.io_subscriptions.keys())
             carb.log_verbose(f"Filling Bus IO cache for {ios}")
 
-            watched_ios: list[str] = []
-            try:
-                # Get current values for all IOs at once via API
-                async with get_api_client_from_config(
-                    self.api_configuration
-                ) as api_client:
-                    bus_io_api = BUSInputsOutputsApi(api_client)
-                    # get_io_values returns List[IOValue] with io field
-                    io_values_response = await bus_io_api.get_bus_io_values(
-                        cell=self.cell,
-                        ios=list(ios),  # Pass list of IO identifiers
-                    )
+            await self._connect(ios)
 
-                    for io_value_obj in io_values_response:
-                        io_value = io_value_obj.actual_instance
-                        io_id = io_value.io
-                        if io_id not in ios:
-                            continue
-
-                        self.io_cache[io_id] = io_value
-                        watched_ios.append(io_id)
-            except Exception as ex:
-                carb.log_error(
-                    f"Failed to retrieve Bus IO values. IOs ({watched_ios}) will not be watched. {ex}"
+    @retry(
+        before_sleep=_log_bus_io_retry_state,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=False,
+    )
+    async def _connect(self, ios: list[str]):
+        watched_ios: list[str] = []
+        try:
+            async with get_api_client_from_config(self.api_configuration) as api_client:
+                bus_io_api = BUSInputsOutputsApi(api_client)
+                io_values_response = await bus_io_api.get_bus_io_values(
+                    cell=self.cell,
+                    ios=list(ios),
                 )
-
-            carb.log_verbose(f"Bus IO cache: {self.io_cache}")
-
-            if len(watched_ios) == 0:
-                carb.log_info("No Bus IOs found to watch, stream will not be started")
-                return
-
-            # Initialize subscriptions with current values
-            carb.log_verbose("Initializing Bus IO subscriptions")
-            for subscription_id, subscription_ios in self.subscription_ios.items():
-                subscription = self.subscriptions[subscription_id]
-                if not subscription.on_init:
-                    continue
-                initial_subscription_values = dict(
-                    [(io, self.io_cache.get(io, None)) for io in subscription_ios]
-                )
-                subscription.on_init(initial_subscription_values)
-
-            # Create NATS subscription service if not exists
-            subject = f"nova.v2.cells.{self.cell}.bus-ios.ios"
-            self._nats_service = NatsSubscriptionService(
-                base_url=self.api_configuration.base_url,
-                subject=subject,
-                message_handler=self._handle_nats_message,
-                access_token=self.api_configuration.access_token,
-                context_name=f"cell {self.cell}",
+                for io_value_obj in io_values_response:
+                    io_value = io_value_obj.actual_instance
+                    io_id = io_value.io
+                    if io_id not in ios:
+                        continue
+                    self.io_cache[io_id] = io_value
+                    watched_ios.append(io_id)
+        except ApiException as ex:
+            carb.log_error(
+                f"Bus IO API error ({ex.status} {ex.reason}) for cell {self.cell}: {ex.body}"
             )
+            if ex.status != 401:
+                raise
 
-            if not await self._nats_service.connect():
-                carb.log_error(f"Failed to connect NATS for cell {self.cell}")
-                self._nats_service = None
+            refreshed = get_instances_api().get_auth_token_from_host(
+                self.api_configuration.host
+            )
+            if not refreshed:
+                raise
+
+            carb.log_info(
+                f"Refreshed auth token for {self.api_configuration.host}, retrying connection"
+            )
+            self.api_configuration.access_token = refreshed
+            raise
+        except Exception as ex:
+            carb.log_error(
+                f"Unexpected error retrieving Bus IO values for cell {self.cell}: {ex}"
+            )
+            raise
+
+        carb.log_verbose(f"Bus IO cache: {self.io_cache}")
+
+        if not watched_ios:
+            carb.log_info("No Bus IOs found to watch, stream will not be started")
+            return
+
+        for subscription_id, subscription_ios in self.subscription_ios.items():
+            subscription = self.subscriptions[subscription_id]
+            if not subscription.on_init:
+                continue
+            subscription.on_init({io: self.io_cache.get(io) for io in subscription_ios})
+
+        subject = f"nova.v2.cells.{self.cell}.bus-ios.ios"
+        self._nats_service = NatsSubscriptionService(
+            base_url=self.api_configuration.base_url,
+            subject=subject,
+            message_handler=self._handle_nats_message,
+            access_token=self.api_configuration.access_token,
+            context_name=f"cell {self.cell}",
+        )
+        if not await self._nats_service.connect():
+            carb.log_error(f"Failed to connect NATS for cell {self.cell}")
+            self._nats_service = None
+            raise ConnectionError(f"Failed to connect NATS for cell {self.cell}")
 
     async def stop_stream(self):
         """Stop NATS subscription"""

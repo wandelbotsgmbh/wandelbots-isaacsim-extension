@@ -1,5 +1,137 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.34.3 (2026-04-13)
+
+### Bug Fixes
+
+* Return version as a Version object in fetch_instance_version method
+
+## 2.34.2 (2026-04-13)
+
+### Bug Fixes
+
+* Handle 401 errors in Bus IO stream connection and refresh auth token
+
+## 2.34.1 (2026-04-10)
+
+### Bug Fixes
+
+* Fixed npm api client axios version
+
+## 2.34.0 (2026-04-09)
+
+### Features
+
+* **CSI-2426:** Added option to select joint configuration on joint_p2p
+
+## 2.33.4 (2026-04-09)
+
+### Bug Fixes
+
+* Convert sweep collider objects to dict (example)
+
+## 2.33.3 (2026-04-09)
+
+### Bug Fixes
+
+* Fixed path of openapi json page
+
+## 2.33.2 (2026-04-09)
+
+### Bug Fixes
+
+* Added host valdiation in MotionStreamConfiguration data model
+
+## 2.33.1 (2026-04-08)
+
+### Bug Fixes
+
+* Convert integer values to string for Bus IO input and output handling
+
+## 2.33.0 (2026-04-07)
+
+### Features
+
+* Added experimental robot overlay provider + endpoint. Motion planning failures will render the overlay
+
+## 2.32.0 (2026-04-07)
+
+### Features
+
+* **CSI-2575:** Multiple robots support for TrajectoryViewer class
+
+## 2.31.0 (2026-03-31)
+
+### Features
+
+* **CSI-2490:** Added display of stage defined motion groups which are not connected, connect suggestion and fixed connection update
+
+## 2.30.0 (2026-03-26)
+
+### Features
+
+* **CSI-2428:** new create context menu entry for downloading robot assets from nova instance and inserting it into the scene
+
+## 2.29.5 (2026-03-24)
+
+### Bug Fixes
+
+* **CSI-2474:** autoapply robot schema if not yet existing
+
+## 2.29.4 (2026-03-20)
+
+### Bug Fixes
+
+* GhostTeaching overlay error when color is empty
+
+## 2.29.3 (2026-03-13)
+
+### Bug Fixes
+
+* **CSI-2485:** implemented check for joint type and scaling for prismatic joint type
+
+## 2.29.2 (2026-03-13)
+
+### Bug Fixes
+
+* Remove TCP parameter from trajectory viewer api
+
+## 2.29.1 (2026-03-13)
+
+### Bug Fixes
+
+* Update base URL construction in authentication to use removeprefix method
+
+## 2.29.0 (2026-03-05)
+
+### Features
+
+* Add isaaclab starter kit example.
+
+## 2.28.0 (2026-02-27)
+
+### Features
+
+* **CSI-2438:** Added additional motion group link colliders to nova collision export
+
+## 2.27.1 (2026-02-26)
+
+### Bug Fixes
+
+* clear articulation cache on simulation stop
+
+## 2.27.0 (2026-02-25)
+
+### Features
+
+* **CSI-2144:** added support for external axes for robots
+
+### Bug Fixes
+
+* Removed 106.5/4.5 support and fixed version bump
+* Updated release process
+* Updated semantic release
+
 ## 2.26.1 (2026-02-18)
 
 ### Bug Fixes

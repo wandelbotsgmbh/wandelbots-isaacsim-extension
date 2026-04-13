@@ -9,13 +9,10 @@ from omni.kit.async_engine import run_coroutine
 import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
 from wandelbots.omni.manipulators import MotionStreamConfiguration
 import wandelbots_api_client.v2.models as wb_models
-from .motion_command_selector import (
-    MotionCommandItem,
-    MotionCommandsModel,
-)
 import carb.settings
 import wandelbots.omni.ui.colors as color_utils
 from wandelbots.omni.ui.overlay.ghost_teaching.ghost_teaching_overlay import (
+    CARB_MAX_JOINT_CONFIGS,
     CARB_OVERLAY_COLOR,
     CARB_OVERLAY_VISIBLE,
 )
@@ -62,10 +59,11 @@ class SettingsModel(Observable):
     auto_play_simulation: bool = True
     velocity: int = 200
     acceleration: int = 1000
-    motion_command: Literal["cartesian_p2p", "joint_p2p", "line"] = "cartesian_p2p"
+    motion_command: Literal["joint_p2p", "cartesian_p2p", "line"] = "joint_p2p"
     # Overlay settings
     overlay_visible: bool = True
     overlay_color: str = "#A936DA16"
+    max_joint_configs: int = 9
 
 
 class GhostTeachingSettingsWindow(ui.Window):
@@ -210,6 +208,32 @@ class GhostTeachingSettingsWindow(ui.Window):
             )
             color_picker.model.add_end_edit_fn(_overlay_color_changed)
 
+        with ui.HStack(spacing=8):
+            ui.Label("Max joint configs", width=ui.Fraction(1))
+            ui.Spacer(width=ui.Fraction(1))
+            int_drag = ui.IntDrag(
+                model=ui.SimpleIntModel(
+                    default_value=self.model.max_joint_configs,
+                ),
+                min=1,
+                max=18,
+                name="Max joint configs",
+                width=ui.Pixel(120),
+                tooltip="Maximum number of joint configurations to display in the overlay",
+            )
+
+            def set_max_joint_configs(
+                m: ui.SimpleIntModel, weak_self=weakref.ref(self)
+            ):
+                instance = weak_self()
+                if instance:
+                    instance.model.max_joint_configs = m.get_value_as_int()
+                    settings.set(
+                        CARB_MAX_JOINT_CONFIGS, instance.model.max_joint_configs
+                    )
+
+            int_drag.model.add_value_changed_fn(set_max_joint_configs)
+
     def _build_ghost_teaching_settings(self):
         with ui.HStack(spacing=8):
 
@@ -251,29 +275,25 @@ class GhostTeachingSettingsWindow(ui.Window):
                 self.model.acceleration = m.get_value_as_int()
 
             int_drag.model.add_value_changed_fn(set_acceleration)
+        _values = ["joint_p2p", "cartesian_p2p", "line"]
+        _labels = ["Joint P2P", "Cartesian P2P", "Line"]
         with ui.HStack(spacing=8):
-            ui.Label(
-                "Motion command",
-                width=ui.Fraction(1),
+            ui.Label("Motion command", width=ui.Fraction(1))
+            current_idx = (
+                _values.index(self.model.motion_command)
+                if self.model.motion_command in _values
+                else 0
             )
+            cmd_combo = ui.ComboBox(current_idx, *_labels, width=ui.Pixel(120))
 
-            selector = ui.ComboBox(
-                MotionCommandsModel(
-                    motion_commands=[
-                        ("cartesian_p2p", "Cartesian P2P"),
-                        ("joint_p2p", "Joint P2P"),
-                        ("line", "Line"),
-                    ],
-                    selected_motion_command=self.model.motion_command,
-                ),
-                width=ui.Pixel(120),
-                tooltip="Motion command to move to next pose",
-            )
+            def set_motion_command(
+                model, _, weak_self=weakref.ref(self), values=_values
+            ):
+                s = weak_self()
+                if s:
+                    s.model.motion_command = values[model.get_item_value_model().as_int]
 
-            def set_motion_command(model: MotionCommandsModel, item: MotionCommandItem):
-                self.model.motion_command = model.selected_motion_command
-
-            selector.model.add_item_changed_fn(set_motion_command)
+            cmd_combo.model.add_item_changed_fn(set_motion_command)
 
     def _clamp_model_values(self):
         self.model.velocity = max(
@@ -321,6 +341,8 @@ def load_ghost_teaching_carb_settings() -> SettingsModel:
         and settings.get(CARB_OVERLAY_COLOR) != ""
     ):
         settings_model.overlay_color = settings.get_as_string(CARB_OVERLAY_COLOR)
+    if settings.get(CARB_MAX_JOINT_CONFIGS) is not None:
+        settings_model.max_joint_configs = settings.get_as_int(CARB_MAX_JOINT_CONFIGS)
     return settings_model
 
 
@@ -332,3 +354,4 @@ def save_ghost_teaching_carb_settings(model: SettingsModel):
     settings.set(CARB_MOTION_COMMAND, model.motion_command)
     settings.set(CARB_OVERLAY_VISIBLE, model.overlay_visible)
     settings.set(CARB_OVERLAY_COLOR, model.overlay_color)
+    settings.set(CARB_MAX_JOINT_CONFIGS, model.max_joint_configs)

@@ -1,7 +1,7 @@
 from typing import Callable, Literal
 import asyncio
-
 import carb
+import numpy as np
 import omni.physx.bindings._physx as physx_bindings
 import omni.physx
 import omni.usd
@@ -12,12 +12,17 @@ from pxr import PhysicsSchemaTools
 from wandelbots.omni.core.collision.collision_setup_cache import PrimCollisionSetupCache
 import wandelbots.omni.core.collision.shapes as collision_shapes
 from wandelbots.omni.utils.prims import Pose, PrimUtils, WSPose
+from wandelbots.omni.utils.math import pose_to_matrix, matrix_to_pose
 import wandelbots_api_client.v2 as wb
 from wandelbots.omni.utils.api import get_api_client_from_config
 from wandelbots.omni.utils.scene import SceneUtils
-from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
+from wandelbots.omni.manipulators import (
+    MotionStreamConfiguration,
+    get_motion_group_configuration_from_prim,
+    compute_forward_kinematics_chain,
+)
 from .utils import to_nova_collider
-from wandelbots.omni.usd.schema_utils import SchemaUtils
+from wandelbots.omni.usd import SchemaUtils, RobotSchemaUtils
 
 
 class TreeSweepParameters(pydantic.BaseModel):
@@ -268,30 +273,21 @@ class CollisionExportService:
                 ).to_nova_pose()
                 if reference_prim_pose
                 else collider.pose,
+                prim_path=collider.prim_path,
             )
             for prim_path, collider in colliders.items()
             if collider is not None
         }
 
-    async def export_collision_sweep_to_nova(
+    async def collision_sweep_to_collision_setup(
         self,
         reference_prim: Usd.Prim,
         motion_group_prim: Usd.Prim,
         sweep_parameters: SweepParameters,
-        collision_setup_id: str,
-        progress_callback_fn: Callable[[float], None],
         tool_prim: Usd.Prim | None = None,
         self_collision: bool = True,
         stabilization_wait_time: float = 1.0,
     ) -> wb.models.CollisionSetup:
-        reference_pose = PrimUtils.get_prim_pose(
-            reference_prim.GetPath().pathString, coordinate_system="world"
-        )
-
-        motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
-        if progress_callback_fn:
-            progress_callback_fn(0.1)
-
         timeline, _ = SceneUtils.check_simulation()
         if not timeline.is_playing():
             timeline.play()
@@ -304,21 +300,106 @@ class CollisionExportService:
             stabilization_wait_time
         )  # wait a bit to ensure physics stabilizes
 
-        colliders = get_collision_export_service().collision_sweep(
+        reference_pose = PrimUtils.get_prim_pose(
+            reference_prim.GetPath().pathString, coordinate_system="world"
+        )
+
+        colliders = self.collision_sweep(
             stage=motion_group_prim.GetStage(),
             sweep_args=sweep_parameters,
             reference_prim_pose=reference_pose,
         )
+        collider_count = len(colliders)
 
-        # Tool prims might be included which a treated later
-        if tool_prim:
-            for collider_id in list(colliders.keys()):
-                if collider_id.startswith(tool_prim.GetPath().pathString):
-                    del colliders[collider_id]
+        tool_colliders, colliders = await self._extract_tool_colliders(
+            colliders=colliders,
+            motion_group_prim=motion_group_prim,
+            tool_prim=tool_prim,
+        )
+        tool_collider_count = len(tool_colliders)
+
+        link_chain_colliders, colliders = await self._extract_link_attachments(
+            colliders=colliders,
+            motion_group_prim=motion_group_prim,
+        )
+        link_collider_count = collider_count - len(colliders) - tool_collider_count
 
         colliders = {
             shape_id: to_nova_collider(shape) for shape_id, shape in colliders.items()
         }
+
+        carb.log_info(
+            f"Found {collider_count} colliders: {len(colliders)} static colliders, {tool_collider_count} tool colliders, {link_collider_count} link chain colliders."
+        )
+
+        return wb.models.CollisionSetup(
+            colliders=colliders,
+            link_chain=link_chain_colliders,
+            tool=tool_colliders if tool_colliders else None,
+            self_collision_detection=self_collision,
+        )
+
+    async def export_collision_sweep_to_nova(
+        self,
+        reference_prim: Usd.Prim,
+        motion_group_prim: Usd.Prim,
+        sweep_parameters: SweepParameters,
+        collision_setup_id: str,
+        progress_callback_fn: Callable[[float], None],
+        tool_prim: Usd.Prim | None = None,
+        self_collision: bool = True,
+        stabilization_wait_time: float = 1.0,
+    ) -> wb.models.CollisionSetup:
+        motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
+        if progress_callback_fn:
+            progress_callback_fn(0.1)
+
+        timeline, _ = SceneUtils.check_simulation()
+        if not timeline.is_playing():
+            timeline.play()
+
+        collision_setup = await self.collision_sweep_to_collision_setup(
+            reference_prim=reference_prim,
+            motion_group_prim=motion_group_prim,
+            sweep_parameters=sweep_parameters,
+            tool_prim=tool_prim,
+            self_collision=self_collision,
+            stabilization_wait_time=stabilization_wait_time,
+        )
+
+        if progress_callback_fn:
+            progress_callback_fn(0.5)
+
+        stream_config = motion_group.motion_stream_configuration
+
+        async with get_api_client_from_config(
+            stream_config.get_api_configuration()
+        ) as api:
+            await wb.StoreCollisionSetupsApi(api).store_collision_setup(
+                cell=stream_config.cell,
+                setup=collision_setup_id,
+                collision_setup=collision_setup,
+            )
+
+        if progress_callback_fn:
+            progress_callback_fn(1.0)
+        return collision_setup
+
+    async def _extract_tool_colliders(
+        self,
+        colliders: dict[str, collision_shapes.Collider],
+        motion_group_prim: Usd.Prim,
+        tool_prim: Usd.Prim,
+    ) -> tuple[
+        dict[str, collision_shapes.Collider], dict[str, collision_shapes.Collider]
+    ]:
+        for collider_id in list(colliders.keys()):
+            collider = colliders[collider_id]
+            if tool_prim and collider.prim_path.startswith(
+                tool_prim.GetPath().pathString
+            ):
+                del colliders[collider_id]
+                continue
 
         tool_colliders: dict[str, wb.models.Collider] = dict()
         if tool_prim and tool_prim.IsValid():
@@ -340,24 +421,21 @@ class CollisionExportService:
                 shape_id: to_nova_collider(shape)
                 for shape_id, shape in tool_colliders.items()
             }
+        return tool_colliders, colliders
 
-        carb.log_info(f"Found {len(colliders)} colliders.")
-        if progress_callback_fn:
-            progress_callback_fn(0.5)
-
-        stream_config = motion_group.motion_stream_configuration
-
-        collision_setup: wb.models.CollisionSetup | None = None
-        async with get_api_client_from_config(
-            stream_config.get_api_configuration()
-        ) as api:
-            collision_setup_api = wb.StoreCollisionSetupsApi(api)
-
+    async def _get_motion_group_dh_param_and_link_chain_and_joint_position(
+        self, motion_stream_config: MotionStreamConfiguration
+    ) -> tuple[
+        list[wb.models.DHParameter],
+        dict[int, dict[str, wb.models.Collider]],
+        list[float],
+    ]:
+        async with motion_stream_config.get_api_client() as api:
             motion_group_description: wb.models.MotionGroupDescription = (
                 await wb.MotionGroupApi(api).get_motion_group_description(
-                    cell=stream_config.cell,
-                    controller=stream_config.controller,
-                    motion_group=stream_config.motion_group,
+                    cell=motion_stream_config.cell,
+                    controller=motion_stream_config.controller,
+                    motion_group=motion_stream_config.motion_group,
                 )
             )
 
@@ -367,21 +445,132 @@ class CollisionExportService:
                 motion_group_model=motion_group_description.motion_group_model,
             )
 
-            collision_setup = wb.models.CollisionSetup(
-                colliders=colliders,
-                link_chain=link_chain,
-                tool=tool_colliders if tool_colliders else None,
-                self_collision_detection=self_collision,
-            )
-            await collision_setup_api.store_collision_setup(
-                cell=stream_config.cell,
-                setup=collision_setup_id,
-                collision_setup=collision_setup,
+            motion_group_state = await wb.MotionGroupApi(
+                api
+            ).get_current_motion_group_state(
+                cell=motion_stream_config.cell,
+                controller=motion_stream_config.controller,
+                motion_group=motion_stream_config.motion_group,
             )
 
-        if progress_callback_fn:
-            progress_callback_fn(1.0)
-        return collision_setup
+            return (
+                motion_group_description.dh_parameters,
+                link_chain,
+                motion_group_state.joint_position,
+            )
+
+    async def _extract_link_attachments(
+        self,
+        colliders: dict[str, collision_shapes.Collider],
+        motion_group_prim: Usd.Prim,
+    ) -> tuple[
+        dict[str, collision_shapes.Collider], dict[str, collision_shapes.Collider]
+    ]:
+        link_attachments: dict[str, dict[str, collision_shapes.Collider]] = {}
+        motion_group_links = RobotSchemaUtils.get_motion_group_links_ordered(
+            motion_group_prim
+        )
+
+        link_path_index_mapping: dict[str, int] = {
+            link.GetPath().pathString: index
+            for index, link in enumerate(motion_group_links)
+        }
+
+        # Collect all colliders which are parented under a motion group link
+        for collider_id in list(colliders.keys()):
+            collider = colliders[collider_id]
+            collider_prim = motion_group_prim.GetStage().GetPrimAtPath(
+                collider.prim_path
+            )
+            if not collider_prim or not collider_prim.IsValid():
+                carb.log_warn(
+                    f"Collider prim '{collider_id}' is not valid, skipping link attachment processing."
+                )
+                continue
+            link_parent = RobotSchemaUtils.get_link_parent(collider_prim)
+            if not link_parent:
+                continue
+            if link_parent.GetPath().pathString not in link_path_index_mapping:
+                continue  # Only process attachments from the selected motion group
+            link_path = link_parent.GetPath().pathString
+            if link_path not in link_attachments:
+                link_attachments[link_path] = {}
+
+            if collider_id.split("/")[-1] == "visuals":
+                carb.log_verbose(
+                    f"Skipping visuals collider {collider_id} for link {link_path}"
+                )
+                continue  # skip visuals colliders (they are provided by nova collider model api)
+            carb.log_verbose(
+                f"Found link attachment: {collider_id} for link: {link_path}"
+            )
+            link_attachments[link_path][collider_id] = colliders[collider_id]
+            del colliders[collider_id]
+
+        motion_stream_config = get_motion_group_configuration_from_prim(
+            motion_group_prim
+        ).motion_stream_configuration
+
+        (
+            dh_parameters,
+            link_chain,
+            current_joint_values,
+        ) = await self._get_motion_group_dh_param_and_link_chain_and_joint_position(
+            motion_stream_config
+        )
+
+        # Compute FK at current joint values so link transforms match the swept poses
+        link_transforms = compute_forward_kinematics_chain(
+            dh_parameters=dh_parameters,
+            dh_unit_to_stage_unit_factor=1,
+            joint_values_rad=current_joint_values,
+        )
+
+        # The colliders are added relative to the the link frame/transform
+        # This loop calculates the relative pose of each collider to the link frame and updates the collider poses
+        # accordingly before adding them to the link chain colliders
+        for link_path, link_colliders in link_attachments.items():
+            link_index = link_path_index_mapping[link_path]
+
+            if link_index >= len(link_transforms):
+                carb.log_warn(
+                    f"Link index {link_index} exceeds available transforms "
+                    f"({len(link_transforms)}), skipping {link_path} attachments."
+                )
+                continue
+
+            # FK transform from robot base to this link frame (in mm)
+            link_T_base = link_transforms[link_index]
+            base_T_link = np.linalg.inv(link_T_base)
+
+            for collider_id, collider in link_colliders.items():
+                # Collider pose is relative to robot base (in mm + rotvec)
+                collider_pose_list = list(collider.pose.position) + list(
+                    collider.pose.orientation
+                    if collider.pose.orientation
+                    else [0, 0, 0]
+                )
+
+                carb.log_verbose(
+                    f"Link attachment {collider_id}: "
+                    f"robot-relative pose = {collider_pose_list}"
+                )
+
+                # Convert to 4x4 matrix, transform to link frame, convert back
+                collider_T_base = pose_to_matrix(collider_pose_list)
+                collider_T_link = base_T_link @ collider_T_base
+                link_relative_pose = matrix_to_pose(collider_T_link)
+
+                carb.log_verbose(f"Link-relative pose = {link_relative_pose}")
+
+                collider.pose.position = link_relative_pose[:3]
+                collider.pose.orientation = link_relative_pose[3:]
+
+                collider_id = collider_id.removeprefix(link_path + "/")
+
+                link_chain[link_index][collider_id] = to_nova_collider(collider)
+
+        return link_chain, colliders
 
     async def get_collision_setup(
         self, motion_group_prim: Usd.Prim, setup_name: str, force_refresh: bool = False
