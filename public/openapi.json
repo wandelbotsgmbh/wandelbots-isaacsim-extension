@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots NOVA - Isaac Sim Extension API",
         "description": "This extension enables seamless connection between NVIDIA Isaac Sim\u2122 and Wandelbots NOVA. Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, allowing users to easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs. Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\nThe API provides comprehensive capabilities including:\n- **Stage Management**: Load, save, and manipulate USD stages\n- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n- **Cameras**: Configure virtual cameras and viewports for visualization\n- **Motion Groups**: Define and control robot motion groups and kinematics\n- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n- **UI Control**: Interact with the Isaac Sim user interface programmatically",
-        "version": "2.34.3"
+        "version": "2.34.5"
     },
     "paths": {
         "/stage/scene": {

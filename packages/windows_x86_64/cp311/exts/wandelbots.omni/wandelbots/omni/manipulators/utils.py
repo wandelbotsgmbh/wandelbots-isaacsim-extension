@@ -12,6 +12,7 @@ from .motion_group import (
 )
 from .articulation_cache import get_articulation_cache
 from usd.schema.isaac import robot_schema
+from usd.schema.isaac.robot_schema import utils as robot_schema_utils
 
 
 def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[str]:
@@ -191,12 +192,12 @@ def get_articulation_joint_indices(motion_group: MotionGroup) -> list[int]:
 
     ordered_joints = _get_articulation_group_joints(articulation_root)
 
-    robot_joints = robot_schema.utils.GetAllRobotJoints(
+    robot_joints = robot_schema_utils.GetAllRobotJoints(
         motion_group_prim.GetStage(), motion_group_prim
     )
     if not robot_joints:
         _apply_isaac_robot_schema(motion_group_prim)
-        robot_joints = robot_schema.utils.GetAllRobotJoints(
+        robot_joints = robot_schema_utils.GetAllRobotJoints(
             motion_group_prim.GetStage(), motion_group_prim
         )
 

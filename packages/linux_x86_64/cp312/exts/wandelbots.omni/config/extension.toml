@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp312"]
 target.platform = ["linux-x86_64"]
-version = "2.34.3"
+version = "2.34.5"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -33,7 +33,7 @@ icon = "data/icon.png"
 
 
 [dependencies]
-"wandelbots.usd" = { version = "1.1.5" }
+"wandelbots.usd" = { version = ">=1.1.5" }
 "isaacsim.core.api" = {}
 "isaacsim.core.prims" = {}
 "isaacsim.core.utils" = {}

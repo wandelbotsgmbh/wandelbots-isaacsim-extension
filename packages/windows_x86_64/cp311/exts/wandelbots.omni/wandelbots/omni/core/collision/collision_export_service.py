@@ -21,7 +21,7 @@ from wandelbots.omni.manipulators import (
     get_motion_group_configuration_from_prim,
     compute_forward_kinematics_chain,
 )
-from .utils import to_nova_collider
+from wandelbots.omni.core.collision.utils import to_nova_collider
 from wandelbots.omni.usd import SchemaUtils, RobotSchemaUtils
 
 

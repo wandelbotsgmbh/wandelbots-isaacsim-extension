@@ -1,5 +1,17 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.34.5 (2026-04-17)
+
+### Bug Fixes
+
+* Fix import of robot schema utils
+
+## 2.34.4 (2026-04-16)
+
+### Bug Fixes
+
+* Fixed version range for usd schema 1.1.6 and imports which fail with kit sdk v110
+
 ## 2.34.3 (2026-04-13)
 
 ### Bug Fixes
