@@ -13,15 +13,17 @@ from wandelbots.omni.instances.models import (
 )
 from wandelbots.omni.utils.auth import (
     get_auth_token,
+    get_auth_config,
+    get_auth_configs,
     get_portal_api_url,
     invalidate_auth_token,
+    EntraIDModel,
 )
 from wandelbots_api_client.v2.api.cell_api import CellApi
 from wandelbots_api_client.v2.api.controller_api import ControllerApi
 from wandelbots_api_client.v2.api.motion_group_api import MotionGroupApi
 import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.environment import instance_store
-from wandelbots.omni.utils.auth import get_auth_configs
 from packaging.version import Version
 
 
@@ -170,8 +172,9 @@ class NOVAInstancesAPI:
             new_status = "running" if instance.status == "stopped" else "stopped"
             token = get_auth_token(auth_config_id)
             headers = {"Authorization": f"Bearer {token}"}
+            instances_path = self._get_instances_path(auth_config_id)
             response = requests.put(
-                f"{get_portal_api_url(auth_config_id)}/instances/{instance.instance_id}/state",
+                f"{get_portal_api_url(auth_config_id)}/{instances_path}/{instance.instance_id}/state",
                 headers=headers,
                 timeout=10,
                 json={"state": new_status},
@@ -288,8 +291,18 @@ class NOVAInstancesAPI:
                         )
                     )
                 except Exception as e:
+                    # Extract concise message for API errors (avoid dumping full HTTP headers)
+                    msg = str(e)
+                    if hasattr(e, "body") and e.body:
+                        try:
+                            import json
+
+                            body = json.loads(e.body)
+                            msg = body.get("message", msg)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                     carb.log_warn(
-                        f"Error fetching data for controller {controller_name} in cell {cell_name}: {e}"
+                        f"Error fetching data for controller {controller_name} in cell {cell_name}: {msg}"
                     )
                     continue
 
@@ -300,6 +313,13 @@ class NOVAInstancesAPI:
             return None
 
     # Helper methods for cloud instance management
+    def _get_instances_path(self, auth_config_id: str) -> str:
+        """Return the instances API path based on auth provider type."""
+        config = get_auth_config(auth_config_id)
+        if isinstance(config, EntraIDModel):
+            return "virtual/instances"
+        return "instances"
+
     def _fetch_instances(self, auth_config_id: str, token: str) -> list[NOVAInstance]:
         token = get_auth_token(auth_config_id)
         if not token:
@@ -308,8 +328,9 @@ class NOVAInstancesAPI:
             )
             return []
         headers = {"Authorization": f"Bearer {token}"}
+        instances_path = self._get_instances_path(auth_config_id)
         response = requests.get(
-            f"{get_portal_api_url(auth_config_id)}/instances",
+            f"{get_portal_api_url(auth_config_id)}/{instances_path}",
             headers=headers,
             timeout=10,
         )

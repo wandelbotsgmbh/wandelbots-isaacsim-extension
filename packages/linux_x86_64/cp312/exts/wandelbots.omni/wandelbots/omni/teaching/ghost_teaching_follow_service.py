@@ -40,6 +40,7 @@ class GhostTeachingFollowService:
         self._usd_watcher = None
         self._update_subscription = None
         self._follow_task = None
+        self._stop_event = asyncio.Event()
 
     @property
     def prim_path(self) -> str:
@@ -50,6 +51,7 @@ class GhostTeachingFollowService:
         """Start following the ghost object."""
         carb.log_info(f"Starting GhostTeachingFollowService for {self._prim_path}")
         self._is_running = True
+        self._stop_event.clear()
 
         # Watch for ghost object changes
         self._usd_watcher = get_watcher().subscribe_to_change_info_path(
@@ -77,6 +79,7 @@ class GhostTeachingFollowService:
         """Stop following the ghost object."""
         carb.log_info(f"Stopping GhostTeachingFollowService for {self._prim_path}")
         self._is_running = False
+        self._stop_event.set()
         self._is_executing = False
         self._pending_follow = False
         self._unsubscribe_usd_watcher()
@@ -188,13 +191,13 @@ class GhostTeachingFollowService:
             carb.log_info("Follow motion started")
 
         try:
+            self._stop_event.clear()
             success = await execute_move_to(
                 configuration,
-                continue_fn=lambda: self._is_running,
+                stop_event=self._stop_event,
                 on_stopped=on_stopped,
                 on_state_change=on_state_change,
                 on_motion_start=on_motion_start,
-                stop_on_standstill=True,
             )
 
             if not success:

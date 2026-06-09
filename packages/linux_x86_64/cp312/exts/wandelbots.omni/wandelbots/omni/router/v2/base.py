@@ -11,6 +11,7 @@ from wandelbots.omni.router.v2 import (
     motion_groups_router,
     stage_router,
     teaching_router,
+    trajectory_planner_router,
     trajectory_router,
     collision_world_router,
     colliders_router,
@@ -47,7 +48,7 @@ API_DESCRIPTION = (
 omniservice_app = FastAPI(
     title=API_TITLE,
     description=API_DESCRIPTION,
-    version="2.34.5",
+    version="2.45.0",
     docs_url=None,
     redoc_url=None,
 )
@@ -93,6 +94,7 @@ omniservice_app.include_router(router=prims_router)
 omniservice_app.include_router(router=cameras_router)
 omniservice_app.include_router(router=ui_router)
 omniservice_app.include_router(router=teaching_router)
+omniservice_app.include_router(router=trajectory_planner_router)
 omniservice_app.include_router(router=motion_groups_router)
 omniservice_app.include_router(router=trajectory_router)
 omniservice_app.include_router(router=collision_world_router)

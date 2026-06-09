@@ -1,0 +1,81 @@
+{
+    "OgnContactGripper": {
+        "version": 1,
+        "version": 1,
+        "description": "Attach the first overlapping prim to a helper volume on a single trigger. While stick is true the node keeps snapping the object to the helper internally. Trigger again with stick false to release.",
+        "language": "Python",
+        "categories": {
+            "Wandelbots NOVA": "Wandelbots NOVA"
+        },
+        "metadata": {
+            "uiName": "Contact Gripper"
+        },
+        "state": {
+            "$comment": "Opaque per-node state managed by the Python implementation."
+        },
+        "inputs": {
+            "execIn": {
+                "type": "execution",
+                "description": "Trigger once to evaluate the stick input. The node keeps snapping internally until stick becomes false.",
+                "default": 0
+            },
+            "helperPrim": {
+                "type": "target",
+                "description": "Prim whose world-space bounds define the sticky volume.",
+                "metadata": {
+                    "uiName": "Sensor Prim"
+                }
+            },
+            "stick": {
+                "type": "bool",
+                "description": "Hold true to attach and keep holding the first overlapping prim. Set false to release it.",
+                "metadata": {
+                    "uiName": "Fix"
+                },
+                "default": false
+            },
+            "candidatePrimPaths": {
+                "type": "token[]",
+                "description": "Optional list of prim paths or wildcard filters that may be attached, for example /World/Boxes/* or pallet-with-boxes/*. If empty, the whole stage is scanned.",
+                "metadata": {
+                    "uiName": "Candidate Prim Paths"
+                },
+                "default": []
+            },
+            "excludePrimPaths": {
+                "type": "token[]",
+                "description": "Optional list of prim paths or wildcard filters that must never be attached, for example /World/Robot/* or gripper/*. Exclusions win over candidate filters.",
+                "metadata": {
+                    "uiName": "Exclude Prim Paths"
+                },
+                "default": []
+            }
+        },
+        "outputs": {
+            "execAttached": {
+                "type": "execution",
+                "description": "Execution trigger output fired only when a new prim is attached."
+            },
+            "execReleased": {
+                "type": "execution",
+                "description": "Execution trigger output fired only when the current prim is released."
+            },
+            "isAttached": {
+                "type": "bool",
+                "description": "True when a prim is currently attached.",
+                "metadata": {
+                    "uiName": "Is Attached"
+                },
+                "default": false
+            },
+            "attachedPrimPath": {
+                "type": "token",
+                "description": "Path of the currently attached prim.",
+                "metadata": {
+                    "uiName": "Attached Prim Path"
+                },
+                "default": ""
+            }
+        }
+    }
+}

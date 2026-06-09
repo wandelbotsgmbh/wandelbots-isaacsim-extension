@@ -1,4 +1,4 @@
-"""Support for simplified access to data on nodes of type wandelbots.omni.OgnReadBusIO
+r"""Support for simplified access to data on nodes of type wandelbots.omni.OgnReadBusIO
 
  __   ___ .  .  ___  __       ___  ___  __      __   __   __   ___
 / _` |__  |\ | |__  |__)  /\   |  |__  |  \    /  ` /  \ |  \ |__

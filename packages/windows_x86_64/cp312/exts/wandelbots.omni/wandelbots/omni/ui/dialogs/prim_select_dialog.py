@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import weakref
 from functools import partial
 from typing import Callable
@@ -113,8 +114,24 @@ class PrimSelectDialog:
 
     def _on_selection_changed(self, paths: list[str]):
         stage: Usd.Stage = self._weak_stage()
-        self._selected_prims = [stage.GetPrimAtPath(path) for path in paths]
+        # Preserve selection order: keep existing prims that are still selected,
+        # then append newly selected prims at the end.
+        new_paths_set = set(paths)
+        # Retain prims still in the new selection (preserving their order).
+        retained = [
+            p for p in self._selected_prims if p.GetPath().pathString in new_paths_set
+        ]
+        retained_paths = {p.GetPath().pathString for p in retained}
+        # Append newly added prims in the order they appear in paths.
+        added = [stage.GetPrimAtPath(p) for p in paths if p not in retained_paths]
+        self._selected_prims = retained + added
+
         if self._button:
             self._button.enabled = len(self._selected_prims) > 0
         if self._prims_selection_limit > 1:
-            self._button.text = f"{self._select_btn_label} ({len(self._selected_prims)}/{self._prims_selection_limit})"
+            if self._prims_selection_limit < sys.maxsize:
+                self._button.text = f"{self._select_btn_label} ({len(self._selected_prims)}/{self._prims_selection_limit})"
+            else:
+                self._button.text = (
+                    f"{self._select_btn_label} ({len(self._selected_prims)})"
+                )

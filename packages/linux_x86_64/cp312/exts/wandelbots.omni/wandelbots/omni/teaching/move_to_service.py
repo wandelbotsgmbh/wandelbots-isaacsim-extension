@@ -2,9 +2,13 @@ import asyncio
 import carb
 import enum
 from typing import Callable, Optional
-import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
+import wandelbots.omni.ui.tool.planner_utils as planner_utils
 import omni.kit.notification_manager as nm
 from wandelbots.omni.manipulators import MotionStreamConfiguration
+from wandelbots.omni.ui.tool.trajectory_planner.service.execution_service import (
+    ExecutionLifecycle,
+    ExecutionService,
+)
 from dataclasses import dataclass
 
 
@@ -25,30 +29,26 @@ class MoveToExecuteSettings:
     acceleration: float = 1000
 
 
+_execution_service = ExecutionService()
+
+
 async def execute_move_to(
     configuration: MoveToExecuteSettings,
-    continue_fn: Optional[Callable[[], bool]] = None,
+    stop_event: asyncio.Event | None = None,
     on_state_change: Optional[Callable[[MoveToState], None]] = None,
     on_motion_start: Optional[Callable[[], None]] = None,
     on_stopped: Optional[Callable[[], None]] = None,
-    stop_on_standstill: bool = True,
 ) -> bool:
-    """
-    Execute a move to a target position.
+    """Execute a move to a target position.
 
     Args:
         configuration: Settings for the move execution
-        continue_fn: Optional callback to check if execution should continue (defaults to always True)
+        stop_event: Event that, when set, aborts execution
         on_state_change: Optional callback when state changes (receives MoveToState enum)
         on_motion_start: Optional callback when motion starts
         on_stopped: Optional callback when motion is stopped/cancelled
-        stop_on_standstill: If True, automatically stop when robot reaches standstill (default: True)
-
-    Returns:
-        True if execution completed successfully, False otherwise
     """
-    # Check if we should continue before starting
-    if not continue_fn():
+    if stop_event and stop_event.is_set():
         carb.log_info("Move to execution cancelled before starting")
         if on_stopped:
             on_stopped()
@@ -71,8 +71,7 @@ async def execute_move_to(
         )
         return False
 
-    # Check if we should continue after getting TCP offset
-    if not continue_fn():
+    if stop_event and stop_event.is_set():
         carb.log_info("Move to execution cancelled after TCP offset lookup")
         if on_stopped:
             on_stopped()
@@ -92,8 +91,7 @@ async def execute_move_to(
     global_limits.tcp.velocity = configuration.velocity
     global_limits.tcp.acceleration = configuration.acceleration
 
-    # Check if we should continue before planning
-    if not continue_fn():
+    if stop_event and stop_event.is_set():
         carb.log_info("Move to execution cancelled before planning")
         if on_stopped:
             on_stopped()
@@ -120,12 +118,15 @@ async def execute_move_to(
 
     carb.log_info(f"Planned trajectory: {len(trajectory.joint_positions)} steps")
 
-    # Check if we should continue after planning
-    if not continue_fn():
+    if stop_event and stop_event.is_set():
         carb.log_info("Move to execution cancelled after planning")
         if on_stopped:
             on_stopped()
         return False
+
+    if len(trajectory.locations) <= 2:
+        carb.log_info("Already at target")
+        return True
 
     if configuration.auto_play_simulation:
         import omni.timeline
@@ -137,66 +138,22 @@ async def execute_move_to(
             await asyncio.sleep(0.1)
 
     try:
-        # Handlers for certain motion state changes
-        should_stop = False  # Flag to track if we should stop due to standstill
+        if on_state_change:
+            on_state_change(MoveToState.EXECUTE)
+        if on_motion_start:
+            on_motion_start()
 
-        def motion_start_callback():
-            carb.log_info("Motion started")
-            if on_state_change:
-                on_state_change(MoveToState.EXECUTE)
-            if on_motion_start:
-                on_motion_start()
-
-        standstill_subscription = None
-
-        def standstill_callback(standstill: bool):
-            nonlocal should_stop
-            carb.log_verbose(f"Standstill state changed: {standstill}")
-            if standstill and stop_on_standstill:
-                carb.log_info("Standstill detected, stopping motion")
-                should_stop = True
-
-        def motion_continue_fn():
-            if should_stop:
-                return False
-            return continue_fn()
-
-        def motion_start_with_subscription():
-            nonlocal standstill_subscription
-            motion_start_callback()
-            if stop_on_standstill:
-                standstill_subscription = (
-                    planner_utils.subscribe_motion_group_standstill_state(
-                        configuration.motion_stream_configuration,
-                        standstill_changed_fn=standstill_callback,
-                        standstill_init_fn=lambda standstill: carb.log_verbose(
-                            f"Initial standstill state: {standstill}",
-                        ),
-                    )
-                )
-
-        if len(trajectory.locations) <= 2:
-            carb.log_info("Already at target")
-            return True
-
-        await planner_utils.play_trajectory(
-            configuration.motion_stream_configuration,
-            trajectory,
-            configuration.tcp,
-            continue_fn=motion_continue_fn,
-            motion_start_fn=motion_start_with_subscription,
+        api_config = configuration.motion_stream_configuration.get_api_configuration()
+        await _execution_service.execute_trajectory(
+            api_configuration=api_config,
+            cell=configuration.motion_stream_configuration.cell,
+            controller=configuration.motion_stream_configuration.controller,
+            motion_group=configuration.motion_stream_configuration.motion_group,
+            joint_trajectory=trajectory,
+            tcp_name=configuration.tcp,
+            lifecycle=ExecutionLifecycle(stop_event=stop_event),
+            patch_start=True,
         )
-
-        # Clean up standstill subscription after trajectory completes
-        if standstill_subscription is not None:
-            standstill_subscription = None
-
-        # Check if we stopped due to standstill
-        if should_stop:
-            carb.log_info("Motion stopped due to standstill")
-            if on_stopped:
-                on_stopped()
-            return True
 
         carb.log_info("Move to target completed successfully")
         return True

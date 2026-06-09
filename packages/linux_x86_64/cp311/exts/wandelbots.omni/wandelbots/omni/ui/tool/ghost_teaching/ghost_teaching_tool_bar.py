@@ -12,7 +12,11 @@ from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from .widgets.ghost_object_selector import GhostObjectSelector
 from omni.kit.async_engine import run_coroutine
 import omni.kit.menu.utils
-from wandelbots.omni.utils.teaching import GhostObjectUtils, GhostObject
+from wandelbots.omni.utils.teaching import (
+    GhostObjectUtils,
+    GhostObject,
+    make_ghost_tcp_matcher,
+)
 from wandelbots.omni.utils.kinematics import fetch_joint_configs_for_pose
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.teaching.ghost_teaching_follow_service import (
@@ -34,7 +38,7 @@ from .widgets.ghost_teaching_settings_window import (
 )
 from .widgets.move_to_button import MoveToButton, MoveToExecuteSettings
 import wandelbots_api_client.v2.models as wb_models
-import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
+import wandelbots.omni.ui.tool.planner_utils as planner_utils
 from .utils import GhostObjectsSubscription
 from .widgets.joint_config_selector import JointConfigSelector
 import wandelbots.omni.ui.overlay as overlay
@@ -129,28 +133,66 @@ class GhostTeachingToolBar:
                     ui.Spacer(width=ui.Fraction(1))
 
                     with ui.HStack(width=ui.Pixel(200)):
-                        selected_tcp = self._tcp_selection_cache.get(
-                            self._motion_group_prim.GetPath().pathString, None
+                        selected_ghost = (
+                            self._selected_ghost_object
+                            or GhostObjectUtils.get_selected_ghost_object_from_scene(
+                                self._ghost_objects
+                            )
                         )
-                        if selected_tcp is None and self._tcp_selector:
-                            selected_tcp = self._tcp_selector.selected_tcp
+                        ghost_prim_path = (
+                            selected_ghost.prim_path if selected_ghost else None
+                        )
+                        cached_tcp = (
+                            self._tcp_selection_cache.get(ghost_prim_path)
+                            if ghost_prim_path
+                            else None
+                        )
 
                         def cache_tcp_selection(
                             tcp_name: str,
                             obj: GhostTeachingToolBar = weakref.proxy(self),
+                            path: str | None = ghost_prim_path,
                         ):
-                            obj._tcp_selection_cache[
-                                obj._motion_group_prim.GetPath().pathString
-                            ] = tcp_name
+                            if path is not None:
+                                obj._tcp_selection_cache[path] = tcp_name
+                            ghost_overlay: overlay.GhostTeachingOverlay = (
+                                overlay.get_overlay_registry().get_overlay(
+                                    overlay.GHOST_TEACHING_OVERLAY_NAME
+                                )
+                            )
+                            if ghost_overlay:
+                                run_coroutine(ghost_overlay.update_tcp_offset(tcp_name))
 
-                        self._tcp_selector = TcpSelector(
-                            api_configuration=stream_config.get_api_configuration(),
-                            cell=stream_config.cell,
-                            controller=stream_config.controller,
-                            motion_group=stream_config.motion_group,
-                            selected_tcp=selected_tcp,
-                            tcp_changed_fn=cache_tcp_selection,
-                        )
+                        if cached_tcp is not None:
+                            self._tcp_selector = TcpSelector(
+                                api_configuration=stream_config.get_api_configuration(),
+                                cell=stream_config.cell,
+                                controller=stream_config.controller,
+                                motion_group=stream_config.motion_group,
+                                selected_tcp=cached_tcp,
+                                tcp_changed_fn=cache_tcp_selection,
+                            )
+                        else:
+                            ghost_stage = omni.usd.get_context().get_stage()
+                            ghost_prim = (
+                                ghost_stage.GetPrimAtPath(ghost_prim_path)
+                                if ghost_prim_path
+                                else None
+                            )
+                            matcher = (
+                                make_ghost_tcp_matcher(ghost_prim)
+                                if ghost_prim and ghost_prim.IsValid()
+                                else None
+                            )
+                            self._tcp_selector = TcpSelector(
+                                api_configuration=stream_config.get_api_configuration(),
+                                cell=stream_config.cell,
+                                controller=stream_config.controller,
+                                motion_group=stream_config.motion_group,
+                                tcp_matcher=matcher,
+                                fallback_tcp="flange",
+                                tcp_changed_fn=cache_tcp_selection,
+                            )
 
                     # Refresh ghost objects in case it moved
 

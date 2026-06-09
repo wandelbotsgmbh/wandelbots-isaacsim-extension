@@ -1,5 +1,102 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.45.0 (2026-06-08)
+
+### Features
+
+* Update instances API path handling
+
+## 2.44.1 (2026-06-08)
+
+### Bug Fixes
+
+* Typo in tasks json for windows build
+
+## 2.44.0 (2026-06-08)
+
+### Features
+
+* Update SDK version to 110.1 across build and CI configurations
+
+## 2.43.0 (2026-06-05)
+
+### Features
+
+* Add interactive trajectory planner
+
+## 2.42.1 (2026-05-27)
+
+### Bug Fixes
+
+* Fixed connection loss when jogging in robot pad stopped
+
+## 2.42.0 (2026-05-26)
+
+### Features
+
+* Added tool link body assistant
+
+## 2.41.0 (2026-05-22)
+
+### Features
+
+* Added camera clipping checker
+
+## 2.40.0 (2026-05-22)
+
+### Features
+
+* **CSI-2349:** Wandelbots Animation Recorder
+
+## 2.39.0 (2026-05-19)
+
+### Features
+
+* **CSI-2349:** Added Python-SDK example for Simulation Quickstart Guide
+
+## 2.38.3 (2026-05-12)
+
+### Bug Fixes
+
+* fixed trajectory viewer overlay for multiple robots
+
+## 2.38.2 (2026-05-06)
+
+### Bug Fixes
+
+* Fixed authentication.toml and repository property generation
+
+## 2.38.1 (2026-05-06)
+
+### Bug Fixes
+
+* **CSI-2564:** Fix publishing python client to pypi with twine
+
+## 2.38.0 (2026-05-05)
+
+### Features
+
+* Add Reachability Analysis Tool
+* **CSI-1167:** added "Mounting in NOVA" to "create" context menu
+
+## 2.37.0 (2026-05-04)
+
+### Features
+
+* **CSI-2574:** Insert robots models from NOVA based on instance and cell setup including tcp and mounting configurations
+
+## 2.36.0 (2026-04-29)
+
+### Features
+
+* **CSI-2616:** Integrate kinematic gripper based on contact sensor prim
+
+## 2.35.0 (2026-04-17)
+
+### Features
+
+* Added support for multiple nucleus api tokens via api (api is no longer experimental)
+
 ## 2.34.5 (2026-04-17)
 
 ### Bug Fixes

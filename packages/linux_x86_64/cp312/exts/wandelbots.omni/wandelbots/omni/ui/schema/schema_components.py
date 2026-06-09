@@ -41,6 +41,73 @@ class ToolApiSchema(SchemaComponent):
             ]
         )
 
+    def apply(self, prims: list[Usd.Prim]) -> None:
+        super().apply(prims)
+        if len(prims) == 0:
+            carb.log_warn("No prims selected. Cannot apply ToolAPI")
+        if len(prims) == 1:
+            run_coroutine(ToolApiSchema._prompt_link_body(prims[0]))
+        else:
+            carb.log_info(
+                "Multiple prims selected. Link body needs to be set manually for each tool."
+            )
+
+    @staticmethod
+    async def _prompt_link_body(prim: Usd.Prim) -> None:
+        stage = prim.GetStage()
+        prim_path = prim.GetPath()
+
+        def is_rigid_body_candidate(candidate: Usd.Prim) -> bool:
+            return candidate.HasAPI(UsdPhysics.RigidBodyAPI) and (
+                candidate.GetPath() == prim_path
+                or candidate.GetPath().HasPrefix(prim_path)
+            )
+
+        candidates = [
+            candidate
+            for candidate in stage.Traverse()
+            if is_rigid_body_candidate(candidate)
+        ]
+
+        if len(candidates) == 0:
+            nm.post_notification(
+                f'No rigid body found under tool prim "{prim_path}". Link body needs to be set manually after creating the tool.',
+                hide_after_timeout=True,
+                duration=10.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+
+        if len(candidates) == 1:
+            tool_api = wb_schema.ToolAPI.Get(stage, prim_path)
+            tool_api.GetLinkBodyRel().SetTargets([candidates[0].GetPath()])
+            nm.post_notification(
+                f'Auto-selected rigid body "{candidates[0].GetPath()}" as link body for tool "{prim_path}".',
+                hide_after_timeout=True,
+                duration=10.0,
+                status=nm.NotificationStatus.INFO,
+            )
+            return
+
+        selection = omni.usd.get_context().get_selection()
+        saved_paths = selection.get_selected_prim_paths()
+
+        dialog = PrimSelectDialog(
+            stage=stage,
+            window_title="Select Rigid Body for Tool Link",
+            modal_window=True,
+        )
+        selected_prims = await dialog.show(1, is_rigid_body_candidate)
+        dialog.clean()
+
+        selection.set_selected_prim_paths(saved_paths, False)
+
+        if not selected_prims:
+            return
+
+        tool_api = wb_schema.ToolAPI.Get(stage, prim_path)
+        tool_api.GetLinkBodyRel().SetTargets([selected_prims[0].GetPath()])
+
 
 class MotionGroupApiSchema(SchemaComponent):
     def __init__(self):

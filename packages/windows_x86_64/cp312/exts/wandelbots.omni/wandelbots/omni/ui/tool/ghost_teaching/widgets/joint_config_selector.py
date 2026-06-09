@@ -9,18 +9,37 @@ from wandelbots.omni.utils.teaching import GhostObjectUtils, PREFERRED_JOINT_VAL
 
 
 class JointConfigSelector:
+    """Dropdown for choosing one of the available IK joint configurations.
+
+    Args:
+        ghost_object_prim: The USD prim whose IK configs are being displayed.
+        initial_joint_configs: Available joint configurations (each a list of joint values).
+        initial_joint_limits: Joint limits used to render +/- sign labels.
+        joint_config_changed_fn: Called with the selected index when the user picks a config.
+        write_to_prim: If True (default), persist the selection as ``preferredJointValues``
+            on the prim. Set to False when the selection is managed externally (e.g. the
+            trajectory planner stores it per-pose so the same prim can have independent
+            selections).
+        selected_index: Initial combo box selection when *write_to_prim* is False.
+            Ignored when *write_to_prim* is True (the index is read from the prim instead).
+    """
+
     def __init__(
         self,
         ghost_object_prim: Usd.Prim,
         initial_joint_configs: list[list[float]],
         initial_joint_limits: list[tuple[float, float]] | None = None,
         joint_config_changed_fn: Optional[Callable[[Optional[int]], None]] = None,
+        write_to_prim: bool = True,
+        selected_index: int | None = None,
     ):
         self._ghost_object_prim = ghost_object_prim
         self._joint_config_changed_fn = joint_config_changed_fn
         self._joint_configs: list[list[float]] = list(initial_joint_configs)
         self._joint_limits: list[tuple[float, float]] = list(initial_joint_limits or [])
-        self._frame = ui.Frame(width=ui.Pixel(85))
+        self._write_to_prim = write_to_prim
+        self._selected_index = selected_index
+        self._frame = ui.Frame(width=ui.Fraction(1))
         self._combo_sub = None
 
         self._build_ui()
@@ -44,7 +63,10 @@ class JointConfigSelector:
         )
 
     def _build_combo(self):
-        stored_idx = self._read_preferred_index()
+        if self._write_to_prim:
+            stored_idx = self._read_preferred_index()
+        else:
+            stored_idx = self._selected_index
         no_match = stored_idx is None
 
         # Prepend "---" when the stored config no longer matches any IK solution
@@ -77,20 +99,16 @@ class JointConfigSelector:
             )
         attr.Set(Vt.FloatArray(joint_values))
 
-    def _read_preferred_index(self) -> Optional[int]:
+    def _read_preferred_index(self) -> int | None:
         stored = GhostObjectUtils.get_preferred_joint_values(self._ghost_object_prim)
         if stored is None:
             return None
-        for i, config in enumerate(self._joint_configs):
-            if len(config) == len(stored) and all(
-                abs(config_val - stored_val) < 1e-4
-                for config_val, stored_val in zip(config, stored)
-            ):
-                return i
-        return None
+        return GhostObjectUtils.find_preferred_config_index(self._joint_configs, stored)
 
     def _on_selection(self, idx: int):
         if 0 <= idx < len(self._joint_configs):
-            self._write_preferred_joint_values(self._joint_configs[idx])
+            if self._write_to_prim:
+                self._write_preferred_joint_values(self._joint_configs[idx])
+            self._selected_index = idx
             if self._joint_config_changed_fn:
                 self._joint_config_changed_fn(idx)

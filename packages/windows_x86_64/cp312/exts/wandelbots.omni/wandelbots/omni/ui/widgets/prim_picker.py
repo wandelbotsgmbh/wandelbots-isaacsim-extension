@@ -1,8 +1,8 @@
 import asyncio
+import sys
 from typing import Callable
 from attr import dataclass
 from pxr import Usd
-import omni
 import weakref
 import omni.ui as ui
 from wandelbots.omni.ui.dialogs import PrimSelectDialog
@@ -16,6 +16,14 @@ import omni.kit.app
 class PrimPickerDialogProperties:
     title: str = "Select Prim"
     filter_fn: Callable[[Usd.Prim], bool] = lambda _: True
+
+
+def _deferred_build(build_fn: Callable) -> None:
+    async def wait_one_frame():
+        await omni.kit.app.get_app().next_update_async()
+        build_fn()
+
+    run_coroutine(wait_one_frame())
 
 
 class PrimPicker:
@@ -34,6 +42,9 @@ class PrimPicker:
         self._build_ui()
 
     def _pick_prim(self):
+        if self._stage is None:
+            return
+
         def _on_prim_selected(future: asyncio.Future[list[str] | None]):
             prims = future.result()
             self._prim = prims[0] if prims and len(prims) > 0 else None
@@ -73,11 +84,7 @@ class PrimPicker:
                 self._build_prim_selected_ui()
 
     def _deferred_build_ui(self):
-        async def wait_one_frame():
-            await omni.kit.app.get_app().next_update_async()
-            self._build_ui()
-
-        run_coroutine(wait_one_frame())
+        _deferred_build(self._build_ui)
 
     def _build_prim_none_ui(self):
         with self._root_widget:
@@ -121,3 +128,93 @@ class PrimPicker:
     @property
     def prim(self):
         return self._prim
+
+
+class MultiPrimPicker:
+    def __init__(
+        self,
+        stage: Usd.Stage,
+        prims_picked_fn: Callable[[list[Usd.Prim]], None],
+        prims: list[Usd.Prim] = None,
+        dialog_properties: PrimPickerDialogProperties = PrimPickerDialogProperties(),
+    ):
+        self._stage = stage
+        self._prims: list[Usd.Prim] = prims or []
+        self._prims_picked_fn = prims_picked_fn
+        self._root_widget = ui.HStack(spacing=5)
+        self._dialog_properties = dialog_properties
+        self._build_ui()
+
+    def _pick_prims(self):
+        def _on_prims_selected(future: asyncio.Future[list[Usd.Prim] | None]):
+            prims = future.result()
+            self._prims = prims if prims else []
+            self._deferred_build_ui()
+            self._prims_picked_fn(self._prims)
+
+        if self._stage is None:
+            return
+
+        dialog = PrimSelectDialog(
+            stage=self._stage,
+            window_title=self._dialog_properties.title,
+            modal_window=True,
+        )
+        run_coroutine(
+            dialog.show(sys.maxsize, self._dialog_properties.filter_fn)
+        ).add_done_callback(_on_prims_selected)
+
+    def _clear(self):
+        self._prims = []
+        self._deferred_build_ui()
+        self._prims_picked_fn([])
+
+    def _build_ui(self):
+        self._root_widget.clear()
+        with self._root_widget:
+            if not self._prims:
+                self._build_prims_none_ui()
+            else:
+                self._build_prims_selected_ui()
+
+    def _deferred_build_ui(self):
+        _deferred_build(self._build_ui)
+
+    def _build_prims_none_ui(self):
+        with self._root_widget:
+            ui.Button(
+                text="Select prims",
+                clicked_fn=lambda a=weakref.proxy(self): a._pick_prims(),
+                height=20,
+                alignment=ui.Alignment.CENTER,
+            )
+
+    def _build_prims_selected_ui(self):
+        with self._root_widget:
+            with ui.HStack(spacing=0):
+                ui.Label(
+                    f"{len(self._prims)} prim(s) selected",
+                    height=20,
+                    alignment=ui.Alignment.LEFT_CENTER,
+                    width=ui.Fraction(1),
+                )
+                ui.Button(
+                    clicked_fn=lambda a=weakref.proxy(self): a._clear(),
+                    image_url=get_icon("close.svg"),
+                    width=ui.Pixel(24),
+                    height=ui.Pixel(24),
+                    tooltip="Clear selection",
+                    style={"margin": 0, "padding": 2},
+                )
+            ui.Button(
+                clicked_fn=lambda a=weakref.proxy(self): a._pick_prims(),
+                image_url=get_icon("colorize.svg"),
+                width=ui.Pixel(24),
+                height=ui.Pixel(24),
+                tooltip="Select prims",
+                style={"margin": 0, "padding": 2},
+            )
+
+    @property
+    def prims(self) -> list[Usd.Prim]:
+        return self._prims

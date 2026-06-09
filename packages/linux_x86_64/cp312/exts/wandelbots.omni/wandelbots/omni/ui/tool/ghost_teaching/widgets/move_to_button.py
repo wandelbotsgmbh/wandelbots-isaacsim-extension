@@ -4,7 +4,6 @@ from typing import Callable
 
 import carb
 import omni.ui as ui
-import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
 from omni.kit.async_engine import run_coroutine
 from wandelbots.omni.teaching.move_to_service import (
     MoveToExecuteSettings,
@@ -30,7 +29,7 @@ class MoveToButton:
         self._move_to_state = MoveToState.IDLE
         self._configure_execution_fn = configure_execution_fn
         self._on_released_fn = on_released_fn
-        self._standstill_subscription: planner_utils.MotionGroupStandstillSubscription = None
+        self._stop_event: asyncio.Event | None = None
         self._enabled = True
         self._is_following = False
 
@@ -39,6 +38,8 @@ class MoveToButton:
     def __del__(self):
         self._move_to_pressed = False
         self._stop_move_to()
+        if self._move_to_task is not None:
+            self._move_to_task.cancel()
 
     def _build_ui(self):
         self._move_to_pressed = False  # rebuilding the button does not trigger the release event, so we reset the state here
@@ -108,7 +109,7 @@ class MoveToButton:
             except Exception as e:
                 carb.log_error(f"Error during move to ghost object: {str(e)}")
             self._set_move_to_state(MoveToState.IDLE)
-            self._standstill_subscription = None
+            self._stop_event = None
 
         self._move_to_task.add_done_callback(on_done)
 
@@ -125,15 +126,15 @@ class MoveToButton:
             self._on_released_fn()
 
     def _stop_move_to(self):
+        if self._stop_event is not None:
+            self._stop_event.set()
         if self._move_to_task is not None:
             self._move_to_task.cancel()
 
     async def _execute_planning_configuration(
         self, configuration: MoveToExecuteSettings
     ):
-        def continue_fn(weak_self: Callable[[], MoveToButton] = weakref.ref(self)):
-            self_instance = weak_self()
-            return self_instance is not None and self_instance._move_to_pressed
+        self._stop_event = asyncio.Event()
 
         def on_state_change(
             state: MoveToState,
@@ -150,13 +151,16 @@ class MoveToButton:
                 return
             carb.log_info("Move to stopped")
 
-        await execute_move_to(
-            configuration,
-            continue_fn=continue_fn,
-            on_state_change=on_state_change,
-            on_stopped=on_stopped,
-            stop_on_standstill=True,
-        )
+        try:
+            await execute_move_to(
+                configuration,
+                stop_event=self._stop_event,
+                on_state_change=on_state_change,
+                on_stopped=on_stopped,
+            )
+        finally:
+            self._set_move_to_state(MoveToState.IDLE)
+            self._stop_event = None
 
     @property
     def enabled(self) -> bool:

@@ -8,69 +8,7 @@ from wandelbots.omni.instances.models import (
 )
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.instances.instance import InstanceWidget
-from omni.kit.window.property.templates.header_context_menu import (
-    GroupHeaderContextMenu,
-    GroupHeaderContextMenuEvent,
-)
-
-
-def _build_frame_header(
-    collapsed,
-    text: str,
-    group_id: str = None,
-    on_sign_out_fn: Optional[Callable] = None,
-):
-    group_id = group_id if group_id else text
-
-    if collapsed:
-        alignment = ui.Alignment.RIGHT_CENTER
-        width = 5
-        height = 7
-    else:
-        alignment = ui.Alignment.CENTER_BOTTOM
-        width = 7
-        height = 5
-
-    header_stack = ui.HStack(
-        name="header_stack",
-        spacing=8,
-    )
-    with header_stack:
-        ui.Spacer(width=1)
-        with ui.VStack(width=0):
-            ui.Spacer()
-            ui.Triangle(
-                style_type_name_override="CollapsableFrame.Header",
-                width=width,
-                height=height,
-                alignment=alignment,
-            )
-            ui.Spacer()
-        ui.Label(text, style_type_name_override="CollapsableFrame.Header")
-        ui.Spacer()
-        with ui.HStack(content_clipping=True, width=0):
-            ui.Spacer(width=8)
-            ui.Button(
-                width=20,
-                height=20,
-                clicked_fn=on_sign_out_fn,
-                style={
-                    "image_url": get_icon("sign_out.svg"),
-                    "color": NOVAColor.ACTION_ACTIVE.color,
-                },
-                tooltip="Click to sign out of your account.",
-                identifier="sign_out_button",
-            )
-            ui.Spacer(width=10)
-
-    def show_context_menu(b):
-        if b != 1:
-            return
-
-        event = GroupHeaderContextMenuEvent(group_id=group_id, payload=[])
-        GroupHeaderContextMenu.on_mouse_event(event)
-
-    header_stack.set_mouse_pressed_fn(lambda x, y, b, _: show_context_menu(b))
+from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
 
 
 class NOVACloudInstancesContainer:
@@ -158,20 +96,32 @@ class NOVACloudInstancesContainer:
             carb.log_verbose("No cloud instances available")
             return
 
-        with ui.CollapsableFrame(
-            title=f"[{self._auth_config_name}] Cloud Instances"
+        title = (
+            f"[{self._auth_config_name}] Cloud Instances"
             if self._one_of_many_providers
-            else "Cloud Instances",
-            height=0,
-            build_header_fn=lambda collapsed, text, _self=self: _build_frame_header(
-                collapsed, text, on_sign_out_fn=_self._on_sign_out_fn
-            ),
-        ):
+            else "Cloud Instances"
+        )
+
+        def _build_sign_out_button(_section):
+            ui.Button(
+                width=20,
+                height=20,
+                clicked_fn=self._on_sign_out_fn,
+                style={
+                    "image_url": get_icon("sign_out.svg"),
+                    "color": NOVAColor.ACTION_ACTIVE.color,
+                },
+                tooltip="Click to sign out of your account.",
+                identifier="sign_out_button",
+            )
+
+        self._section = CollapsibleSection(
+            title=title,
+            collapsed=False,
+            build_header_fn=_build_sign_out_button,
+        )
+        with self._section.body:
             with ui.VStack(spacing=5, height=0):
-                if len(self._cloud_instances) == 0:
-                    with ui.HStack(spacing=5):
-                        ui.Spacer(width=10)
-                        ui.Label("No instances available. Create one.")
                 for instance in self._cloud_instances:
                     widget = InstanceWidget(
                         instance=instance,

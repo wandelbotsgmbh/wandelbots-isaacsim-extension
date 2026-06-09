@@ -22,6 +22,7 @@ class TcpModel(ui.AbstractItemModel):
         tcps: list[str],
         selected_tcp: str | None = None,
         select_first_tcp_fallback: bool = True,
+        fallback_tcp: str | None = None,
     ):
         super().__init__()
         self._items = [TcpItem(tcp) for tcp in tcps]
@@ -29,6 +30,8 @@ class TcpModel(ui.AbstractItemModel):
 
         if selected_tcp in tcps:
             self._current_index = ui.SimpleIntModel(tcps.index(selected_tcp))
+        elif fallback_tcp is not None and fallback_tcp in tcps:
+            self._current_index = ui.SimpleIntModel(tcps.index(fallback_tcp))
         elif select_first_tcp_fallback and len(tcps) > 0:
             self._current_index = ui.SimpleIntModel(0)
         self._current_index.add_value_changed_fn(
@@ -64,6 +67,8 @@ class TcpSelector:
         tcp_changed_fn: Callable[[str], None] | None = None,
         selected_tcp: str = None,
         select_first_tcp_fallback=True,
+        fallback_tcp: str | None = None,
+        tcp_matcher: Callable[[dict], str | None] | None = None,
     ):
         self._api_configuration = api_configuration
         self._cell = cell
@@ -73,7 +78,11 @@ class TcpSelector:
         self._tcp_names_model = None
         self._initial_selected_tcp = selected_tcp
         self._select_first_tcp_fallback = select_first_tcp_fallback
+        self._fallback_tcp = fallback_tcp
+        self._tcp_matcher = tcp_matcher
+        self._nova_tcps: dict = {}
         self._frame = ui.Frame()
+        self._build_ui()
         self._refresh_tcp_names_with_ui_update()
         self._tcp_subscription = subscribe_tcp_list_changed(
             api_configuration,
@@ -87,20 +96,25 @@ class TcpSelector:
 
     async def refresh_tcp_names(self):
         async with get_api_client_from_config(self._api_configuration) as api:
-            tcp_ids = list(
-                (
-                    await wb.MotionGroupApi(api).get_motion_group_description(
-                        cell=self._cell,
-                        controller=self._controller,
-                        motion_group=self._motion_group,
-                    )
-                ).tcps.keys()
+            description = await wb.MotionGroupApi(api).get_motion_group_description(
+                cell=self._cell,
+                controller=self._controller,
+                motion_group=self._motion_group,
             )
+            tcps_dict = description.tcps
+            self._nova_tcps = tcps_dict
+            tcp_ids = list(tcps_dict.keys())
             if self._tcp_names_model is None:
+                initial_tcp = self._initial_selected_tcp
+                if self._tcp_matcher is not None:
+                    matched = self._tcp_matcher(tcps_dict)
+                    if matched is not None:
+                        initial_tcp = matched
                 self._tcp_names_model = TcpModel(
                     tcp_ids,
-                    self._initial_selected_tcp,
+                    initial_tcp,
                     select_first_tcp_fallback=self._select_first_tcp_fallback,
+                    fallback_tcp=self._fallback_tcp,
                 )
             else:
                 selected_tcp = self._tcp_names_model.selected_tcp
@@ -108,6 +122,7 @@ class TcpSelector:
                     tcp_ids,
                     selected_tcp,
                     select_first_tcp_fallback=self._select_first_tcp_fallback,
+                    fallback_tcp=self._fallback_tcp,
                 )
             if self._tcp_changed_fn is None:
                 return
@@ -122,6 +137,9 @@ class TcpSelector:
             self._tcp_names_model_sub = self._tcp_names_model.subscribe_item_changed_fn(
                 assign_tcp
             )
+            initial = self._tcp_names_model.selected_tcp
+            if initial is not None:
+                self._tcp_changed_fn(initial)
 
     def _refresh_tcp_names_with_ui_update(self):
         task = run_coroutine(self.refresh_tcp_names())
@@ -129,9 +147,9 @@ class TcpSelector:
         def task_done_callback(future: asyncio.Future):
             try:
                 future.result()
-                self._build_ui()
             except Exception as e:
                 carb.log_verbose(f"Error refreshing TCP names: {str(e)}")
+            self._build_ui()
 
         task.add_done_callback(task_done_callback)
 

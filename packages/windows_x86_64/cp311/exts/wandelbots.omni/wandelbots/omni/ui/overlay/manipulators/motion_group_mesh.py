@@ -194,6 +194,15 @@ class MotionGroupMesh:
 
     def _update_transforms(self):
         """Update all mesh transforms based on current joint values."""
+        # The description is fetched asynchronously; joint values can arrive before
+        # the build completes (e.g. a pose change during ghost teaching). Skip until
+        # it is available rather than crashing on a missing dh_parameters.
+        if self._motion_group_description is None:
+            carb.log_verbose(
+                f"Motion group description for {self._motion_group_path} not ready, "
+                "skipping transform update"
+            )
+            return
         fk_transforms = [
             numpy_to_scene_matrix44(matrix)
             for matrix in compute_forward_kinematics_chain(
@@ -208,6 +217,11 @@ class MotionGroupMesh:
                 link_transform = self._motion_group_transform * fk_transforms[link_idx]
                 world_transform = link_transform * local_transform
                 mesh.set_transform(world_transform)
+
+    @property
+    def motion_group_transform(self) -> sc.Matrix44:
+        """The base transform of the motion group in world space."""
+        return self._motion_group_transform
 
     def set_motion_group_transform(self, transform: sc.Matrix44):
         """Update the base transform of the motion group.

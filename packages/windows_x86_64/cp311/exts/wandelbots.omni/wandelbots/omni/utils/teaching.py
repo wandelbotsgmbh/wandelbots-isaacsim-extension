@@ -457,6 +457,89 @@ class GhostObjectUtils:
             return None
         return list(attr.Get())
 
+    @staticmethod
+    def find_preferred_config_index(
+        joint_configs: list[list[float]],
+        preferred: list[float],
+        tolerance: float = 1e-4,
+    ) -> int | None:
+        """Return the index in *joint_configs* whose values match *preferred*
+        within *tolerance* (per-joint absolute tolerance), or ``None`` if no match.
+        """
+        for i, cfg in enumerate(joint_configs):
+            if len(cfg) == len(preferred) and all(
+                abs(a - b) < tolerance for a, b in zip(cfg, preferred)
+            ):
+                return i
+        return None
+
+    @staticmethod
+    def get_nova_tcp_name(ghost_prim: Usd.Prim) -> str | None:
+        """Derive the candidate NOVA TCP name from a ghost object's source TCP prim.
+
+        Strips the ``tcp_`` prefix from the linked TCP prim name to recover the
+        NOVA TCP key (e.g. prim ``tcp_schunk`` → NOVA name ``"schunk"``).  Used
+        as a tiebreaker when multiple NOVA TCPs share the same offset.
+        """
+        try:
+            ghost_api = wb_schema.GhostObjectAPI.Get(
+                ghost_prim.GetStage(), ghost_prim.GetPath()
+            )
+            targets = ghost_api.GetSourceTcpRel().GetForwardedTargets()
+            if not targets:
+                return None
+            prim_name = targets[0].name
+            if prim_name.startswith("tcp_"):
+                return prim_name[4:]
+        except Exception:
+            pass
+        return None
+
+
+def make_ghost_tcp_matcher(ghost_prim: Usd.Prim) -> Callable[[dict], str | None]:
+    """Return a TCP matcher callable for use with TcpSelector.
+
+    Prefers the TCP explicitly linked on the ghost object (its source TCP prim
+    name) whenever that name is a valid TCP of the motion group — that is the
+    user-defined TCP and must be shown.  Falls back to matching by flange-relative
+    TCP offset (pose) when no such name is available, using the source prim name to
+    disambiguate ties.  Returns ``None`` when nothing matches, allowing the caller's
+    fallback chain to proceed.
+    """
+    ghost_offset = GhostObjectUtils.get_ghost_object_tcp_offset(ghost_prim)
+    candidate_name = GhostObjectUtils.get_nova_tcp_name(ghost_prim)
+
+    _TOLERANCE = 1e-4
+
+    def _pose_matches(nova_pose, ws_pose: WSPose) -> bool:
+        pos = getattr(nova_pose, "position", None) or []
+        ori = getattr(nova_pose, "orientation", None) or []
+        if len(pos) != 3 or len(ori) != 3:
+            return False
+        return all(abs(a - b) < _TOLERANCE for a, b in zip(pos + ori, ws_pose.pose))
+
+    def matcher(nova_tcps: dict) -> str | None:
+        # The TCP explicitly linked on the ghost object is the user-defined TCP;
+        # use it whenever it is a valid TCP of this motion group.
+        if candidate_name is not None and candidate_name in nova_tcps:
+            return candidate_name
+        if ghost_offset is None:
+            return candidate_name
+        matches = [
+            name
+            for name, tcp_offset in nova_tcps.items()
+            if hasattr(tcp_offset, "pose")
+            and tcp_offset.pose is not None
+            and _pose_matches(tcp_offset.pose, ghost_offset)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            return candidate_name if candidate_name in matches else matches[0]
+        return None
+
+    return matcher
+
 
 class RefreshGhostMaterialsCommand(omni.kit.commands.Command):
     def __init__(self) -> None:

@@ -8,7 +8,6 @@ from omni.kit.menu.utils import MenuItemDescription
 
 def get_icon(icon_name: str) -> str:
     path = f"{os.path.dirname(__file__)}/../assets/icons/{icon_name}"
-    carb.log_verbose(f"Loading icon from: {path}")
     return path
 
 

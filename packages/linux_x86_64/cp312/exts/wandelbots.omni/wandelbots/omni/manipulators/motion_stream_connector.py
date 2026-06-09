@@ -175,6 +175,15 @@ class MotionStreamConnector:
                 ]
             )
         else:
+            # TODO the API throws KIND_UNKNOWN which is not part of the api spec, remove as soon as this bug got resolved
+            if (
+                "execute" in result
+                and result["execute"]["details"]["state"]["kind"] == "KIND_UNKNOWN"
+            ):
+                carb.log_info(
+                    f"Unsupported state kind KIND_UNKNOWN from {self.configuration.cell}/{self.configuration.motion_group}"
+                )
+                return
             self._update_joints(
                 motion_response_result=wb_models.MotionGroupState.from_dict(result)
             )

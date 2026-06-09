@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots NOVA - Isaac Sim Extension API",
         "description": "This extension enables seamless connection between NVIDIA Isaac Sim\u2122 and Wandelbots NOVA. Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, allowing users to easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs. Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\nThe API provides comprehensive capabilities including:\n- **Stage Management**: Load, save, and manipulate USD stages\n- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n- **Cameras**: Configure virtual cameras and viewports for visualization\n- **Motion Groups**: Define and control robot motion groups and kinematics\n- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n- **UI Control**: Interact with the Isaac Sim user interface programmatically",
-        "version": "2.34.5"
+        "version": "2.45.0"
     },
     "paths": {
         "/stage/scene": {
@@ -2085,7 +2085,7 @@
                         "description": "Source ghost object is not created. Make sure that the tool is in robot workspace and the robot is created"
                     },
                     "500": {
-                        "description": "Internal server error: Unable to add ghost objects to the scene to the scene"
+                        "description": "Internal server error: Unable to add ghost objects to the scene"
                     }
                 }
             },
@@ -2160,6 +2160,74 @@
                     },
                     "500": {
                         "description": "Unable to fetch all the ghost objects in the scene"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/trajectory-planner/export": {
+            "get": {
+                "tags": [
+                    "Trajectory Planner"
+                ],
+                "summary": "Export Trajectory Plans",
+                "description": "Export all trajectory planner skills as NOVA-compatible planning requests.",
+                "operationId": "export_trajectory_plans",
+                "responses": {
+                    "200": {
+                        "description": "Trajectory plans exported with NOVA-compatible requests grouped by skill.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ExportedTrajectoryPlan"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/trajectory-planner/{skill_name}/export": {
+            "get": {
+                "tags": [
+                    "Trajectory Planner"
+                ],
+                "summary": "Export Trajectory Plan Skill",
+                "description": "Export a single trajectory planner skill by name.",
+                "operationId": "export_trajectory_plan_skill",
+                "parameters": [
+                    {
+                        "name": "skill_name",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Skill Name"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Single trajectory plan skill exported with NOVA-compatible requests.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ExportedSkill"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Skill not found."
                     },
                     "422": {
                         "description": "Validation Error",
@@ -2824,47 +2892,81 @@
                 }
             }
         },
-        "/nucleus/accounts": {
+        "/nucleus/server": {
+            "post": {
+                "tags": [
+                    "Nucleus"
+                ],
+                "summary": "Add Nucleus Server",
+                "operationId": "add_nucleus_server_nucleus_server_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/NucleusServerModel"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/nucleus/servers": {
             "get": {
                 "tags": [
                     "Nucleus"
                 ],
-                "summary": "Get Nucleus Accounts",
-                "description": "Lists all configured nucleus authentications",
-                "operationId": "get_nucleus_accounts_nucleus_accounts_get",
+                "summary": "List Nucleus Servers",
+                "operationId": "list_nucleus_servers_nucleus_servers_get",
                 "responses": {
                     "200": {
                         "description": "Successful Response",
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "items": {
-                                        "$ref": "#/components/schemas/NucleusTokenModel"
+                                    "additionalProperties": {
+                                        "$ref": "#/components/schemas/NucleusServerMetadata"
                                     },
-                                    "type": "array",
-                                    "title": "Response Get Nucleus Accounts Nucleus Accounts Get"
+                                    "type": "object",
+                                    "title": "Response List Nucleus Servers Nucleus Servers Get"
                                 }
                             }
                         }
                     }
                 }
-            },
+            }
+        },
+        "/nucleus/server/token": {
             "post": {
                 "tags": [
                     "Nucleus"
                 ],
-                "summary": "Set Nucleus Account",
-                "description": "Adds a nucleus authentication",
-                "operationId": "set_nucleus_account_nucleus_accounts_post",
+                "summary": "Add Nucleus Api Token",
+                "operationId": "add_nucleus_api_token_nucleus_server_token_post",
                 "requestBody": {
+                    "required": true,
                     "content": {
                         "application/json": {
                             "schema": {
                                 "$ref": "#/components/schemas/NucleusTokenModel"
                             }
                         }
-                    },
-                    "required": true
+                    }
                 },
                 "responses": {
                     "204": {
@@ -2886,9 +2988,43 @@
                 "tags": [
                     "Nucleus"
                 ],
-                "summary": "Clear Nucleus Accounts",
-                "description": "Deletes the configured nucleus authentication",
-                "operationId": "clear_nucleus_accounts_nucleus_accounts_delete",
+                "summary": "Remove Nucleus Api Token",
+                "operationId": "remove_nucleus_api_token_nucleus_server_token_delete",
+                "parameters": [
+                    {
+                        "name": "name",
+                        "in": "query",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Name"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/nucleus/server/tokens": {
+            "delete": {
+                "tags": [
+                    "Nucleus"
+                ],
+                "summary": "Remove All Nucleus Api Tokens",
+                "operationId": "remove_all_nucleus_api_tokens_nucleus_server_tokens_delete",
                 "responses": {
                     "204": {
                         "description": "Successful Response"
@@ -3592,6 +3728,126 @@
                 ],
                 "title": "EntraIDCredentials"
             },
+            "ExportedSkill": {
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "title": "Name"
+                    },
+                    "version": {
+                        "type": "string",
+                        "title": "Version",
+                        "default": "v1"
+                    },
+                    "robot_prim_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Robot Prim Path"
+                    },
+                    "tcp_name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tcp Name"
+                    },
+                    "collision_setup": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Collision Setup"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "plan_trajectory",
+                            "plan_collision_free"
+                        ],
+                        "title": "Type",
+                        "default": "plan_trajectory"
+                    },
+                    "plan_trajectory_request": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Plan Trajectory Request"
+                    },
+                    "plan_segmented_trajectory": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/SegmentedTrajectoryPlan"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
+                    "plan_collision_free_requests": {
+                        "anyOf": [
+                            {
+                                "items": {
+                                    "additionalProperties": true,
+                                    "type": "object"
+                                },
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Plan Collision Free Requests"
+                    },
+                    "metadata": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/SkillMetadata"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "name"
+                ],
+                "title": "ExportedSkill"
+            },
+            "ExportedTrajectoryPlan": {
+                "properties": {
+                    "skills": {
+                        "items": {
+                            "$ref": "#/components/schemas/ExportedSkill"
+                        },
+                        "type": "array",
+                        "title": "Skills"
+                    }
+                },
+                "type": "object",
+                "title": "ExportedTrajectoryPlan"
+            },
             "GhostObject": {
                 "properties": {
                     "name": {
@@ -3821,23 +4077,82 @@
                 ],
                 "title": "MotionStreamConfiguration"
             },
-            "NucleusTokenModel": {
+            "NucleusServerMetadata": {
                 "properties": {
-                    "auth_type": {
+                    "name": {
                         "type": "string",
-                        "title": "Auth Type",
-                        "default": "env_api_token"
+                        "title": "Name"
                     },
-                    "nucleus_api_token": {
+                    "url": {
                         "type": "string",
-                        "title": "Nucleus Api Token",
-                        "description": "The authentication token for accessing the Nucleus server. To create a token follow https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/api_tokens.html",
-                        "example": "your_auth_token_here"
+                        "title": "Url"
+                    },
+                    "token_auth_configured": {
+                        "anyOf": [
+                            {
+                                "type": "boolean"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Token Auth Configured"
+                    },
+                    "user_metadata": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/components/schemas/ServerUserMetadata"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
                     }
                 },
                 "type": "object",
                 "required": [
-                    "nucleus_api_token"
+                    "name",
+                    "url"
+                ],
+                "title": "NucleusServerMetadata"
+            },
+            "NucleusServerModel": {
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "title": "Name",
+                        "description": "Display name for the Nucleus server connection."
+                    },
+                    "url": {
+                        "type": "string",
+                        "title": "Url",
+                        "description": "Nucleus server URL, e.g. omniverse://nucleus.example.com."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "name",
+                    "url"
+                ],
+                "title": "NucleusServerModel"
+            },
+            "NucleusTokenModel": {
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "title": "Name",
+                        "description": "Display name of the Nucleus server to authenticate."
+                    },
+                    "token": {
+                        "type": "string",
+                        "title": "Token",
+                        "description": "API token used to authenticate against the Nucleus server."
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "name",
+                    "token"
                 ],
                 "title": "NucleusTokenModel"
             },
@@ -3875,6 +4190,44 @@
                 },
                 "type": "object",
                 "title": "PatchTrajectoryData"
+            },
+            "PlanTrajectorySegment": {
+                "properties": {
+                    "tcp_name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Tcp Name"
+                    },
+                    "plan_trajectory_request": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Plan Trajectory Request"
+                    },
+                    "blending": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Blending"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "plan_trajectory_request"
+                ],
+                "title": "PlanTrajectorySegment",
+                "description": "One contiguous run of motion commands that share a single TCP.\n\nA ``PlanTrajectoryRequest`` can only carry one TCP (via\n``motion_group_setup.tcp_offset``), so a skill whose poses use different TCPs\nis exported as several segments. A consumer plans each segment individually and\nthen merges the resulting joint trajectories via the ``mergeTrajectories``\nendpoint, using ``blending`` as the inter-segment blend."
             },
             "Plane": {
                 "properties": {
@@ -3987,6 +4340,19 @@
                 "title": "Pose",
                 "description": "Defines a pose in 3D space. A pose is a combination of a position and an orientation. The position is applied before the orientation. "
             },
+            "PoseMetadata": {
+                "properties": {
+                    "prim_path": {
+                        "type": "string",
+                        "title": "Prim Path"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "prim_path"
+                ],
+                "title": "PoseMetadata"
+            },
             "PrimSelection": {
                 "properties": {
                     "prim_paths": {
@@ -4085,6 +4451,52 @@
                 ],
                 "title": "RobotOverlayVisibility"
             },
+            "SegmentedTrajectoryPlan": {
+                "properties": {
+                    "motion_group_setup": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Motion Group Setup"
+                    },
+                    "limits_override": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Limits Override"
+                    },
+                    "collision_setups": {
+                        "anyOf": [
+                            {
+                                "additionalProperties": true,
+                                "type": "object"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Collision Setups"
+                    },
+                    "segments": {
+                        "items": {
+                            "$ref": "#/components/schemas/PlanTrajectorySegment"
+                        },
+                        "type": "array",
+                        "title": "Segments"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "motion_group_setup"
+                ],
+                "title": "SegmentedTrajectoryPlan",
+                "description": "A segmented trajectory plan plus the shared settings to merge the segments.\n\nBecause a ``PlanTrajectoryRequest`` carries a single TCP, a multi-TCP skill is\nexported as one segment per contiguous same-TCP run. To reconstruct the motion,\na consumer plans each segment's ``plan_trajectory_request`` into a\n``JointTrajectory`` and then calls the ``mergeTrajectories`` endpoint::\n\n    MergeTrajectoriesRequest(\n        motion_group_setup=motion_group_setup,\n        trajectory_segments=[\n            MergeTrajectoriesSegment(\n                trajectory=<planned jt for segment i>,\n                blending=segments[i].blending,\n                limits_override=limits_override,\n                collision_setups=collision_setups,\n            )\n            for i in range(len(segments))\n        ],\n    )\n\n``limits_override`` and ``collision_setups`` are shared across all segments."
+            },
             "SemanticSegmentationData": {
                 "properties": {
                     "data": {
@@ -4130,6 +4542,27 @@
                 ],
                 "title": "SemanticSegmentationInfo"
             },
+            "ServerUserMetadata": {
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "title": "Username"
+                    },
+                    "groups": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Groups"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "username",
+                    "groups"
+                ],
+                "title": "ServerUserMetadata"
+            },
             "SimulationState": {
                 "properties": {
                     "timeline": {
@@ -4145,6 +4578,30 @@
                 },
                 "type": "object",
                 "title": "SimulationState"
+            },
+            "SkillMetadata": {
+                "properties": {
+                    "motion_group_prim_path": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Motion Group Prim Path"
+                    },
+                    "poses": {
+                        "items": {
+                            "$ref": "#/components/schemas/PoseMetadata"
+                        },
+                        "type": "array",
+                        "title": "Poses"
+                    }
+                },
+                "type": "object",
+                "title": "SkillMetadata"
             },
             "Sphere": {
                 "properties": {

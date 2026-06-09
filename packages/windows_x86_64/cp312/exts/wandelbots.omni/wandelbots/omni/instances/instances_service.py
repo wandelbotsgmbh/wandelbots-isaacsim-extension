@@ -45,6 +45,23 @@ class NOVAInstancesService:
         self._connected_motion_groups: dict[str, MotionGroupConfiguration] = {}
         self._selected_articulations: dict[str, str] = {}
 
+    def find_instance_by_host(self, host: str) -> Optional[NOVAInstance]:
+        instance = next(
+            (i for i in self._instances_api.get_custom_instances() if i.host == host),
+            None,
+        )
+        if instance is not None:
+            return instance
+        return next(
+            (
+                i
+                for instances in self._instances_api.get_cloud_instances().values()
+                for i in instances
+                if i.host == host
+            ),
+            None,
+        )
+
     def get_selected_articulation(self, identifier: str) -> Optional[str]:
         return self._selected_articulations.get(identifier, None)
 
@@ -249,6 +266,7 @@ class NOVAInstancesService:
                     )
                     identifier = motion_group_config.identifier
                     self.add_to_connected_motion_groups(identifier, motion_group_config)
+                    instance.is_reachable = True
                     push_motion_group_connection_changed(
                         host=instance.host,
                         cell=controller.cell_name,

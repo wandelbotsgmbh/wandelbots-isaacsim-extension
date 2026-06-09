@@ -12,17 +12,8 @@ import os
 import re
 import sys
 import time
-from typing import (
-    Callable,
-    Dict,
-    Final,
-    FrozenSet,
-    List,
-    Literal,
-    Tuple,
-    TypedDict,
-    Union,
-)
+from collections.abc import Callable
+from typing import Final, Literal, TypedDict
 
 from yarl import URL
 
@@ -43,7 +34,7 @@ class DigestAuthChallenge(TypedDict, total=False):
     stale: str
 
 
-DigestFunctions: Dict[str, Callable[[bytes], "hashlib._Hash"]] = {
+DigestFunctions: dict[str, Callable[[bytes], "hashlib._Hash"]] = {
     "MD5": hashlib.md5,
     "MD5-SESS": hashlib.md5,
     "SHA": hashlib.sha1,
@@ -87,7 +78,7 @@ _HEADER_PAIRS_PATTERN = re.compile(
 
 # RFC 7616: Challenge parameters to extract
 CHALLENGE_FIELDS: Final[
-    Tuple[
+    tuple[
         Literal["realm", "nonce", "qop", "algorithm", "opaque", "domain", "stale"], ...
     ]
 ] = (
@@ -102,14 +93,14 @@ CHALLENGE_FIELDS: Final[
 
 # Supported digest authentication algorithms
 # Use a tuple of sorted keys for predictable documentation and error messages
-SUPPORTED_ALGORITHMS: Final[Tuple[str, ...]] = tuple(sorted(DigestFunctions.keys()))
+SUPPORTED_ALGORITHMS: Final[tuple[str, ...]] = tuple(sorted(DigestFunctions.keys()))
 
 # RFC 7616: Fields that require quoting in the Digest auth header
 # These fields must be enclosed in double quotes in the Authorization header.
 # Algorithm, qop, and nc are never quoted per RFC specifications.
 # This frozen set is used by the template-based header construction to
 # automatically determine which fields need quotes.
-QUOTED_AUTH_FIELDS: Final[FrozenSet[str]] = frozenset(
+QUOTED_AUTH_FIELDS: Final[frozenset[str]] = frozenset(
     {"username", "realm", "nonce", "uri", "response", "opaque", "cnonce"}
 )
 
@@ -124,7 +115,7 @@ def unescape_quotes(value: str) -> str:
     return value.replace('\\"', '"')
 
 
-def parse_header_pairs(header: str) -> Dict[str, str]:
+def parse_header_pairs(header: str) -> dict[str, str]:
     """
     Parse key-value pairs from WWW-Authenticate or similar HTTP headers.
 
@@ -171,6 +162,15 @@ class DigestAuthMiddleware:
     - Includes replay attack protection with client nonce count tracking
     - Supports preemptive authentication per RFC 7616 Section 3.6
 
+    Origin scoping:
+    The credentials are scoped to the origin of the first request the
+    middleware handles. A request to a different origin is passed through
+    untouched, so it never receives a digest response computed from those
+    credentials, unless that origin falls within a protection space the
+    anchor origin advertised through the RFC 7616 ``domain`` directive. Make
+    the first request through the middleware against the intended origin, as
+    the anchor is pinned to it and not reset for the life of the instance.
+
     Standards compliance:
     - RFC 7616: HTTP Digest Access Authentication (primary reference)
     - RFC 2617: HTTP Authentication (deprecated by RFC 7616)
@@ -206,11 +206,11 @@ class DigestAuthMiddleware:
         self._challenge: DigestAuthChallenge = {}
         self._preemptive: bool = preemptive
         # Set of URLs defining the protection space
-        self._protection_space: List[str] = []
+        self._protection_space: list[str] = []
+        # Origin the credentials are scoped to; set on the first request.
+        self._origin: URL | None = None
 
-    async def _encode(
-        self, method: str, url: URL, body: Union[Payload, Literal[b""]]
-    ) -> str:
+    async def _encode(self, method: str, url: URL, body: Payload | Literal[b""]) -> str:
         """
         Build digest authorization header for the current challenge.
 
@@ -257,7 +257,11 @@ class DigestAuthMiddleware:
         # Convert string values to bytes once
         nonce_bytes = nonce.encode("utf-8")
         realm_bytes = realm.encode("utf-8")
-        path = URL(url).path_qs
+        # Use the encoded request-target (raw_path_qs) since that is what is
+        # transmitted on the wire and what the server signs against. Using the
+        # decoded form would cause digest verification to fail when the path
+        # or query string contains percent-encoded reserved characters.
+        path = URL(url).raw_path_qs
 
         # Process QoP
         qop = ""
@@ -362,7 +366,7 @@ class DigestAuthMiddleware:
             header_fields["cnonce"] = cnonce
 
         # Build header using templates for each field type
-        pairs: List[str] = []
+        pairs: list[str] = []
         for field, value in header_fields.items():
             if field in QUOTED_AUTH_FIELDS:
                 pairs.append(f'{field}="{value}"')
@@ -454,6 +458,16 @@ class DigestAuthMiddleware:
         self, request: ClientRequest, handler: ClientHandlerType
     ) -> ClientResponse:
         """Run the digest auth middleware."""
+        # Credentials are scoped to the first request's origin. Other origins
+        # pass through untouched unless a challenge from the anchor origin
+        # advertised them via RFC 7616 domain; mirrors aiohttp stripping
+        # Authorization on cross-origin redirects.
+        origin = request.url.origin()
+        if self._origin is None:
+            self._origin = origin
+        elif origin != self._origin and not self._in_protection_space(request.url):
+            return await handler(request)
+
         response = None
         for retry_count in range(2):
             # Apply authorization header if:

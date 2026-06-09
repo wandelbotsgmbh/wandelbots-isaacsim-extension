@@ -280,6 +280,20 @@ class GhostTeachingOverlay(ViewportOverlay):
 
         await self._on_pose_changed(self._pose_watcher.current_pose)
 
+    async def update_tcp_offset(self, tcp_name: str) -> None:
+        """Re-fetch the TCP offset by name and re-run IK for the current pose."""
+        if not self._stream_config or not self._cached_description:
+            return
+        tcps = self._cached_description.tcps or {}
+        tcp_offset_obj = tcps.get(tcp_name)
+        if tcp_offset_obj is None:
+            carb.log_warn(f"TCP '{tcp_name}' not found in motion group description")
+            return
+        pose = tcp_offset_obj.pose
+        self._tcp_offset = WSPose(pose=[*pose.position, *pose.orientation])
+        if self._pose_watcher:
+            await self._on_pose_changed(self._pose_watcher.current_pose)
+
     async def _on_pose_changed(self, pose: Pose):
         preferred = GhostObjectUtils.get_preferred_joint_values(
             self._selected_ghost_object

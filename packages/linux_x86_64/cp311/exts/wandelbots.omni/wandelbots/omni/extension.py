@@ -15,7 +15,7 @@ from omni.kit.menu.utils import add_menu_items, remove_menu_items
 from omni.services.core import main
 from wandelbots.omni.base import omniservice_base_app
 from wandelbots.omni.environment import host_database
-from wandelbots.omni.ui.schema.schema_extension_ui import SchemaExtensionUI
+from wandelbots.omni.ui.schema.schema_extension_ui import register_schema_extension_ui
 from wandelbots.omni.io import (
     get_io_stream_service,
     IOStreamService,
@@ -31,7 +31,7 @@ import omni.kit.app
 from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
 import wandelbots.omni.ui.tool
 import weakref
-from wandelbots.omni.utils.nucleus import NucleusUtils
+from wandelbots.omni.core.nucleus.nucleus_service import get_nucleus_service
 from wandelbots.omni.ui.asset_browser.browser import WandelbotsAssetBrowserManager
 
 kit_app = main.get_app()
@@ -39,7 +39,7 @@ kit_app = main.get_app()
 
 class OmniService(omni.ext.IExt):
     def on_startup(self, ext_id) -> None:
-        self.schema_extension = SchemaExtensionUI()
+        self.schema_extension = register_schema_extension_ui()
         carb.log_info("Mounting /omniservice")
 
         # Collect services to bind them to the timeline state
@@ -258,7 +258,7 @@ class OmniService(omni.ext.IExt):
 
     @staticmethod
     def _load_carb_settings():
-        NucleusUtils.set_omni_api_token_environment_from_carb_settings()
+        get_nucleus_service().load_tokens_from_settings()
         settings = carb.settings.acquire_settings_interface()
         base_path = "/exts/omni.services.transport.server.http"
         https_enabled = settings.get(f"{base_path}/https/enabled")

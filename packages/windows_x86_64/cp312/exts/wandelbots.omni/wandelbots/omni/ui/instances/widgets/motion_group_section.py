@@ -19,7 +19,7 @@ from wandelbots.omni.ui.instances.models.motion_group_enabled_model import (
     MotionGroupEnabledModel,
 )
 from wandelbots.omni.ui.instances.motion_group_widget import MotionGroupWidget
-from wandelbots.omni.ui.instances.widgets.collapsible_section import CollapsibleSection
+from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
 from wandelbots.omni.ui.widgets.switch import Switch, WARNING_SWITCH_STYLE
 
 

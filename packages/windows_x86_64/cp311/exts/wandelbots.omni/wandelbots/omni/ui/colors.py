@@ -1,7 +1,7 @@
 import omni.ui as ui
 from enum import Enum
 
-ColorRGBA = list[float, float, float, float]
+ColorRGBA = list[float]
 
 
 def hex_to_float_array(hex_string: str) -> list[float]:
@@ -59,6 +59,10 @@ class NOVAColor(Enum):
     TERTIARY_LIGHT = "#A7FFEB"
     TERTIARY_CONTRAST_TEXT = "#000000"
 
+    # Button Colors
+    BUTTON_STOP = "#EF5350"
+    BUTTON_HOVER = "#3A3A3A"
+
     # Delete
     DELETE_MAIN = "#EF5350"
 
@@ -80,9 +84,27 @@ class NOVAColor(Enum):
     SUCCESS_LIGHT = "#80CBC4"
     SUCCESS_CONTRAST_TEXT = "#FFFFFFDE"
 
+    COLLAPSIBLE_SECTION_HEADER = "#2A2A2A"
+    COLLAPSIBLE_SECTION_HEADER_ICON = "#FFFFFFB6"
+    COLLAPSIBLE_SECTION_HEADER_HOVER = "#272727"
+    COLLAPSIBLE_SECTION_BODY = "#393939"
+
+    # TreeView Colors
+    TREEVIEW_BACKGROUND = "#23221F"
+    TREEVIEW_SELECTED = "#3D3D33"
+    TREEVIEW_HOVERED = "#2E2E28"
+
+    # Tooltip Colors
+    TOOLTIP_BACKGROUND = "#2A2A2A"
+    TOOLTIP_TEXT = "#FFFFFFDE"
+    TOOLTIP_BORDER = "#4A4A4A"
+
+    # Progress Bar Colors
+    PROGRESS_BAR_BACKGROUND = "#1A1A1A"
+
     # Background Colors
     BACKGROUND_PAPER = "#343434"
-    BACKGROUND_DEFAULT = "#454545"
+    BACKGROUND_DEFAULT = "#505050"
     BACKGROUND_PAPER_DARK = "#2C2C2C"
 
     # Background Paper Elevation Levels

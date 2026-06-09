@@ -122,7 +122,9 @@ class InstanceStore(BaseStore):
         if not instance.host:
             raise ValueError("Instance must have a host defined")
 
-        self._data[instance.host] = instance.model_dump()
+        self._data[instance.host] = instance.model_dump(
+            exclude={"is_reachable", "cells", "version"}
+        )
         self.save_data()
 
     def remove_instance(self, instance_id: str):

@@ -4,15 +4,17 @@ import logging
 import os
 import re
 import time as time_mod
-from collections import namedtuple
 from collections.abc import Iterable
-from typing import Callable, ClassVar, Dict, List, Optional, Tuple
+from typing import Callable, ClassVar, NamedTuple
 
 from .abc import AbstractAccessLogger
 from .web_request import BaseRequest
 from .web_response import StreamResponse
 
-KeyMethod = namedtuple("KeyMethod", "key method")
+
+class KeyMethod(NamedTuple):
+    key: str | tuple[str, str]
+    method: Callable[[BaseRequest, StreamResponse, float], str]
 
 
 class AccessLogger(AbstractAccessLogger):
@@ -59,9 +61,9 @@ class AccessLogger(AbstractAccessLogger):
     LOG_FORMAT = '%a %t "%r" %s %b "%{Referer}i" "%{User-Agent}i"'
     FORMAT_RE = re.compile(r"%(\{([A-Za-z0-9\-_]+)\}([ioe])|[atPrsbOD]|Tf?)")
     CLEANUP_RE = re.compile(r"(%[^s])")
-    _FORMAT_CACHE: Dict[str, Tuple[str, List[KeyMethod]]] = {}
+    _FORMAT_CACHE: dict[str, tuple[str, list[KeyMethod]]] = {}
 
-    _cached_tz: ClassVar[Optional[datetime.timezone]] = None
+    _cached_tz: ClassVar[datetime.timezone | None] = None
     _cached_tz_expires: ClassVar[float] = 0.0
 
     def __init__(self, logger: logging.Logger, log_format: str = LOG_FORMAT) -> None:
@@ -80,7 +82,7 @@ class AccessLogger(AbstractAccessLogger):
 
         self._log_format, self._methods = _compiled_format
 
-    def compile_format(self, log_format: str) -> Tuple[str, List[KeyMethod]]:
+    def compile_format(self, log_format: str) -> tuple[str, list[KeyMethod]]:
         """Translate log_format into form usable by modulo formatting
 
         All known atoms will be replaced with %s
@@ -174,12 +176,7 @@ class AccessLogger(AbstractAccessLogger):
     def _format_r(request: BaseRequest, response: StreamResponse, time: float) -> str:
         if request is None:
             return "-"
-        return "{} {} HTTP/{}.{}".format(
-            request.method,
-            request.path_qs,
-            request.version.major,
-            request.version.minor,
-        )
+        return f"{request.method} {request.path_qs} HTTP/{request.version.major}.{request.version.minor}"
 
     @staticmethod
     def _format_s(request: BaseRequest, response: StreamResponse, time: float) -> int:
@@ -203,7 +200,7 @@ class AccessLogger(AbstractAccessLogger):
 
     def _format_line(
         self, request: BaseRequest, response: StreamResponse, time: float
-    ) -> Iterable[Tuple[str, Callable[[BaseRequest, StreamResponse, float], str]]]:
+    ) -> Iterable[tuple[str | tuple[str, str], str]]:
         return [(key, method(request, response, time)) for key, method in self._methods]
 
     @property
@@ -217,17 +214,17 @@ class AccessLogger(AbstractAccessLogger):
             fmt_info = self._format_line(request, response, time)
 
             values = list()
-            extra = dict()
+            extra: dict[str, str | dict[str, str]] = dict()
             for key, value in fmt_info:
                 values.append(value)
 
-                if key.__class__ is str:
+                if isinstance(key, str):
                     extra[key] = value
                 else:
-                    k1, k2 = key  # type: ignore[misc]
-                    dct = extra.get(k1, {})  # type: ignore[var-annotated,has-type]
-                    dct[k2] = value  # type: ignore[index,has-type]
-                    extra[k1] = dct  # type: ignore[has-type,assignment]
+                    k1, k2 = key
+                    dct: dict[str, str] = extra.get(k1, {})  # type: ignore[assignment]
+                    dct[k2] = value
+                    extra[k1] = dct
 
             self.logger.info(self._log_format % tuple(values), extra=extra)
         except Exception:

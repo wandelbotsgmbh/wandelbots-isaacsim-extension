@@ -1,6 +1,7 @@
+import contextlib
 from typing import Annotated, Union, TypeVar
 import omni.usd
-from pxr import Usd, UsdGeom, Gf, Sdf
+from pxr import Tf, Usd, UsdGeom, Gf, Sdf
 from pydantic import conlist
 from wandelbots.omni.utils.prims import PrimUtils
 from wandelbots.omni.datatypes import GIZMO_USD_FILE, WSPose
@@ -11,6 +12,22 @@ from wandelbots.omni.visualization.models import (
     PatchTrajectoryData,
     TrajectoryMarker,
 )
+
+
+@contextlib.contextmanager
+def _session_edit_target(stage: Usd.Stage):
+    """Temporarily redirect USD writes to the session layer.
+
+    The session layer is not persisted to disk, so anything written here
+    disappears when the stage is closed or the application restarts.
+    """
+    prev = stage.GetEditTarget()
+    stage.SetEditTarget(stage.GetSessionLayer())
+    try:
+        yield
+    finally:
+        stage.SetEditTarget(prev)
+
 
 # Type variable for generic helper methods
 DataT = TypeVar("DataT")
@@ -271,46 +288,40 @@ class TrajectoryBuilder:
         stage = omni.usd.get_context().get_stage()
         parent_prim_path = trajectory_data.parent_prim_path
 
-        name = trajectory_data.name
+        name = Tf.MakeValidIdentifier(trajectory_data.name)
         trajectory_path = f"{parent_prim_path}/trajectories/{name}"
         curve_path = f"{trajectory_path}/curve"
         if stage.GetPrimAtPath(curve_path):
             raise ValueError(f"Trajectory '{name}' already exists")
 
-        # create trajectory scope
-        stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
-        if not stage.GetPrimAtPath(trajectory_path):
-            UsdGeom.Xform.Define(stage, trajectory_path)
+        with _session_edit_target(stage):
+            stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
+            if not stage.GetPrimAtPath(trajectory_path):
+                UsdGeom.Xform.Define(stage, trajectory_path)
 
-        # Calculate number of segments
-        num_segments = len(trajectory_data.poses) - 1
-        if num_segments < 1:
-            raise ValueError("Trajectory must have at least 2 poses")
+            num_segments = len(trajectory_data.poses) - 1
+            if num_segments < 1:
+                raise ValueError("Trajectory must have at least 2 poses")
 
-        # Process trajectory options (handles both single values and per-segment lists)
-        width, color = self._process_trajectory_options(
-            trajectory_data.options, num_segments
-        )
+            width, color = self._process_trajectory_options(
+                trajectory_data.options, num_segments
+            )
 
-        # create curve
-        curve_waypoints = [
-            (x / 1000, y / 1000, z / 1000) for x, y, z, *_ in trajectory_data.poses
-        ]
-
-        self.draw_curve(
-            curve_path=curve_path,
-            waypoints=curve_waypoints,
-            width=width,
-            color=color,
-        )
-
-        # register trajectory data
-        self._register_trajectory(
-            name=name,
-            trajectory_path=trajectory_path,
-            poses=trajectory_data.poses,
-            trajectory_options=trajectory_data.options,
-        )
+            curve_waypoints = [
+                (x / 1000, y / 1000, z / 1000) for x, y, z, *_ in trajectory_data.poses
+            ]
+            self.draw_curve(
+                curve_path=curve_path,
+                waypoints=curve_waypoints,
+                width=width,
+                color=color,
+            )
+            self._register_trajectory(
+                name=name,
+                trajectory_path=trajectory_path,
+                poses=trajectory_data.poses,
+                trajectory_options=trajectory_data.options,
+            )
 
     def update_trajectory(self, name: str, trajectory_data: PatchTrajectoryData):
         is_valid, error_msg = self.is_trajectory_valid(name)
@@ -337,35 +348,31 @@ class TrajectoryBuilder:
             else trajectory.poses
         )
 
-        # Calculate number of segments
         num_segments = len(poses) - 1
         if num_segments < 1:
             raise ValueError("Trajectory must have at least 2 poses")
 
-        # Create updated options object for processing
         updated_options = TrajectoryOptions(color=color_rgb, width=width)
-
-        # Process trajectory options (handles both single values and per-segment lists)
         processed_width, processed_color = self._process_trajectory_options(
             updated_options, num_segments
         )
 
-        # draw curve
-        curve_waypoints = [(x / 1000, y / 1000, z / 1000) for x, y, z, *_ in poses]
-        curve_path = f"{trajectory_path}/curve"
-        self.draw_curve(
-            curve_path=curve_path,
-            waypoints=curve_waypoints,
-            width=processed_width,
-            color=processed_color,
-        )
-
-        self._register_trajectory(
-            name=name,
-            trajectory_path=trajectory_path,
-            poses=poses,
-            trajectory_options=updated_options,
-        )
+        stage = omni.usd.get_context().get_stage()
+        with _session_edit_target(stage):
+            curve_waypoints = [(x / 1000, y / 1000, z / 1000) for x, y, z, *_ in poses]
+            curve_path = f"{trajectory_path}/curve"
+            self.draw_curve(
+                curve_path=curve_path,
+                waypoints=curve_waypoints,
+                width=processed_width,
+                color=processed_color,
+            )
+            self._register_trajectory(
+                name=name,
+                trajectory_path=trajectory_path,
+                poses=poses,
+                trajectory_options=updated_options,
+            )
 
     def list_trajectories(self) -> list[TrajectoryObject]:
         stage = omni.usd.get_context().get_stage()
@@ -469,7 +476,8 @@ class TrajectoryBuilder:
             raise KeyError(error_msg or f"Trajectory '{name}' not created yet")
         trajectory = self.get_trajectory(name)
         stage = omni.usd.get_context().get_stage()
-        stage.RemovePrim(trajectory.path)
+        with _session_edit_target(stage):
+            stage.RemovePrim(trajectory.path)
 
     def get_trajectory(self, name: str) -> TrajectoryObject:
         trajectories = self.list_trajectories()
@@ -487,23 +495,24 @@ class TrajectoryBuilder:
 
         stage = omni.usd.get_context().get_stage()
         markers_base_path = f"{trajectory_path}/markers"
-        UsdGeom.Xform.Define(stage, markers_base_path)
-        for i, pose in enumerate(marker_data.poses):
-            marker_path = f"{markers_base_path}/marker_{i}"
-            xform = UsdGeom.Xform.Define(stage, marker_path)
-            ops = {op.GetOpName() for op in xform.GetOrderedXformOps()}
-            if "xformOp:translate" not in ops:
-                xform.AddTranslateOp()
-            if "xformOp:orient" not in ops:
-                xform.AddOrientOp()
+        with _session_edit_target(stage):
+            UsdGeom.Xform.Define(stage, markers_base_path)
+            for i, pose in enumerate(marker_data.poses):
+                marker_path = f"{markers_base_path}/marker_{i}"
+                xform = UsdGeom.Xform.Define(stage, marker_path)
+                ops = {op.GetOpName() for op in xform.GetOrderedXformOps()}
+                if "xformOp:translate" not in ops:
+                    xform.AddTranslateOp()
+                if "xformOp:orient" not in ops:
+                    xform.AddOrientOp()
 
-            PrimUtils.set_prim_pose(marker_path, WSPose(pose=list(pose)))
-            if marker_data.prim.type == "gizmo":
-                xform.GetPrim().GetReferences().AddReference(GIZMO_USD_FILE)
-            elif marker_data.prim.type == "custom":
-                xform.GetPrim().GetReferences().AddInternalReference(
-                    Sdf.Path(marker_data.prim.custom_prim_path)
-                )
+                PrimUtils.set_prim_pose(marker_path, WSPose(pose=list(pose)))
+                if marker_data.prim.type == "gizmo":
+                    xform.GetPrim().GetReferences().AddReference(GIZMO_USD_FILE)
+                elif marker_data.prim.type == "custom":
+                    xform.GetPrim().GetReferences().AddInternalReference(
+                        Sdf.Path(marker_data.prim.custom_prim_path)
+                    )
 
     def remove_markers(self, name: str):
         is_valid, error_msg = self.is_trajectory_valid(name)
@@ -511,7 +520,8 @@ class TrajectoryBuilder:
             raise KeyError(error_msg or f"Trajectory '{name}' not created yet")
         trajectory = self.get_trajectory(name)
         stage = omni.usd.get_context().get_stage()
-        stage.RemovePrim(f"{trajectory.path}/markers")
+        with _session_edit_target(stage):
+            stage.RemovePrim(f"{trajectory.path}/markers")
 
     def is_trajectory_valid(self, name: str) -> tuple[bool, str | None]:
         """Check if a trajectory exists and is valid.

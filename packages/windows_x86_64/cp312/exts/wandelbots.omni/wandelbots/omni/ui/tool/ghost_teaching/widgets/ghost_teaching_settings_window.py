@@ -6,7 +6,7 @@ from attr import dataclass
 import omni.ui as ui
 import omni.kit.app
 from omni.kit.async_engine import run_coroutine
-import wandelbots.omni.ui.tool.action_planner.utils as planner_utils
+import wandelbots.omni.ui.tool.planner_utils as planner_utils
 from wandelbots.omni.manipulators import MotionStreamConfiguration
 import wandelbots_api_client.v2.models as wb_models
 import carb.settings

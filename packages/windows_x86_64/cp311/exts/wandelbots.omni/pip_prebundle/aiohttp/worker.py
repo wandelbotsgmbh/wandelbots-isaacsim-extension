@@ -42,9 +42,9 @@ class GunicornWebWorker(base.Worker):  # type: ignore[misc,no-any-unimported]
     def __init__(self, *args: Any, **kw: Any) -> None:  # pragma: no cover
         super().__init__(*args, **kw)
 
-        self._task: Optional[asyncio.Task[None]] = None
+        self._task: asyncio.Task[None] | None = None
         self.exit_code = 0
-        self._notify_waiter: Optional[asyncio.Future[bool]] = None
+        self._notify_waiter: asyncio.Future[bool] | None = None
 
     def init_process(self) -> None:
         # create new event_loop after fork
@@ -87,7 +87,7 @@ class GunicornWebWorker(base.Worker):  # type: ignore[misc,no-any-unimported]
         else:
             raise RuntimeError(
                 "wsgi app should be either Application or "
-                "async function returning Application, got {}".format(self.wsgi)
+                f"async function returning Application, got {self.wsgi}"
             )
 
         if runner is None:
@@ -134,7 +134,7 @@ class GunicornWebWorker(base.Worker):  # type: ignore[misc,no-any-unimported]
                     self.log.info("Parent changed, shutting down: %s", self)
                 else:
                     await self._wait_next_notify()
-        except BaseException:
+        except Exception:
             pass
 
         await runner.cleanup()
@@ -191,10 +191,14 @@ class GunicornWebWorker(base.Worker):  # type: ignore[misc,no-any-unimported]
         # by interrupting system calls
         signal.siginterrupt(signal.SIGTERM, False)
         signal.siginterrupt(signal.SIGUSR1, False)
-        # Reset signals so Gunicorn doesn't swallow subprocess return codes
-        # See: https://github.com/aio-libs/aiohttp/issues/6130
 
-    def handle_quit(self, sig: int, frame: Optional[FrameType]) -> None:
+        # Reset SIGCHLD to default so Gunicorn doesn't swallow subprocess
+        # return codes. Without this, workers inherit the master arbiter's
+        # SIGCHLD handler, causing spurious "Worker exited" errors when
+        # application code spawns subprocesses.
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    def handle_quit(self, sig: int, frame: FrameType | None) -> None:
         self.alive = False
 
         # worker_int callback
@@ -203,7 +207,7 @@ class GunicornWebWorker(base.Worker):  # type: ignore[misc,no-any-unimported]
         # wakeup closing process
         self._notify_waiter_done()
 
-    def handle_abort(self, sig: int, frame: Optional[FrameType]) -> None:
+    def handle_abort(self, sig: int, frame: FrameType | None) -> None:
         self.alive = False
         self.exit_code = 1
         self.cfg.worker_abort(self)

@@ -42,14 +42,14 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
             {
                 "color": NOVAColor.TEXT_PRIMARY.color,
                 "Tooltip": {
-                    "background_color": NOVAColor.BACKGROUND_ELEVATION_4.color,
-                    "color": NOVAColor.TEXT_SECONDARY.color,
+                    "background_color": NOVAColor.TOOLTIP_BACKGROUND.color,
+                    "color": NOVAColor.TOOLTIP_TEXT.color,
                     "padding": 2,
                     "margin_width": 0,
                     "margin_height": 0,
                     "border_width": 1,
                     "border_radius": 1.5,
-                    "border_color": NOVAColor.DIVIDER.color,
+                    "border_color": NOVAColor.TOOLTIP_BORDER.color,
                 },
             }
         )

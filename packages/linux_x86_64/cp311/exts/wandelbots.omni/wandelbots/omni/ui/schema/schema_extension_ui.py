@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import cast
 import weakref
 from .widgets import SchemaComponent, PropertyGroupFrameWidget
@@ -15,6 +16,13 @@ import omni.kit.context_menu
 from wandelbots.omni.usd import TcpUtils
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.ui.create_context_menu.robot import RobotSpawnWindow
+from omni.kit.async_engine import run_coroutine
+
+from wandelbots.omni.ui.create_context_menu.robot.send_mounting_to_nova import (
+    create_nova_mounting_from_payload,
+    can_create_mounting_from_payload,
+)
+from wandelbots.omni.ui.create_context_menu.cell import CellSpawnWindow
 
 
 class SchemaExtensionUI:
@@ -29,14 +37,12 @@ class SchemaExtensionUI:
         self._add_menu_items = []
         self._frame_widget = PropertyGroupFrameWidget(id="wb_schema_nova_schema_widget")
         self._robot_spawn_window = RobotSpawnWindow()
+        self._cell_spawn_window = CellSpawnWindow()
 
         for component in schema_components:
             self._frame_widget.add_schema(component)
 
         self._register()
-
-    def __del__(self):
-        self.unregister()
 
     def _register(self):
         self._register_property_windows()
@@ -49,6 +55,7 @@ class SchemaExtensionUI:
         self._unregister_property_windows()
         self._unregister_prim_menu()
         self._robot_spawn_window = None
+        self._cell_spawn_window = None
 
     def _register_create_menu(self):
         create_menu_dict = {
@@ -66,14 +73,47 @@ class SchemaExtensionUI:
                         ),
                     },
                     {
-                        "name": "TCP",
-                        "onclick_fn": TcpUtils.create_tcp_from_payload,
+                        "name": "TCP in NOVA",
+                        "show_fn": lambda payload: (
+                            GhostObjectApiSchema.can_create_nova_tcp_object(payload)
+                        ),
+                        "onclick_fn": lambda payload: run_coroutine(
+                            GhostObjectApiSchema.create_nova_tcp_from_payload(payload)
+                        ),
                     },
                     {
-                        "name": "Robot",
+                        "name": "TCP from NOVA",
+                        "show_fn": lambda payload: (
+                            GhostObjectApiSchema.can_create_tcp_prim_from_nova(payload)
+                        ),
+                        "onclick_fn": lambda payload: run_coroutine(
+                            GhostObjectApiSchema.create_tcp_prim_from_nova(payload)
+                        ),
+                    },
+                    {
+                        "name": "Mounting in NOVA",
+                        "show_fn": lambda payload: can_create_mounting_from_payload(
+                            payload
+                        ),
+                        "onclick_fn": lambda payload: run_coroutine(
+                            create_nova_mounting_from_payload(payload)
+                        ),
+                    },
+                    {
+                        "name": "Single Robot Model",
                         "onclick_fn": lambda payload, weak_self=weakref.proxy(self): (
                             weak_self._robot_spawn_window.open(payload)
                         ),
+                    },
+                    {
+                        "name": "All Robots from Cell",
+                        "onclick_fn": lambda payload, weak_self=weakref.proxy(self): (
+                            weak_self._cell_spawn_window.open(payload)
+                        ),
+                    },
+                    {
+                        "name": "TCP",
+                        "onclick_fn": TcpUtils.create_tcp_from_payload,
                     },
                 ]
             },
@@ -139,3 +179,16 @@ class SchemaExtensionUI:
             ]
         )
         self._frame_widget.request_rebuild()
+
+
+@dataclass
+class SchemaExtensionUISubscription:
+    schema_extension_ui: SchemaExtensionUI = None
+
+    def __del__(self) -> None:
+        if self.schema_extension_ui is not None:
+            self.schema_extension_ui.unregister()
+
+
+def register_schema_extension_ui() -> SchemaExtensionUISubscription:
+    return SchemaExtensionUISubscription(SchemaExtensionUI())

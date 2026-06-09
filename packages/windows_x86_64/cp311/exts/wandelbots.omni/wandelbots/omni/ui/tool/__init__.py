@@ -1,23 +1,29 @@
-from wandelbots.omni.ui.tool.nova_tcp import (
-    register_tcp_from_isaac_to_nova_menu,
-    register_tcp_from_nova_to_isaac_menu,
-)
 from wandelbots.omni.ui.tool.collision_setup.collision_setup_window import (
     register_collision_setup_window,
 )
-from wandelbots.omni.ui.tool.action_planner.action_planner_window import (
-    register_action_planner_window,
-)
 from wandelbots.omni.ui.tool.ghost_teaching.ghost_teaching_tool_bar import (
     register_ghost_teaching_tool_bar,
+)
+from wandelbots.omni.ui.tool.animation_recorder.animation_recorder_window import (
+    register_animation_recorder_window,
+)
+from wandelbots.omni.ui.tool.reachability.reachability_window import (
+    register_reachability_window,
+)
+from wandelbots.omni.ui.tool.camera_near_clip_check import (
+    register_camera_near_clip_check,
+)
+from wandelbots.omni.ui.tool.trajectory_planner import (
+    register_trajectory_planner_window,
 )
 
 
 def register_tools():
     return [
         register_collision_setup_window(),
-        register_action_planner_window(),
         register_ghost_teaching_tool_bar(),
-        register_tcp_from_isaac_to_nova_menu(),
-        register_tcp_from_nova_to_isaac_menu(),
+        register_animation_recorder_window(),
+        register_reachability_window(),
+        register_camera_near_clip_check(),
+        register_trajectory_planner_window(),
     ]
