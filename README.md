@@ -1,5 +1,5 @@
 # Wandelbots NOVA x NVIDIA Isaac Sim&trade; Extension
-
+[![Isaac Sim 6.0](https://img.shields.io/badge/Isaac_Sim-6.0-green)](https://docs.isaacsim.omniverse.nvidia.com/6.0.0/installation/download.html)
 [![Isaac Sim 5.1](https://img.shields.io/badge/Isaac_Sim-5.1-green)](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/download.html)
 [![Isaac Sim 5.0](https://img.shields.io/badge/Isaac_Sim-5.0-green)](https://docs.isaacsim.omniverse.nvidia.com/5.0.0/installation/download.html)
 [![Linux platform](https://img.shields.io/badge/platform-linux--64-blue.svg)](https://releases.ubuntu.com/22.04/)
