@@ -101,6 +101,45 @@ class ExecutionService:
                 poses.append(list(position) + list(orientation))
             return poses
 
+    async def set_virtual_joint_position(
+        self,
+        api_configuration: ApiConfiguration,
+        cell: str,
+        controller: str,
+        motion_group: str,
+        joint_position: list[float],
+    ) -> None:
+        """Teleport the virtual robot to a joint position without executing motion.
+
+        Switches the controller to MONITOR mode if needed, then sets the motion
+        group state directly via the virtual controller. This is the same
+        mechanism used to place the robot at the start pose before execution.
+        """
+        carb.log_info(f"Set virtual joint position: target={joint_position}")
+        async with get_api_client_from_config(api_configuration) as api_client:
+            controller_api = wb_v2.ControllerApi(api_client)
+            state = await controller_api.get_current_robot_controller_state(
+                cell=cell,
+                controller=controller,
+            )
+            if state.mode != wb_v2_models.RobotSystemMode.MODE_MONITOR:
+                carb.log_info(
+                    f"Controller in {state.mode}, switching to monitor before teleport"
+                )
+                await controller_api.set_default_mode(
+                    cell=cell,
+                    controller=controller,
+                    mode=wb_v2_models.SettableRobotSystemMode.MODE_MONITOR,
+                )
+            await wb_v2.VirtualControllerApi(api_client).set_motion_group_state(
+                cell=cell,
+                controller=controller,
+                motion_group=motion_group,
+                motion_group_joints=wb_v2_models.MotionGroupJoints(
+                    positions=joint_position
+                ),
+            )
+
     async def move_to_start(
         self,
         api_configuration: ApiConfiguration,

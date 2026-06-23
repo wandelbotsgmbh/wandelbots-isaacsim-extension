@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+import traceback
 
 import carb
 import omni.timeline
@@ -100,7 +101,9 @@ class MotionGroupService:
                 return
 
             # Store for new stream starting state
-            was_streaming = motion_stream.stream.streaming
+            was_streaming = (
+                motion_stream.stream is not None and motion_stream.stream.streaming
+            )
 
             await self._remove_stream(motion_group_prim_path)
             if not updated_configuration.enabled:
@@ -190,7 +193,22 @@ class MotionGroupService:
         try:
             carb.log_info(f"Opening {stream_connector.motion_group.identifier} stream")
             stream_connector.motion_group.articulation.initialize()
-            asyncio.create_task(stream_connector.open())
+            task = asyncio.create_task(stream_connector.open())
+
+            def _on_open_done(completed_task: asyncio.Task):
+                if not completed_task.cancelled() and completed_task.exception():
+                    exception = completed_task.exception()
+                    traceback_str = "".join(
+                        traceback.format_exception(
+                            type(exception), exception, exception.__traceback__
+                        )
+                    )
+                    carb.log_error(
+                        f"Stream {stream_connector.motion_group.identifier} failed: {exception}"
+                    )
+                    carb.log_verbose(traceback_str)
+
+            task.add_done_callback(_on_open_done)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to start motion_group {stream_connector.motion_group.identifier}: {str(e)}",
@@ -222,7 +240,9 @@ class MotionGroupService:
         if not stream_connector:
             return
 
-        if stream_connector.stream.streaming:
+        if not stream_connector.stream:
+            carb.log_verbose(f"Stream for {motion_group_prim_path} was never created")
+        elif stream_connector.stream.streaming:
             await self._stop_stream(stream_connector)
 
         # Delete the stream

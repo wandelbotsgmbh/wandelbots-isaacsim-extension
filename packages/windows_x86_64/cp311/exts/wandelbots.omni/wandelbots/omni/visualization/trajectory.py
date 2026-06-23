@@ -323,6 +323,65 @@ class TrajectoryBuilder:
                 trajectory_options=trajectory_data.options,
             )
 
+    async def create_trajectory_async(self, trajectory_data: TrajectoryData):
+        """Build a trajectory curve without blocking the main thread.
+
+        Same result as ``create_trajectory`` but yields to the Kit update loop
+        between phases so the viewport/UI stays responsive while a large curve is
+        authored. The visible geometry is drawn before the (non-visual)
+        persistence metadata so the curve appears as early as possible.
+        """
+        import omni.kit.app
+
+        stage = omni.usd.get_context().get_stage()
+        parent_prim_path = trajectory_data.parent_prim_path
+
+        name = Tf.MakeValidIdentifier(trajectory_data.name)
+        trajectory_path = f"{parent_prim_path}/trajectories/{name}"
+        curve_path = f"{trajectory_path}/curve"
+        if stage.GetPrimAtPath(curve_path):
+            raise ValueError(f"Trajectory '{name}' already exists")
+
+        num_segments = len(trajectory_data.poses) - 1
+        if num_segments < 1:
+            raise ValueError("Trajectory must have at least 2 poses")
+
+        # Yield first so the UI (e.g. the progress bar) updates before any
+        # authoring work starts on the main thread.
+        await omni.kit.app.get_app().next_update_async()
+
+        # Phase 1: container prims.
+        with _session_edit_target(stage):
+            stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
+            if not stage.GetPrimAtPath(trajectory_path):
+                UsdGeom.Xform.Define(stage, trajectory_path)
+        await omni.kit.app.get_app().next_update_async()
+
+        # Phase 2: visible curve geometry + per-vertex color/width.
+        width, color = self._process_trajectory_options(
+            trajectory_data.options, num_segments
+        )
+        curve_waypoints = [
+            (x / 1000, y / 1000, z / 1000) for x, y, z, *_ in trajectory_data.poses
+        ]
+        with _session_edit_target(stage):
+            self.draw_curve(
+                curve_path=curve_path,
+                waypoints=curve_waypoints,
+                width=width,
+                color=color,
+            )
+        await omni.kit.app.get_app().next_update_async()
+
+        # Phase 3: persistence/listing metadata (not needed for display).
+        with _session_edit_target(stage):
+            self._register_trajectory(
+                name=name,
+                trajectory_path=trajectory_path,
+                poses=trajectory_data.poses,
+                trajectory_options=trajectory_data.options,
+            )
+
     def update_trajectory(self, name: str, trajectory_data: PatchTrajectoryData):
         is_valid, error_msg = self.is_trajectory_valid(name)
         if not is_valid:

@@ -32,15 +32,18 @@ class TrajectoryControls:
         on_execute: Callable[[], None],
         on_replan: Callable[[], None],
         on_force_stop: Callable[[], None],
+        on_start_from_here: Callable[[], None] | None = None,
     ) -> None:
         self._on_calculate_iks = on_calculate_iks
         self._on_plan = on_plan
         self._on_execute = on_execute
         self._replan_callback = on_replan
         self._on_force_stop = on_force_stop
+        self._start_from_here_callback = on_start_from_here
 
         self._action_btn: ui.Button | None = None
         self._replan_btn: ui.Button | None = None
+        self._start_from_here_btn: ui.Button | None = None
         self._stop_btn: ui.Button | None = None
         self._collision_free_label: ui.Label | None = None
         self._execution_time_label: ui.Label | None = None
@@ -54,7 +57,25 @@ class TrajectoryControls:
             with ui.HStack(height=40, spacing=8):
                 ui.Spacer(width=5)
                 ui.Spacer()
-                with ui.HStack(spacing=0, width=0, height=34):
+                with ui.HStack(spacing=4, width=0, height=34):
+                    self._start_from_here_btn = ui.Button(
+                        "Start from here",
+                        width=120,
+                        height=34,
+                        tooltip="Execute the planned trajectory starting at the "
+                        "selected pose.",
+                        visible=False,
+                        clicked_fn=lambda ws=weakref.ref(self): (
+                            ws()._on_start_from_here() if ws() else None
+                        ),
+                        style={
+                            "background_color": 0xFF292929,
+                            "font_size": 15,
+                            ":hovered": {
+                                "background_color": NOVAColor.BUTTON_HOVER.color
+                            },
+                        },
+                    )
                     self._replan_btn = ui.Button(
                         "Replan",
                         width=80,
@@ -177,8 +198,7 @@ class TrajectoryControls:
             self._action_btn.text = "Pause"
         if self._stop_btn:
             self._stop_btn.visible = True
-        if self._replan_btn:
-            self._replan_btn.visible = False
+        self._set_secondary_buttons_visible(False)
 
     def set_resume_label(self) -> None:
         """Execution is paused: show [Stop (red)] [Resume]."""
@@ -186,8 +206,7 @@ class TrajectoryControls:
             self._action_btn.text = "Resume"
         if self._stop_btn:
             self._stop_btn.visible = True
-        if self._replan_btn:
-            self._replan_btn.visible = False
+        self._set_secondary_buttons_visible(False)
 
     def update(
         self,
@@ -217,23 +236,20 @@ class TrajectoryControls:
             self._action_btn.text = "Calculate IKs"
             self._action_btn.tooltip = "Select a motion group first."
             self._action_btn.enabled = False
-            if self._replan_btn:
-                self._replan_btn.visible = False
+            self._set_secondary_buttons_visible(False)
             return
 
         if _has_trajectory:
             self._action_btn.text = "Execute"
             self._action_btn.tooltip = "Execute the planned trajectory on the robot."
             self._action_btn.enabled = True
-            if self._replan_btn:
-                self._replan_btn.visible = True
+            self._set_secondary_buttons_visible(True)
         elif all_iks_ready:
             label = "Plan *" if self._collision_free else "Plan"
             self._action_btn.text = label
             self._action_btn.tooltip = "Plan the trajectory via the NOVA API."
             self._action_btn.enabled = True
-            if self._replan_btn:
-                self._replan_btn.visible = False
+            self._set_secondary_buttons_visible(False)
         else:
             self._action_btn.text = "Calculate IKs"
             self._action_btn.tooltip = (
@@ -242,8 +258,7 @@ class TrajectoryControls:
                 else "Add poses first."
             )
             self._action_btn.enabled = bool(has_poses)
-            if self._replan_btn:
-                self._replan_btn.visible = False
+            self._set_secondary_buttons_visible(False)
 
     def _on_clicked(self) -> None:
         if not self._action_btn:
@@ -267,3 +282,14 @@ class TrajectoryControls:
 
     def _on_replan(self) -> None:
         self._replan_callback()
+
+    def _on_start_from_here(self) -> None:
+        if self._start_from_here_callback:
+            self._start_from_here_callback()
+
+    def _set_secondary_buttons_visible(self, visible: bool) -> None:
+        """Show/hide the planned-state-only buttons (Replan, Start from here)."""
+        if self._replan_btn:
+            self._replan_btn.visible = visible
+        if self._start_from_here_btn:
+            self._start_from_here_btn.visible = visible

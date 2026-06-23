@@ -48,7 +48,7 @@ API_DESCRIPTION = (
 omniservice_app = FastAPI(
     title=API_TITLE,
     description=API_DESCRIPTION,
-    version="2.45.0",
+    version="2.50.0",
     docs_url=None,
     redoc_url=None,
 )

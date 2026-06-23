@@ -1,5 +1,71 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.50.0 (2026-06-22)
+
+### Features
+
+* Convert selected poses to ghost objects
+
+## 2.49.0 (2026-06-22)
+
+### Features
+
+* Add collider presets and management overview for NOVA export
+
+## 2.48.2 (2026-06-19)
+
+### Bug Fixes
+
+* External joint stream expects sdf path but string was passed
+
+## 2.48.1 (2026-06-18)
+
+### Bug Fixes
+
+* Added more meaningful logs if robot connection fails
+
+## 2.48.0 (2026-06-17)
+
+### Features
+
+* Improve trajectory planner with loading and import functionality and colored velocity spectrum.
+
+## 2.47.3 (2026-06-12)
+
+### Bug Fixes
+
+* Update broken link to the simulation section in the docs
+
+## 2.47.2 (2026-06-12)
+
+### Bug Fixes
+
+* Remove double wandelbots registration in extension.toml
+
+## 2.47.1 (2026-06-11)
+
+### Bug Fixes
+
+* Example folder copy path
+
+## 2.47.0 (2026-06-11)
+
+### Features
+
+* **CSI-2606:** Added motion group mounting assistant
+
+## 2.46.1 (2026-06-11)
+
+### Bug Fixes
+
+* TCP in NOVA now uses tcp name instead of tool name; Fixed tcp selection of trajectory planner
+
+## 2.46.0 (2026-06-09)
+
+### Features
+
+* Add capability to export diagnose package.
+
 ## 2.45.0 (2026-06-08)
 
 ### Features

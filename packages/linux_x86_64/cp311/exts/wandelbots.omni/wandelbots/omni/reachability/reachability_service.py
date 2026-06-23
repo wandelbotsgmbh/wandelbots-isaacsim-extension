@@ -16,6 +16,7 @@ from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
 from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.utils.prims import PrimUtils
+from wandelbots.omni.utils.teaching import GhostObjectUtils
 from wandelbots.omni.core.collision.collision_export_service import (
     SphereSweepParameters,
     get_collision_export_service,
@@ -33,6 +34,7 @@ class ReachabilityResult:
     total_poses: int
     error: Optional[str] = None
     joint_solutions: Optional[list[list[float]]] = None
+    all_joint_solutions: Optional[list[list[list[float]]]] = None
     base_height_mm: float = 0.0
 
 
@@ -49,6 +51,17 @@ class ReachabilitySession:
     nova_tcp_offset: object
     total_poses: int
     static_colliders: Optional[dict] = None
+    joint_position_limits: Optional[list] = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            await self.api_client.close()
+        except Exception as exc:
+            carb.log_warn(f"Error closing API client: {exc}")
+        return False
 
 
 # Model name patterns that are positioners / turntables, not robot arms.
@@ -122,6 +135,9 @@ class ReachabilityService:
                     rotation_type="cartesian",
                     stage=self._stage,
                 )
+                prim = self._stage.GetPrimAtPath(prim_path)
+                if prim.IsValid() and GhostObjectUtils.is_ghost_object(prim):
+                    pose = self._apply_ghost_tcp_offset(prim, pose)
                 poses.append(pose)
                 carb.log_verbose(f"Extracted target pose from {prim_path}: {pose}")
             except Exception as exc:
@@ -138,6 +154,22 @@ class ReachabilityService:
 
         carb.log_info(f"Extracted {len(poses)} target poses")
         return poses
+
+    def _apply_ghost_tcp_offset(
+        self, ghost_prim: Usd.Prim, ghost_world_pose: WSPose
+    ) -> WSPose:
+        flange_pose = GhostObjectUtils.get_ghost_object_flange_pose(
+            ghost_prim, ghost_world_pose
+        )
+        if flange_pose is None:
+            carb.log_warn(
+                f"Ghost object {ghost_prim.GetPath()}: could not resolve flange pose — using raw prim pose."
+            )
+            return ghost_world_pose
+        carb.log_verbose(
+            f"Ghost object {ghost_prim.GetPath()}: TCP pose={ghost_world_pose} → flange pose={flange_pose}"
+        )
+        return flange_pose
 
     def _make_api_client(self, instance: NOVAInstance) -> Optional[wb_v2.ApiClient]:
         """
@@ -217,13 +249,27 @@ class ReachabilityService:
         return session, all_models
 
     async def check_single_model(
-        self, session: ReachabilitySession, model_name: str
+        self,
+        session: ReachabilitySession,
+        model_name: str,
+        mounting_pose: Optional[WSPose] = None,
     ) -> ReachabilityResult:
-        """Check reachability for a single model using an existing session."""
+        """Check reachability for a single model using an existing session.
+
+        Args:
+            session: Active reachability session.
+            model_name: Robot model to check.
+            mounting_pose: Explicit mounting pose override. If None, uses
+                the session's ``nova_mounting_pose``.
+        """
         try:
             base_height_mm = MODEL_BASE_OFFSETS.get(model_name, 0.0)
 
-            mounting = session.nova_mounting_pose
+            if mounting_pose is not None:
+                mounting = mounting_pose.to_nova_pose()
+            else:
+                mounting = session.nova_mounting_pose
+
             if base_height_mm != 0.0 and mounting is not None:
                 adjusted_pos = list(mounting.position)
                 adjusted_pos[2] += base_height_mm * 1000.0
@@ -243,6 +289,7 @@ class ReachabilityService:
                 tcp_poses=session.nova_target_poses,
                 mounting=mounting,
                 tcp_offset=session.nova_tcp_offset,
+                joint_position_limits=session.joint_position_limits,
                 collision_setups=collision_setups,
             )
             ik_response = await asyncio.wait_for(
@@ -261,12 +308,17 @@ class ReachabilityService:
                 pose_solutions[0] if pose_solutions else []
                 for pose_solutions in ik_response.joints
             ]
+            all_joint_solutions = [
+                list(pose_solutions) if pose_solutions else []
+                for pose_solutions in ik_response.joints
+            ]
             return ReachabilityResult(
                 model_name=model_name,
                 reachable=reachable_count == session.total_poses,
                 reachable_count=reachable_count,
                 total_poses=session.total_poses,
                 joint_solutions=joint_solutions,
+                all_joint_solutions=all_joint_solutions,
                 base_height_mm=base_height_mm,
             )
         except Exception as exc:
@@ -279,12 +331,73 @@ class ReachabilityService:
                 error=str(exc),
             )
 
-    async def close_session(self, session: ReachabilitySession) -> None:
-        """Close the API client for a session."""
+    async def prepare_mounting_session_from_prim(
+        self,
+        motion_group_prim: Usd.Prim,
+        target_poses: list[WSPose],
+    ) -> tuple[ReachabilitySession, str, Optional[wb_v2_models.Pose]]:
+        """Prepare a mounting session from the motion group prim's API config.
+
+        Returns (session, model_name, tcp_offset_pose).
+        """
+        from wandelbots.omni.manipulators.motion_group import (
+            get_motion_group_configuration_from_prim,
+        )
+
+        if not target_poses:
+            raise ValueError("No target poses provided for mounting check")
+
+        config = get_motion_group_configuration_from_prim(motion_group_prim)
+        if config is None:
+            raise ValueError(
+                f"Prim {motion_group_prim.GetPath()} is not a motion group"
+            )
+        stream_config = config.motion_stream_configuration
+        api_client = stream_config.get_api_client()
+
+        description = await asyncio.wait_for(
+            wb_v2.MotionGroupApi(api_client).get_motion_group_description(
+                cell=stream_config.cell,
+                controller=stream_config.controller,
+                motion_group=stream_config.motion_group,
+            ),
+            timeout=5.0,
+        )
+        model_name = description.motion_group_model
+
+        joint_position_limits = None
         try:
-            await session.api_client.close()
+            auto_limits = description.operation_limits.auto_limits
+            if auto_limits and auto_limits.joints:
+                joint_position_limits = [
+                    j.position for j in auto_limits.joints if j.position is not None
+                ] or None
+                carb.log_info(
+                    f"Extracted {len(joint_position_limits or [])} joint position limits"
+                )
         except Exception as exc:
-            carb.log_warn(f"Error closing API client: {exc}")
+            carb.log_warn(f"Could not extract joint position limits: {exc}")
+
+        tcp_offset_pose = None
+        if description.tcps:
+            first_tcp_name = next(iter(description.tcps))
+            tcp_offset_pose = description.tcps[first_tcp_name].pose
+            carb.log_info(f"Using TCP '{first_tcp_name}': {tcp_offset_pose}")
+
+        nova_target_poses = [pose.to_nova_pose() for pose in target_poses]
+
+        session = ReachabilitySession(
+            api_client=api_client,
+            kinematics_api=wb_v2.KinematicsApi(api_client),
+            models_api=wb_v2.MotionGroupModelsApi(api_client),
+            cell_id=stream_config.cell,
+            nova_target_poses=nova_target_poses,
+            nova_mounting_pose=None,
+            nova_tcp_offset=tcp_offset_pose,
+            total_poses=len(target_poses),
+            joint_position_limits=joint_position_limits,
+        )
+        return session, model_name, tcp_offset_pose
 
     async def sweep_colliders_around_prim(
         self,

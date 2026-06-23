@@ -17,6 +17,8 @@ from pxr import Sdf
 import wandelbots_api_client.v2 as wb_v2
 import wandelbots_api_client.v2.models as wb_v2_models
 
+from wandelbots.omni.manipulators import get_motion_group_service
+from wandelbots.omni.ui.tool.trajectory_planner.cells import is_joint_config_editable
 from wandelbots.omni.ui.tool.trajectory_planner.events import TrajectoryPlannerEvents
 from wandelbots.omni.ui.tool.trajectory_planner.execution_orchestrator import (
     ExecutionOrchestrator,
@@ -50,6 +52,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.widgets.trajectory_controls impo
 )
 from wandelbots.omni.ui.utils import defer_call
 from wandelbots.omni.utils.api import get_api_client_from_config
+from wandelbots.omni.utils.kinematics import weighted_joint_distance
 from wandelbots.omni.utils.teaching import make_ghost_tcp_matcher
 
 _DEBOUNCE_DELAY = 0.3
@@ -103,8 +106,19 @@ class TrajectoryPlannerController:
         self._cached_tool_colliders: dict | None = None
         self._cached_collision_setup_name: str | None = None
         self._motion_group_limits: dict | None = None
+        self._last_motion_group_id: tuple | None = None
+        # Execute is gated on a successful visualization, not just a successful
+        # plan — this is True only once the curve has been drawn.
+        self._trajectory_visualized: bool = False
+        # One-shot flag: a config is being restored (load / reopen). It drives a
+        # restore-safe motion-group init in on_rebuild that refreshes the tree and
+        # selectors without clearing restored joint configs or velocity/accel.
+        self._restoring: bool = False
         self._edit_mode: bool = False
         self._planned_waypoint_count: int | None = None
+        # Absolute location of the first played waypoint; non-zero only when
+        # executing a "start from here" slice (locations are rebased to 0).
+        self._execution_location_offset: float = 0.0
 
         self.tree_view: ui.TreeView | None = None
 
@@ -121,6 +135,8 @@ class TrajectoryPlannerController:
         ev.replan_requested.connect(self._on_replan)
         ev.execute_toggle_requested.connect(self._on_execute_toggle)
         ev.force_stop_requested.connect(self._on_force_stop)
+        ev.start_from_here_requested.connect(self._on_start_from_here)
+        ev.go_to_requested.connect(self._on_go_to)
         ev.pose_added.connect(self._on_pose_added)
         ev.pose_removed.connect(self._on_pose_removed)
         ev.poses_reordered.connect(self._on_poses_reordered)
@@ -158,10 +174,32 @@ class TrajectoryPlannerController:
 
     def on_rebuild(self) -> None:
         """Call after every widget._rebuild() to refresh controller-owned state."""
+        # On restore, drive a one-shot motion-group init now that the tree view +
+        # motion group context exist: refreshes the tree (poses show) and the
+        # TCP/collision selectors, fetches reference limits — without clearing the
+        # restored joint configs or overwriting restored velocity/accel (identity
+        # was pre-seeded by begin_restore, so it is treated as unchanged).
+        if self._restoring and self._mg_setup.mg_config:
+            self._on_motion_group_changed(self._mg_setup.mg_config)
+            self._restoring = False
         if self._mg_setup.mg_config:
             cs = self._mg_setup.selected_collision_setup
             if cs and self._cached_collision_setup_name != cs:
                 self._fetch_tool_colliders_for_setup()
+        # NOTE: a restored trajectory's curve is NOT redrawn automatically — the
+        # user triggers it explicitly via the window's Refresh action.
+        self._update_controls()
+
+    def refresh_trajectory(self) -> None:
+        """Redraw this skill's restored trajectory curve (window Refresh action)."""
+        if self._planner.planned_joint_trajectory is None:
+            return
+        run_coroutine(self._refresh_trajectory_async())
+
+    async def _refresh_trajectory_async(self) -> None:
+        ok = await self._planner.visualize_trajectory(self._settings.trajectory_color)
+        # A successfully drawn curve also enables Execute for a restored plan.
+        self._trajectory_visualized = ok
         self._update_controls()
 
     def refresh_tree_view(self) -> None:
@@ -220,17 +258,53 @@ class TrajectoryPlannerController:
     def _on_motion_group_changed(self, config) -> None:
         self._recalculate_all_poses()
         self.refresh_tree_view()
-        for item in self._pose_model.items:
-            item.joint_configs = []
-            item.selected_config_idx = 0
+        # Only discard cached IK / joint configs when the motion group actually
+        # changes identity. Re-picking the same group (or a transient rebuild)
+        # must not wipe restored joint-config selections.
+        mg_id = self._motion_group_identity(config)
+        identity_changed = mg_id != self._last_motion_group_id
+        self._last_motion_group_id = mg_id
+        if identity_changed:
+            for item in self._pose_model.items:
+                item.joint_configs = []
+                item.selected_config_idx = 0
+            # Switching to a different robot invalidates the old plan entirely.
+            self._planner.invalidate(remove_visualization=True)
         self._preview.hide()
-        self._planner.invalidate()
-        self._controls.set_trajectory_planned(False)
+        self._controls.set_trajectory_planned(self._planner.trajectory_planned)
         self._update_controls()
         if config:
-            run_coroutine(self._fetch_and_apply_auto_limits())
-            if self._pose_model.items:
+            # During restore, keep the restored velocity/accel (fetch only the
+            # reference limits for the override dialog).
+            run_coroutine(
+                self._fetch_and_apply_auto_limits(preserve_limits=self._restoring)
+            )
+            if identity_changed and self._pose_model.items:
                 self._ik_manager.refresh_all_ik()
+
+    @staticmethod
+    def _motion_group_identity(config) -> tuple | None:
+        """Stable identity for a motion group config (cell, controller, group)."""
+        if not config:
+            return None
+        try:
+            msc = config.motion_stream_configuration
+            return (msc.cell, msc.controller, msc.motion_group)
+        except Exception:
+            return None
+
+    def begin_restore(self) -> None:
+        """Mark that a restored config's motion group is set.
+
+        Pre-seeds the identity so the restore-time motion-group init (run in
+        on_rebuild) is treated as *unchanged* — it refreshes the tree/selectors
+        and fetches limit references without clearing the restored joint configs
+        or overwriting restored velocity/accel.
+        """
+        self._restoring = True
+        self._last_motion_group_id = self._motion_group_identity(
+            self._mg_setup.mg_config
+        )
 
     def _on_tcp_changed(self, tcp_name: str | None) -> None:
         self._resolve_ghost_tcp_names()
@@ -260,7 +334,7 @@ class TrajectoryPlannerController:
                 item.tcp_name = matched
         self._pose_model.notify_item_changed(None)
 
-    async def _fetch_and_apply_auto_limits(self) -> None:
+    async def _fetch_and_apply_auto_limits(self, preserve_limits: bool = False) -> None:
         api_config = self._mg_setup.get_api_configuration()
         mg = self._mg_setup.mg_config
         if not api_config or not mg:
@@ -279,10 +353,13 @@ class TrajectoryPlannerController:
                 getattr(description, "operation_limits", None), "auto_limits", None
             )
             if auto_limits and auto_limits.tcp:
-                self._settings.set_tcp_limits(
-                    velocity=auto_limits.tcp.velocity,
-                    acceleration=auto_limits.tcp.acceleration,
-                )
+                # On restore, keep the user's saved velocity/accel; still record the
+                # auto limits below as the reference for the override dialog.
+                if not preserve_limits:
+                    self._settings.set_tcp_limits(
+                        velocity=auto_limits.tcp.velocity,
+                        acceleration=auto_limits.tcp.acceleration,
+                    )
                 self._motion_group_limits = {
                     "tcp_velocity": auto_limits.tcp.velocity,
                     "tcp_acceleration": auto_limits.tcp.acceleration,
@@ -308,12 +385,28 @@ class TrajectoryPlannerController:
             carb.log_info(f"Could not fetch auto_limits for settings defaults: {exc}")
 
     def _on_collision_setup_changed(self, setup: str | None) -> None:
-        self._pose_delegate.collision_free = setup is not None
-        self._pose_model.collision_free = setup is not None
-        self._controls.set_collision_free(setup is not None)
-        self._settings.set_collision_free(setup is not None)
+        # Selecting a collision scene no longer forces collision-free planning;
+        # the planning mode is controlled by the independent "Collision-free
+        # Planning" toggle (rendered below the collision selector). We still fetch
+        # the tool colliders so the preview is correct in either mode.
+        if setup is None and self._settings.plan_collision_free:
+            # Collision-free is meaningless without a scene — turn it off.
+            self._set_plan_collision_free(False)
         self._planner.invalidate()
         self._fetch_tool_colliders_for_setup()
+        defer_call(self._rebuild_fn)
+
+    def _set_plan_collision_free(self, enabled: bool) -> None:
+        """Single source of truth for the collision-free planning mode."""
+        self._settings.plan_collision_free = enabled
+        self._pose_delegate.collision_free = enabled
+        self._pose_model.collision_free = enabled
+        self._controls.set_collision_free(enabled)
+        self._settings.set_collision_free(enabled)
+
+    def _on_plan_collision_free_changed(self, enabled: bool) -> None:
+        self._set_plan_collision_free(enabled)
+        self._planner.invalidate()
         defer_call(self._rebuild_fn)
 
     def _on_setting_changed(self, key: str, value) -> None:
@@ -324,6 +417,15 @@ class TrajectoryPlannerController:
         elif key == "trajectory_color":
             if self._planner.planned_joint_trajectory:
                 self._planner.update_trajectory_color(self._settings.trajectory_color)
+        elif key == "velocity_coloring":
+            # Re-render the curve so it switches between the speed gradient and the
+            # solid color (the gradient is recomputed from FK + times).
+            if self._planner.planned_joint_trajectory:
+                run_coroutine(
+                    self._planner.visualize_trajectory(self._settings.trajectory_color)
+                )
+        elif key == "plan_collision_free":
+            self._on_plan_collision_free_changed(bool(value))
         else:
             self._on_plan_invalidated()
 
@@ -431,6 +533,8 @@ class TrajectoryPlannerController:
         self._ik_manager.refresh_all_ik()
 
     def _on_plan(self) -> None:
+        # Not visualized yet — keep Execute disabled until the curve is drawn.
+        self._trajectory_visualized = False
         self._planner.plan()
         self._controls.set_cancel_label()
 
@@ -446,6 +550,8 @@ class TrajectoryPlannerController:
         elif state == ExecutionState.EXECUTING:
             self._executor.pause()
         elif state in (ExecutionState.IDLE, ExecutionState.TEARING_DOWN):
+            if not self._validate_motion_group():
+                return
             jt = self._planner.planned_joint_trajectory
             if not jt:
                 nm.post_notification(
@@ -454,6 +560,8 @@ class TrajectoryPlannerController:
                     status=nm.NotificationStatus.WARNING,
                 )
                 return
+            # Normal execution runs from the start; no location rebasing.
+            self._execution_location_offset = 0.0
             num_commands = max(len(self._pose_model.items) - 1, 1)
             self._preview.hide()
             self._progress.show(0.05)
@@ -461,6 +569,110 @@ class TrajectoryPlannerController:
 
     def _on_force_stop(self) -> None:
         self._executor.stop()
+
+    def _validate_motion_group(self) -> bool:
+        """Warn (and return False) when no motion group is selected or connected.
+
+        A motion group is "connected" while its prim carries the MotionGroupAPI;
+        disconnecting removes that API (see MotionGroupService.remove_motion_group),
+        so we query the shared service for the current state.
+        """
+        mg = self._mg_setup.mg_config
+        if mg is None:
+            nm.post_notification(
+                "No motion group selected.",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return False
+        service = get_motion_group_service()
+        connected = False
+        if service is not None:
+            try:
+                connected = service.has_motion_group(mg.prim_path)
+            except Exception:
+                connected = False
+        if not connected:
+            nm.post_notification(
+                "Motion group is not connected.",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return False
+        return True
+
+    def _on_go_to(self, item: PoseItem) -> None:
+        if not self._validate_motion_group():
+            return
+        joints = item.selected_joint_config
+        if not joints:
+            nm.post_notification(
+                "No joint configuration available for this pose.",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+        self._executor.go_to(joints)
+
+    def _on_start_from_here(self) -> None:
+        if not self._validate_motion_group():
+            return
+        jt = self._planner.planned_joint_trajectory
+        if not jt:
+            nm.post_notification(
+                "No planned trajectory to execute.",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+        item = self._selected_pose_item
+        if item is None:
+            nm.post_notification(
+                "Select a pose to start from.",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+        pose_index = self._pose_model.get_item_index(item)
+        carb.log_info(
+            f"Start from here: selected='{item.name_model.get_value_as_string()}', "
+            f"pose_index={pose_index}, poses={len(self._pose_model.items)}"
+        )
+        sliced, loc_offset = self._slice_trajectory_from(jt, max(pose_index, 0))
+        num_commands = max(len(self._pose_model.items) - 1, 1)
+        # The player reports rebased locations (sliced trajectory starts at 0); add
+        # the offset back so the executing-pose highlight maps to the right pose.
+        self._execution_location_offset = loc_offset
+        self._preview.hide()
+        self._progress.show(0.05)
+        self._executor.execute(sliced, num_commands)
+
+    @staticmethod
+    def _slice_trajectory_from(
+        jt: wb_v2_models.JointTrajectory, pose_index: int
+    ) -> tuple[wb_v2_models.JointTrajectory, float]:
+        """Slice the trajectory to begin at ``pose_index``, rebased to location 0.
+
+        Returns ``(sliced_trajectory, location_offset)``. The player requires the
+        trajectory to start at location 0 (and time 0), so both arrays are rebased;
+        ``location_offset`` is the original location of the first kept waypoint, used
+        to map the player's rebased location back to absolute pose indices.
+        """
+        if pose_index <= 0 or not jt.locations:
+            return jt, 0.0
+        start = next(
+            (i for i, loc in enumerate(jt.locations) if loc >= pose_index), None
+        )
+        if start is None or start == 0:
+            return jt, 0.0
+        loc0 = jt.locations[start]
+        t0 = jt.times[start] if jt.times else 0.0
+        sliced = wb_v2_models.JointTrajectory(
+            joint_positions=jt.joint_positions[start:],
+            times=[t - t0 for t in jt.times[start:]],
+            locations=[loc - loc0 for loc in jt.locations[start:]],
+        )
+        return sliced, loc0
 
     def _on_plan_started(self) -> None:
         self._progress.show(0.0)
@@ -472,7 +684,9 @@ class TrajectoryPlannerController:
             self._progress.set_hint(msg)
 
     def _on_plan_complete(self, joint_trajectory: wb_v2_models.JointTrajectory) -> None:
-        self._controls.set_trajectory_planned(True)
+        # Execute is enabled only once the trajectory has been visualized — see
+        # _visualize_then_hide. Keep it disabled until then.
+        self._trajectory_visualized = False
         duration = None
         if joint_trajectory.times:
             duration = joint_trajectory.times[-1] - joint_trajectory.times[0]
@@ -482,15 +696,35 @@ class TrajectoryPlannerController:
         if joint_trajectory.times and joint_trajectory.locations and items:
             times = joint_trajectory.times
             locations = joint_trajectory.locations
+            positions = joint_trajectory.joint_positions
+            collision_free = self._pose_delegate.collision_free
             last_idx = len(items) - 1
             for i, item in enumerate(items):
+                indices = [j for j, loc in enumerate(locations) if int(loc) == i]
+                # cycle_time_s is the segment duration; the last pose has no segment.
                 if i == last_idx:
                     item.cycle_time_s = None
-                    continue
-                indices = [j for j, loc in enumerate(locations) if int(loc) == i]
-                item.cycle_time_s = (
-                    times[indices[-1]] - times[indices[0]] if indices else None
-                )
+                else:
+                    item.cycle_time_s = (
+                        times[indices[-1]] - times[indices[0]] if indices else None
+                    )
+                # For poses whose config the planner derives (read-only label), select
+                # the IK solution nearest to the joints the planner actually used at
+                # that pose's arrival waypoint.
+                if (
+                    indices
+                    and item.joint_configs
+                    and not is_joint_config_editable(
+                        i, item.motion_type, collision_free
+                    )
+                ):
+                    planned = positions[indices[0]]
+                    item.selected_config_idx = min(
+                        range(len(item.joint_configs)),
+                        key=lambda k, p=planned, it=item: weighted_joint_distance(
+                            p, it.joint_configs[k]
+                        ),
+                    )
         else:
             for item in items:
                 item.cycle_time_s = None
@@ -501,15 +735,28 @@ class TrajectoryPlannerController:
 
         self._pose_model.notify_item_changed(None)
         self.refresh_tree_view()
-        self._progress.hide()
         self._update_controls()
 
-        run_coroutine(
-            self._planner.visualize_trajectory(self._settings.trajectory_color)
-        )
+        # Keep the progress bar up while the curve renders; hide it only once the
+        # trajectory has finished drawing.
+        self._progress.update(1.0)
+        self._progress.set_hint("Rendering trajectory...")
+        run_coroutine(self._visualize_then_hide())
         # Defer user feedback to _on_plan_stored so the planned-waypoint count and
         # the stored version are shown together in a single notification.
         self._planned_waypoint_count = len(joint_trajectory.joint_positions)
+
+    async def _visualize_then_hide(self) -> None:
+        ok = False
+        try:
+            ok = await self._planner.visualize_trajectory(
+                self._settings.trajectory_color
+            )
+        finally:
+            self._progress.hide()
+        # Enable Execute only once the trajectory was successfully visualized.
+        self._trajectory_visualized = ok
+        self._update_controls()
 
     def _on_plan_stored(self, version: str | None) -> None:
         """Show one combined message with the waypoint count and stored version.
@@ -550,10 +797,18 @@ class TrajectoryPlannerController:
             self._progress.set_hint(msg)
 
     def _on_execution_location(self, location: float, total: float) -> None:
-        new_idx = int(location)
-        if new_idx != self._pose_delegate.executing_index:
-            self._pose_delegate.executing_index = new_idx
-            self._pose_model.notify_item_changed(None)
+        new_idx = int(location + self._execution_location_offset)
+        old_idx = self._pose_delegate.executing_index
+        if new_idx == old_idx:
+            return
+        self._pose_delegate.executing_index = new_idx
+        # Repaint only the rows whose highlight state changed. notify_item_changed
+        # with a concrete item reliably re-invokes build_widget for that row;
+        # passing None signals a structural change and may not repaint built rows.
+        items = self._pose_model.items
+        for idx in {old_idx, new_idx}:
+            if idx is not None and 0 <= idx < len(items):
+                self._pose_model.notify_item_changed(items[idx])
 
     def _on_execution_joint_update(self, joint_positions: list[float]) -> None:
         mg_config = self._mg_setup.mg_config
@@ -569,8 +824,15 @@ class TrajectoryPlannerController:
 
     def _on_execution_done(self) -> None:
         self._progress.hide()
+        self._execution_location_offset = 0.0
+        last_idx = self._pose_delegate.executing_index
         self._pose_delegate.executing_index = None
-        self._pose_model.notify_item_changed(None)
+        items = self._pose_model.items
+        if last_idx is not None and 0 <= last_idx < len(items):
+            # Repaint the formerly highlighted row to clear it.
+            self._pose_model.notify_item_changed(items[last_idx])
+        else:
+            self._pose_model.notify_item_changed(None)
         self._update_controls()
 
     def _show_preview(self, joint_positions: list[float]) -> None:
@@ -620,8 +882,10 @@ class TrajectoryPlannerController:
     def _on_tree_selection_changed(self, selection: list[PoseItem]) -> None:
         if self._syncing_selection:
             return
+        prev = self._selected_pose_item
         if not selection:
             self._selected_pose_item = None
+            self._update_go_to_visibility(prev, None)
             self._on_selection_changed(None)
             self._preview.hide()
             return
@@ -631,6 +895,7 @@ class TrajectoryPlannerController:
             item = item.parent
 
         self._selected_pose_item = item
+        self._update_go_to_visibility(prev, item)
         self._on_selection_changed(item)
 
         if item.selected_joint_config:
@@ -645,6 +910,27 @@ class TrajectoryPlannerController:
             [item.prim_path], False
         )
         self._syncing_selection = False
+
+    def _update_go_to_visibility(
+        self, prev: PoseItem | None, current: PoseItem | None
+    ) -> None:
+        """Keep the per-row "Go to" button only on the selected row."""
+        if prev is current:
+            return
+        self._pose_delegate.selected_item = current
+
+        # Refresh the previously and newly selected rows so the button moves.
+        # Deferred so the rebuild happens after the TreeView has applied its own
+        # selection highlight (rebuilding mid-selection-event drops the highlight).
+        def _refresh(ws=weakref.ref(self), prev=prev, current=current) -> None:
+            self = ws()
+            if self is None:
+                return
+            for item in {prev, current}:
+                if item is not None and item in self._pose_model.items:
+                    self._pose_model.notify_item_changed(item)
+
+        defer_call(_refresh)
 
     def _on_stage_event(self, event) -> None:
         if event.type != int(omni.usd.StageEventType.HIERARCHY_CHANGED):
@@ -719,8 +1005,10 @@ class TrajectoryPlannerController:
         self._controls.update(
             has_poses=bool(items),
             all_iks_ready=all_ready,
+            # Execute only once the trajectory has actually been visualized.
             has_trajectory=self._planner.trajectory_planned
-            and self._planner.planned_joint_trajectory is not None,
+            and self._planner.planned_joint_trajectory is not None
+            and self._trajectory_visualized,
             has_motion_group=self._mg_setup.mg_config is not None,
         )
 

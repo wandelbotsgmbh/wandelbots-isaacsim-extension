@@ -87,11 +87,28 @@ async def fetch_joint_configs_for_pose(
                     motion_group=stream_config.motion_group,
                 )
 
-            joint_limits = description.operation_limits.auto_limits
+            # The description can be incomplete while the motion group is still
+            # being configured (e.g. motion_group_model is None) — IK can't run
+            # then. Fail clearly instead of crashing.
+            if not getattr(description, "motion_group_model", None):
+                carb.log_warn(
+                    "IK skipped: motion group description not ready "
+                    "(no motion_group_model). Try again in a moment."
+                )
+                return InverseKinematicsResult()
+
+            operation_limits = getattr(description, "operation_limits", None)
+            joint_limits = operation_limits.auto_limits if operation_limits else None
             joint_position_limits = (
                 [joint.position for joint in joint_limits.joints]
                 if joint_limits
                 else None
+            )
+
+            # tcp_offset is optional in the request (None == flange); never call
+            # .to_nova_pose() on a missing offset.
+            nova_tcp_offset = (
+                tcp_offset.to_nova_pose() if tcp_offset is not None else None
             )
 
             response = await wb.KinematicsApi(api_client).inverse_kinematics(
@@ -100,7 +117,7 @@ async def fetch_joint_configs_for_pose(
                     motion_group_model=description.motion_group_model,
                     joint_position_limits=joint_position_limits,
                     tcp_poses=[pose.to_nova_pose()],
-                    tcp_offset=tcp_offset.to_nova_pose(),
+                    tcp_offset=nova_tcp_offset,
                     collision_setups=collision_setups,
                     reference_joint_position=preferred_joint_values,
                 ),
@@ -123,7 +140,7 @@ async def fetch_joint_configs_for_pose(
                 else []
             )
         except Exception as error:
-            carb.log_verbose(f"IK fetch failed: {error}")
+            carb.log_warn(f"IK fetch failed: {error}")
             return InverseKinematicsResult()
 
     return InverseKinematicsResult(

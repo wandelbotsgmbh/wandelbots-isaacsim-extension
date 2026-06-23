@@ -524,7 +524,7 @@ class GhostObjectApiSchema(SchemaComponent):
                     "name",
                     "TCP Name:",
                     omni.ui.StringField,
-                    tool_prim.GetName().lower(),
+                    tcp_prim.GetName().lower().removeprefix("tcp_"),
                 )
             ],
             input_width=250,

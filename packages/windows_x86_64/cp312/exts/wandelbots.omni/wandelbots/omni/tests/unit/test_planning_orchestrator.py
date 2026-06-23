@@ -128,7 +128,28 @@ class TestPlanningOrchestrator(omni.kit.test.AsyncTestCase):
 
     # -- invalidate() ----------------------------------------------------------
 
-    async def test_invalidate_clears_trajectory(self):
+    async def test_invalidate_keeps_trajectory_but_marks_stale(self):
+        # By default invalidate() must NOT delete the planned trajectory; it keeps
+        # the curve/result and only marks it stale so the user still sees the last
+        # result until they re-plan. (Per-pose reachable/planned state is cleared.)
+        orch = self._create_orchestrator()
+        orch._trajectory_planned = True
+        trajectory = MagicMock()
+        orch._planned_joint_trajectory = trajectory
+        items = self._add_poses_to_model(2)
+        items[0].reachable = True
+        items[1].planned = True
+
+        orch.invalidate()
+
+        self.assertTrue(orch.trajectory_planned)
+        self.assertEqual(orch.planned_joint_trajectory, trajectory)
+        self.assertTrue(orch.trajectory_stale)
+        for item in items:
+            self.assertIsNone(item.reachable)
+            self.assertIsNone(item.planned)
+
+    async def test_invalidate_with_remove_visualization_clears_trajectory(self):
         orch = self._create_orchestrator()
         orch._trajectory_planned = True
         orch._planned_joint_trajectory = MagicMock()
@@ -136,10 +157,11 @@ class TestPlanningOrchestrator(omni.kit.test.AsyncTestCase):
         items[0].reachable = True
         items[1].planned = True
 
-        orch.invalidate()
+        orch.invalidate(remove_visualization=True)
 
         self.assertFalse(orch.trajectory_planned)
         self.assertIsNone(orch.planned_joint_trajectory)
+        self.assertFalse(orch.trajectory_stale)
         for item in items:
             self.assertIsNone(item.reachable)
             self.assertIsNone(item.planned)

@@ -45,6 +45,12 @@ from wandelbots.omni.visualization.models import (
     TrajectoryOptions,
 )
 
+# Nova StoreObject key prefixes. The ExportedSkill (NOVA request format) is stored
+# under TRAJECTORY_PLAN_PREFIX; the lossless TrajectoryPlannerConfig used for
+# "Load by name" is stored under TRAJECTORY_PLAN_CONFIG_PREFIX.
+TRAJECTORY_PLAN_PREFIX = "trajectory-plan/"
+TRAJECTORY_PLAN_CONFIG_PREFIX = "trajectory-plan-config/"
+
 
 def _resolve_blending(
     pose_bl: dict | None,
@@ -142,6 +148,20 @@ def _build_motion_commands(
 _MAX_PREVIEW_POINTS = 2000
 
 
+def _decimate_indices(n: int, max_points: int = _MAX_PREVIEW_POINTS) -> list[int]:
+    """Indices of a uniform sample of ``n`` items, always keeping first and last.
+
+    Returned so callers can sample parallel arrays (e.g. joint positions and the
+    matching ``times``) with the exact same indices.
+    """
+    if n <= 0:
+        return []
+    if n <= max_points:
+        return list(range(n))
+    step = (n - 1) / (max_points - 1)
+    return sorted({int(round(i * step)) for i in range(max_points)} | {0, n - 1})
+
+
 def _decimate_for_preview(
     joint_positions: list[list[float]], max_points: int = _MAX_PREVIEW_POINTS
 ) -> list[list[float]]:
@@ -150,12 +170,45 @@ def _decimate_for_preview(
     Keeps the first and last waypoint. Used only for the preview curve so FK and
     USD geometry stay cheap for long trajectories; execution uses the full set.
     """
-    n = len(joint_positions)
-    if n <= max_points:
-        return joint_positions
-    step = (n - 1) / (max_points - 1)
-    idxs = sorted({int(round(i * step)) for i in range(max_points)} | {0, n - 1})
+    idxs = _decimate_indices(len(joint_positions), max_points)
     return [joint_positions[i] for i in idxs]
+
+
+def _segment_speeds(poses: list[list[float]], times: list[float]) -> list[float]:
+    """TCP Cartesian speed (mm/s) for each segment between consecutive poses.
+
+    ``poses`` are 6D Cartesian poses ([x, y, z, ...] in mm) aligned 1:1 with
+    ``times`` (seconds). Returns ``len(poses) - 1`` speeds; a non-positive time
+    delta yields 0 for that segment.
+    """
+    speeds: list[float] = []
+    for i in range(len(poses) - 1):
+        a, b = poses[i], poses[i + 1]
+        dist = ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2) ** 0.5
+        dt = times[i + 1] - times[i]
+        speeds.append(dist / dt if dt > 0 else 0.0)
+    return speeds
+
+
+def _speeds_to_colors(
+    speeds: list[float], reference_speed: float | None = None
+) -> list[tuple[int, int, int]]:
+    """Map per-segment speeds to a red(slow)->green(fast) RGB gradient.
+
+    Normalizes by ``reference_speed`` when given and positive (so colors are
+    comparable across plans, e.g. the TCP velocity limit), otherwise by the max
+    observed speed. Returns one (r, g, b) tuple per speed.
+    """
+    if not speeds:
+        return []
+    denom = (
+        reference_speed if (reference_speed and reference_speed > 0) else max(speeds)
+    )
+    colors: list[tuple[int, int, int]] = []
+    for s in speeds:
+        ratio = 0.0 if denom <= 0 else max(0.0, min(1.0, s / denom))
+        colors.append((int(round(255 * (1 - ratio))), int(round(255 * ratio)), 0))
+    return colors
 
 
 def _group_indices_by_tcp(items, default_tcp: str | None) -> list[list[int]]:
@@ -222,6 +275,14 @@ class PlanningOrchestrator:
         self._segment_trajectory_names: list[str] = []
         self._total_plan_segments: int = 0
         self._skill_name: str = ""
+        # The drawn curve is kept on edit-driven invalidation and only marked
+        # stale; it is removed/overwritten just-in-time when the same skill is
+        # re-planned. See invalidate() / _do_plan().
+        self._trajectory_stale: bool = False
+        # Last per-segment color list applied to the curve (velocity gradient),
+        # re-applied by update_trajectory_color so a solid-color patch doesn't
+        # clobber the gradient.
+        self._last_color_list: list | None = None
 
     @property
     def trajectory_planned(self) -> bool:
@@ -287,12 +348,25 @@ class PlanningOrchestrator:
         self._plan_task = run_coroutine(self._do_plan())
         self._events.plan_started.emit()
 
-    def invalidate(self) -> None:
-        carb.log_info(f"invalidate() called, was_planned={self._trajectory_planned}")
-        if self._trajectory_planned:
-            self._trajectory_planned = False
-            self._planned_joint_trajectory = None
-        self._remove_trajectory_visualization()
+    def invalidate(self, remove_visualization: bool = False) -> None:
+        carb.log_info(
+            f"invalidate() called, was_planned={self._trajectory_planned}, "
+            f"remove_visualization={remove_visualization}"
+        )
+        # By default keep the drawn curve and the planned trajectory in memory;
+        # just mark them stale so the user still sees the last result until they
+        # re-plan. Only an explicit request (or a re-plan's just-in-time removal
+        # in _do_plan) removes the curve.
+        if remove_visualization:
+            if self._trajectory_planned:
+                self._trajectory_planned = False
+                self._planned_joint_trajectory = None
+            self._trajectory_stale = False
+            self._remove_trajectory_visualization()
+        elif self._trajectory_planned:
+            self._trajectory_stale = True
+        # Transient per-segment previews are always cleared; they are only
+        # meaningful during an in-progress plan.
         self._remove_segment_trajectories()
         for item in self._pose_model.items:
             item.reachable = None
@@ -306,6 +380,11 @@ class PlanningOrchestrator:
     ) -> None:
         self._planned_joint_trajectory = joint_trajectory
         self._trajectory_planned = True
+        self._trajectory_stale = False
+
+    @property
+    def trajectory_stale(self) -> bool:
+        return self._trajectory_stale
 
     async def _do_plan(self) -> None:
         api_config = self._get_api_config()
@@ -420,6 +499,20 @@ class PlanningOrchestrator:
             self._trajectory_planned = False
             return
 
+        settings = self._get_settings()
+        plan_cf = bool(settings.get("plan_collision_free", False))
+        # Validate before touching the existing trajectory so a misconfiguration
+        # (collision-free requested without a scene) never wipes the last plan.
+        if plan_cf and not collision_setup:
+            nm.post_notification(
+                "Collision-free planning needs an active collision scene. "
+                "Select a collision scene or turn off collision-free planning.",
+                duration=5.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            self._events.plan_failed.emit("No collision scene selected")
+            return
+
         for item in poses:
             item.planned = True
 
@@ -430,8 +523,6 @@ class PlanningOrchestrator:
         self._events.plan_progress.emit(
             0.0, f"Planning {self._total_plan_segments} segments..."
         )
-
-        settings = self._get_settings()
 
         # Per-pose blending/limits from PoseItems
         pose_blending = [item.blending for item in target_poses]
@@ -461,7 +552,7 @@ class PlanningOrchestrator:
         )
 
         try:
-            if collision_setup:
+            if plan_cf:
                 carb.log_info(
                     f"Routing to COLLISION-FREE (collision_setup='{collision_setup}'). "
                     f"Motion types will NOT be used."
@@ -536,6 +627,7 @@ class PlanningOrchestrator:
                     tcp_acceleration_limit=settings.get("tcp_acceleration"),
                     payload_name=settings.get("payload_name"),
                     payload_mass=settings.get("payload_mass"),
+                    collision_setup_name=collision_setup,
                     status_fn=self._on_status,
                     segment_planned_fn=self._on_segment_planned,
                 )
@@ -544,6 +636,7 @@ class PlanningOrchestrator:
                 joint_positions = result.joint_trajectory.joint_positions
                 self._planned_joint_trajectory = result.joint_trajectory
                 self._trajectory_planned = True
+                self._trajectory_stale = False
                 carb.log_info(f"Trajectory planned: {len(joint_positions)} waypoints")
                 self._remove_segment_trajectories()
 
@@ -641,7 +734,7 @@ class PlanningOrchestrator:
                 return
 
             skill = await build_skill(config, stage)
-            key = f"trajectory-plan/{self._skill_name}"
+            key = f"{TRAJECTORY_PLAN_PREFIX}{self._skill_name}"
 
             async with get_api_client_from_config(api_config) as api_client:
                 store_api = wb_v2.StoreObjectApi(api_client)
@@ -657,6 +750,19 @@ class PlanningOrchestrator:
                     cell=cell,
                     key=key,
                     any_value=payload_bytes,
+                )
+                # Also store the full, lossless skill config so it can be loaded
+                # back into the planner by name (the ExportedSkill above is a NOVA
+                # request format and cannot reconstruct the config). Keyed under
+                # CONFIG_KEY_PREFIX so the Load dialog can list loadable skills.
+                config_key = f"{TRAJECTORY_PLAN_CONFIG_PREFIX}{self._skill_name}"
+                config_bytes = json.dumps(
+                    {"version": skill.version, "config": config.model_dump()}
+                ).encode("utf-8")
+                await store_api.store_object(
+                    cell=cell,
+                    key=config_key,
+                    any_value=config_bytes,
                 )
             version = skill.version
             carb.log_info(
@@ -742,7 +848,8 @@ class PlanningOrchestrator:
         except Exception as exc:
             carb.log_warn(f"Failed to visualize segment {segment_idx}: {exc}")
 
-    async def visualize_trajectory(self, trajectory_color: list[float]) -> None:
+    async def visualize_trajectory(self, trajectory_color: list[float]) -> bool:
+        """Render the trajectory curve. Returns True when the curve was drawn."""
         api_config = self._get_api_config()
         params = self._get_stream_params()
         mg_prim_path = self._get_mg_prim_path()
@@ -758,16 +865,22 @@ class PlanningOrchestrator:
                 f"mg_prim_path={mg_prim_path}, "
                 f"has_trajectory={self._planned_joint_trajectory is not None}"
             )
-            return
+            return False
         cell, controller, motion_group = params
         try:
             service = get_trajectory_planner_service()
             tcp_name = self._planned_tcp or self._get_selected_tcp()
             # Decimate the preview only (execution uses the full-resolution
             # trajectory). FK + USD curve build for many thousands of points blocks
-            # the main thread; a sampled curve is visually identical.
-            preview_joints = _decimate_for_preview(
-                self._planned_joint_trajectory.joint_positions
+            # the main thread; a sampled curve is visually identical. The same
+            # indices sample ``times`` so the velocity gradient stays aligned.
+            jt = self._planned_joint_trajectory
+            idxs = _decimate_indices(len(jt.joint_positions))
+            preview_joints = [jt.joint_positions[i] for i in idxs]
+            preview_times = (
+                [jt.times[i] for i in idxs]
+                if jt.times and len(jt.times) == len(jt.joint_positions)
+                else None
             )
             tcp_poses = await service.forward_kinematics(
                 api_configuration=api_config,
@@ -785,23 +898,42 @@ class PlanningOrchestrator:
                 f"Creating trajectory '{self._trajectory_name}' at "
                 f"{mg_prim_path} with {len(tcp_poses)} poses"
             )
-            trajectory_builder.create_trajectory(
+            # Color by TCP speed (green=fast, red=slow) when the velocity-coloring
+            # setting is on and timing is available; otherwise use the solid color.
+            settings = self._get_settings()
+            color: object = tuple(int(c * 255) for c in trajectory_color)
+            if (
+                settings.get("velocity_coloring", False)
+                and preview_times
+                and len(tcp_poses) == len(preview_times)
+                and len(tcp_poses) >= 2
+            ):
+                reference = settings.get("tcp_velocity")
+                color = _speeds_to_colors(
+                    _segment_speeds(tcp_poses, preview_times), reference
+                )
+            self._last_color_list = color if isinstance(color, list) else None
+            # Async build: yields to the Kit update loop between phases so a large
+            # curve doesn't freeze the UI after planning.
+            await trajectory_builder.create_trajectory_async(
                 TrajectoryData(
                     name=self._trajectory_name,
                     parent_prim_path=mg_prim_path,
                     poses=tcp_poses,
                     options=TrajectoryOptions(
-                        color=tuple(int(c * 255) for c in trajectory_color),
+                        color=color,
                         width=10.0,
                     ),
                 )
             )
+            return True
         except Exception as exc:
             import traceback
 
             carb.log_warn(
                 f"Trajectory visualization failed: {exc}\n{traceback.format_exc()}"
             )
+            return False
 
     def update_trajectory_color(self, trajectory_color: list[float]) -> None:
         """Update the color of the existing trajectory visualization without re-computing FK."""
@@ -809,11 +941,18 @@ class PlanningOrchestrator:
             return
         try:
             trajectory_builder = get_trajectory_builder()
-            color_rgb = tuple(int(c * 255) for c in trajectory_color)
+            # Preserve the velocity gradient: when the curve was drawn with a
+            # per-segment color list, re-apply it rather than collapsing it to a
+            # single solid color picked in settings.
+            color: object = (
+                self._last_color_list
+                if self._last_color_list is not None
+                else tuple(int(c * 255) for c in trajectory_color)
+            )
             trajectory_builder.update_trajectory(
                 self._trajectory_name,
                 PatchTrajectoryData(
-                    options=TrajectoryOptions(color=color_rgb),
+                    options=TrajectoryOptions(color=color),
                 ),
             )
         except Exception as exc:
@@ -831,6 +970,7 @@ class PlanningOrchestrator:
         self._segment_trajectory_names.clear()
 
     def _remove_trajectory_visualization(self) -> None:
+        self._last_color_list = None
         if self._trajectory_name:
             stage = omni.usd.get_context().get_stage()
             if stage is None:

@@ -2,6 +2,7 @@ import carb
 import omni.ui as ui
 from omni.usd import get_watcher
 import isaacsim.core.utils.stage as stage_utils
+from pxr import Sdf
 from wandelbots.omni.manipulators import (
     MotionGroupConfiguration,
 )
@@ -48,7 +49,9 @@ class ExternalJointStreamModel(ui.SimpleBoolModel):
 
     @property
     def motion_group_configuration(self) -> MotionGroupConfiguration:
-        motion_group_prim = self._stage.GetPrimAtPath(self._motion_group_prim_path)
+        motion_group_prim = self._stage.GetPrimAtPath(
+            Sdf.Path(self._motion_group_prim_path)
+        )
         return get_motion_group_configuration_from_prim(motion_group_prim)
 
     @property
@@ -59,7 +62,9 @@ class ExternalJointStreamModel(ui.SimpleBoolModel):
         return self.motion_stream_configuration.use_external_joint_stream
 
     def _set_prim_value(self, value: bool):
-        motion_group_prim = self._stage.GetPrimAtPath(self._motion_group_prim_path)
+        motion_group_prim = self._stage.GetPrimAtPath(
+            Sdf.Path(self._motion_group_prim_path)
+        )
         motion_group_config = get_motion_group_configuration_from_prim(
             motion_group_prim
         )

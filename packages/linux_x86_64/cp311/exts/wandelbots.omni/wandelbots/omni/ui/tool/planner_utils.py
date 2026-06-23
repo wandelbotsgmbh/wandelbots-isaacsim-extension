@@ -403,6 +403,7 @@ async def plan_trajectory_segments(
     cycle_time: float | None = None,
     payload_name: str | None = None,
     payload_mass: float | None = None,
+    collision_setup_name: str | None = None,
     status_fn: Callable[[str], None] | None = None,
     segment_planned_fn: Callable[[int, list[list[float]], str | None], None]
     | None = None,
@@ -413,6 +414,9 @@ async def plan_trajectory_segments(
     TCP's limits/offset, and the per-segment joint trajectories are merged via the
     ``mergeTrajectories`` endpoint (with per-segment position blending) into one
     executable trajectory. A single segment is returned without a merge round-trip.
+
+    When ``collision_setup_name`` is given, the collision scene is attached to every
+    motion-group setup so normal (motion-type) planning still respects it.
     """
     from wandelbots.omni.ui.tool.trajectory_planner.service.helpers import (
         build_motion_group_setup,
@@ -434,8 +438,14 @@ async def plan_trajectory_segments(
             controller=controller,
             motion_group=motion_group,
             tcp_name=default_tcp,
+            collision_setup_name=collision_setup_name,
         )
         description = ctx.description
+
+        if collision_setup_name and ctx.collision_setups is None:
+            return PlanFailure(
+                error=f"Failed to fetch collision setup: {collision_setup_name}"
+            )
 
         setups: dict[str | None, wb_models.MotionGroupSetup] = {}
         for tcp in {seg.tcp_name for seg in segments}:
@@ -455,6 +465,9 @@ async def plan_trajectory_segments(
                 payload_name=payload_name,
                 payload_mass=payload_mass,
             )
+            # Respect the collision scene during normal planning too.
+            if ctx.collision_setups:
+                setups[tcp].collision_setups = ctx.collision_setups
 
         import omni.kit.app
 

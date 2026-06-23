@@ -137,11 +137,16 @@ def build_joint_config_selector(
     widgets_out: list,
     subs_out: list,
     row_height: int = 44,
+    editable: bool = True,
 ) -> None:
     with ui.VStack(height=row_height):
         ui.Spacer()
         with ui.HStack(height=0, spacing=4):
-            if is_ghost_object:
+            if not editable:
+                _build_joint_config_label(
+                    joint_configs, selected_config_idx, ik_loading
+                )
+            elif is_ghost_object:
                 _build_ghost_config_selector(
                     prim_path,
                     joint_configs,
@@ -187,6 +192,31 @@ def build_joint_config_selector(
                     subs_out.append(sub)
                 widgets_out.append(combo)
         ui.Spacer()
+
+
+def _build_joint_config_label(
+    joint_configs: list,
+    selected_config_idx: int,
+    ik_loading: bool,
+) -> None:
+    """Read-only joint-config display for poses whose config the planner derives."""
+    if ik_loading:
+        text, tooltip = "...", ""
+    elif joint_configs and 0 <= selected_config_idx < len(joint_configs):
+        cfg = joint_configs[selected_config_idx]
+        text = f"{selected_config_idx + 1} {joint_config_signs(cfg)}"
+        tooltip = ", ".join(f"{v:.3f}" for v in cfg)
+    else:
+        text, tooltip = "-", ""
+    ui.Label(
+        text,
+        alignment=ui.Alignment.CENTER,
+        tooltip=tooltip,
+        style={
+            "color": NOVAColor.TEXT_SECONDARY.color,
+            "font_size": 12,
+        },
+    )
 
 
 def _build_ghost_config_selector(

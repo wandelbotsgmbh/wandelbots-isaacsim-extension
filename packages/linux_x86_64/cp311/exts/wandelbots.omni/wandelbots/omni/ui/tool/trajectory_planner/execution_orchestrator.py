@@ -12,7 +12,6 @@ import omni.kit.notification_manager as nm
 import omni.timeline
 from omni.kit.async_engine import run_coroutine
 
-import wandelbots_api_client.v2 as wb_v2
 import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.ui.tool.trajectory_planner.service import (
@@ -22,7 +21,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.service.execution_service import
     ExecutionCallbacks,
     ExecutionLifecycle,
 )
-from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
+from wandelbots.omni.utils.api import ApiConfiguration
 
 if TYPE_CHECKING:
     from wandelbots.omni.ui.tool.trajectory_planner.events import (
@@ -136,6 +135,43 @@ class ExecutionOrchestrator:
         if self._resume_event:
             self._resume_event.set()
 
+    def go_to(self, joint_position: list[float]) -> None:
+        """Teleport the virtual robot to a joint position without running a trajectory.
+
+        Ignored while a trajectory is executing/paused so we never fight the
+        active motion stream.
+        """
+        if not self.is_idle:
+            carb.log_info(f"go_to() ignored: state={self._state.value}")
+            return
+        if not joint_position:
+            return
+        run_coroutine(self._do_go_to(list(joint_position)))
+
+    async def _do_go_to(self, joint_position: list[float]) -> None:
+        api_config = self._get_api_config()
+        params = self._get_stream_params()
+        if not api_config or not params:
+            carb.log_warn("Cannot go to pose: missing API config or motion group.")
+            return
+        cell, controller, motion_group = params
+        try:
+            service = get_trajectory_planner_service()
+            await service.set_virtual_joint_position(
+                api_configuration=api_config,
+                cell=cell,
+                controller=controller,
+                motion_group=motion_group,
+                joint_position=joint_position,
+            )
+        except Exception as exc:
+            carb.log_warn(f"Go to pose failed: {exc}")
+            nm.post_notification(
+                "Failed to move to pose. See log for details.",
+                duration=5.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+
     def stop(self) -> None:
         """Fully stop execution and return to idle.
 
@@ -206,7 +242,8 @@ class ExecutionOrchestrator:
             start_joints = joint_trajectory.joint_positions[0]
             carb.log_info(
                 f"Execution starting: cell={cell}, controller={controller}, "
-                f"motion_group={motion_group}, waypoints={len(joint_trajectory.joint_positions)}"
+                f"motion_group={motion_group}, "
+                f"waypoints={len(joint_trajectory.joint_positions)}"
             )
             carb.log_verbose(
                 f"Start joints: [{', '.join(f'{v:.4f}' for v in start_joints)}]"
@@ -228,29 +265,13 @@ class ExecutionOrchestrator:
                 )
             else:
                 self._events.execution_progress.emit(0.05, "Setting start position...")
-                async with get_api_client_from_config(api_config) as api_client:
-                    controller_api = wb_v2.ControllerApi(api_client)
-                    state = await controller_api.get_current_robot_controller_state(
-                        cell=cell,
-                        controller=controller,
-                    )
-                    if state.mode != wb_v2_models.RobotSystemMode.MODE_MONITOR:
-                        carb.log_info(
-                            f"Controller in {state.mode}, switching to monitor before teleport"
-                        )
-                        await controller_api.set_default_mode(
-                            cell=cell,
-                            controller=controller,
-                            mode=wb_v2_models.SettableRobotSystemMode.MODE_MONITOR,
-                        )
-                    await wb_v2.VirtualControllerApi(api_client).set_motion_group_state(
-                        cell=cell,
-                        controller=controller,
-                        motion_group=motion_group,
-                        motion_group_joints=wb_v2_models.MotionGroupJoints(
-                            positions=start_joints
-                        ),
-                    )
+                await service.set_virtual_joint_position(
+                    api_configuration=api_config,
+                    cell=cell,
+                    controller=controller,
+                    motion_group=motion_group,
+                    joint_position=start_joints,
+                )
 
             self._events.execution_progress.emit(0.1, "Executing trajectory...")
             planned_duration = 0.0

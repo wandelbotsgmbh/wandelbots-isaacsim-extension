@@ -24,4 +24,15 @@ class SceneUtils:
 
     @staticmethod
     def value_to_millimeters(stage_value: float) -> float:
-        return (stage_value / SceneUtils.get_stage_units()) * 1000.0
+        return stage_value * SceneUtils.get_stage_units() * 1000.0
+
+    @staticmethod
+    def millimeters_to_stage_value(mm: float) -> float:
+        return (mm / 1000.0) / SceneUtils.get_stage_units()
+
+    _UNIT_LABELS = {1.0: "m", 0.01: "cm", 0.001: "mm"}
+
+    @staticmethod
+    def get_unit_label() -> str:
+        mpu = SceneUtils.get_stage_units()
+        return SceneUtils._UNIT_LABELS.get(mpu, f"{mpu}m")

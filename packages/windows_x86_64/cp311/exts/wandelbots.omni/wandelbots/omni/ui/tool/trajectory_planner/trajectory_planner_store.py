@@ -36,6 +36,10 @@ class TrajectoryPlannerConfig(BaseModel):
     live_update: bool = False
     overlay_color: list[float] = Field(default_factory=lambda: [0.4, 1.0, 0.4])
     trajectory_color: list[float] = Field(default_factory=lambda: [0.808, 0.0, 0.345])
+    # When True, color the trajectory curve by TCP speed (green=fast, red=slow);
+    # when False, use the solid trajectory_color. Off by default — the per-vertex
+    # gradient is heavier to render.
+    velocity_coloring: bool = False
     tcp_velocity: float = 500.0
     tcp_acceleration: float = 2000.0
     auto_blending: bool = False
@@ -46,6 +50,9 @@ class TrajectoryPlannerConfig(BaseModel):
     payload_mass: float = 0.0
     cf_algorithm: str = "RRTConnectAlgorithm"
     cf_max_iterations: int = 10000
+    # Whether to run collision-free planning. Independent of collision_setup: a
+    # collision scene can be active while normal (motion-type) planning is used.
+    plan_collision_free: bool = False
     move_to_start: bool = False
     collapsed: bool = False
     poses_collapsed: bool = False

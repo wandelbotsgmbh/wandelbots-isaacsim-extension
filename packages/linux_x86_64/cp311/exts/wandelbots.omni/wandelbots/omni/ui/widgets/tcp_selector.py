@@ -194,8 +194,10 @@ def subscribe_tcp_list_changed(
         # TODO replace with NATS subscription
         async with get_api_client_from_config(api_configuration) as api:
             motion_group_api = wb.MotionGroupApi(api)
+            warned = False
 
             async def fetch_tcp_ids():
+                nonlocal warned
                 try:
                     motion_group_description = (
                         await motion_group_api.get_motion_group_description(
@@ -204,25 +206,44 @@ def subscribe_tcp_list_changed(
                             motion_group=motion_group,
                         )
                     )
+                    warned = False
                     return set(motion_group_description.tcps.keys())
                 except Exception as e:
-                    carb.log_error(
-                        f"Not able to fetch TCPs. Please ensure the Motion Group has been set up correctly. {e}"
-                    )
+                    # The description can be temporarily invalid/incomplete while
+                    # the motion group is still being configured on the backend
+                    # (e.g. motion_group_model not yet assigned). Keep polling so
+                    # the TCP list recovers once it is ready; warn only once to
+                    # avoid spamming the log every interval.
+                    if not warned:
+                        carb.log_warn(
+                            "Not able to fetch TCPs yet (motion group may still be "
+                            f"configuring); will keep retrying. {e}"
+                        )
+                        warned = True
+                    else:
+                        carb.log_verbose(f"TCP fetch still not ready: {e}")
                     return None
 
-            initial_tcp_ids = await fetch_tcp_ids()
-            if initial_tcp_ids is None:
-                return
-
+            known_tcp_ids = None
+            # True until the first successful fetch. If the very first fetch
+            # succeeds, the constructor's own refresh already populated the list,
+            # so we record the baseline silently (no redundant change event). If
+            # the first fetch(es) fail (motion group still configuring), we DO
+            # fire once we finally succeed so the list populates after recovery.
+            awaiting_first = True
             while True:
                 fetched_tcp_ids = await fetch_tcp_ids()
-                if fetched_tcp_ids is None:
-                    break
-                if fetched_tcp_ids != initial_tcp_ids:
-                    initial_tcp_ids = fetched_tcp_ids
-                    tcps_changed_fn()
-
+                if fetched_tcp_ids is not None:
+                    if awaiting_first:
+                        known_tcp_ids = fetched_tcp_ids
+                    elif fetched_tcp_ids != known_tcp_ids:
+                        known_tcp_ids = fetched_tcp_ids
+                        tcps_changed_fn()
+                    awaiting_first = False
+                else:
+                    # Fetch failed: the constructor's refresh also failed, so the
+                    # next success must fire to populate the (still-empty) list.
+                    awaiting_first = False
                 await asyncio.sleep(polling_interval)
 
     return TcpSubscription(run_coroutine(poll_tcps()))

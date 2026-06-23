@@ -18,6 +18,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.cells import (
     build_tcp_detail,
     build_joint_config_detail,
     build_joint_config_selector,
+    is_joint_config_editable,
     MOTION_TYPES,
 )
 
@@ -93,16 +94,12 @@ class PoseModel(ui.AbstractItemModel):
         if item is None:
             return self._items
         if isinstance(item, PoseItem):
-            # The first pose is the trajectory start: its joint configuration is
-            # mandatory for planning regardless of motion type, so always offer the
-            # selector for it.
-            is_first = bool(self._items) and item is self._items[0]
-            shows_joint_config = (
-                self.collision_free or item.motion_type == "PathJointPTP" or is_first
-            )
+            # The joint-configuration selector is offered for every pose and motion
+            # type. It is authoritative for the start pose (seeds planning) and for
+            # JointPTP / collision-free moves; for other motion types it drives the
+            # IK preview / reachability and lets the user inspect the chosen config.
+            shows_joint_config = True
             # Only show overrides detail row when there are actual overrides.
-            # Joint config selection otherwise applies to JointPTP and collision-free
-            # moves — other motion types ignore the selected config.
             return [
                 c
                 for c in item._detail_children
@@ -211,6 +208,7 @@ class PoseDelegate(ui.AbstractItemDelegate):
         refresh_ik_fn: Callable[[PoseItem], None] | None = None,
         settings_fn: Callable[[PoseItem], None] | None = None,
         get_selected_tcp: Callable[[], str | None] | None = None,
+        go_to_fn: Callable[[PoseItem], None] | None = None,
     ) -> None:
         super().__init__()
         self._visibility_fn = visibility_fn
@@ -223,12 +221,14 @@ class PoseDelegate(ui.AbstractItemDelegate):
         self._refresh_ik_fn = refresh_ik_fn
         self._settings_fn = settings_fn
         self._get_selected_tcp = get_selected_tcp
+        self._go_to_fn = go_to_fn
         self._widgets: list = []
         self._subs: list = []
         self._building: bool = False
         self.collision_free: bool = False
         self.edit_mode: bool = False
         self.executing_index: int | None = None
+        self.selected_item: PoseItem | None = None
 
     def _make_triangle(self, collapsed: bool) -> ui.Triangle:
         if collapsed:
@@ -275,14 +275,10 @@ class PoseDelegate(ui.AbstractItemDelegate):
         )
         with ui.ZStack(height=ROW_HEIGHT, style=TOOLTIP_STYLE):
             if self.executing_index is not None and item_idx == self.executing_index:
-                ui.Rectangle(
-                    style={
-                        "background_color": 0x3040C4FF,
-                        "border_radius": 4,
-                        "border_width": 1,
-                        "border_color": 0x6040C4FF,
-                    }
-                )
+                # primary_main (#8E56FC) at 25% alpha (0x40) for the active pose.
+                # No border: the highlight is drawn per cell, so a border would box
+                # each column individually instead of the whole row.
+                ui.Rectangle(style={"background_color": ui.color("#8E56FC40")})
             elif item.reachable is False or item.planned is False:
                 ui.Rectangle(
                     style={
@@ -303,6 +299,13 @@ class PoseDelegate(ui.AbstractItemDelegate):
                         on_settings_clicked=(
                             (lambda i=item: self._settings_fn(i))
                             if self._settings_fn and not self.collision_free
+                            else None
+                        ),
+                        on_go_to_clicked=(
+                            (lambda i=item: self._go_to_fn(i))
+                            if self._go_to_fn
+                            and item is self.selected_item
+                            and item.selected_joint_config is not None
                             else None
                         ),
                         cycle_time_s=item.cycle_time_s,
@@ -343,33 +346,24 @@ class PoseDelegate(ui.AbstractItemDelegate):
                             widgets_out=self._widgets,
                         )
                     else:
-                        item_idx = (
-                            model.get_item_index(item)
-                            if hasattr(model, "get_item_index")
-                            else -1
+                        # The joint-config selector is shown for every pose and
+                        # motion type (see PoseModel.get_item_children).
+                        build_joint_config_selector(
+                            joint_configs=item.joint_configs,
+                            selected_config_idx=item.selected_config_idx,
+                            is_ghost_object=item.is_ghost_object,
+                            ik_loading=item.ik_loading,
+                            prim_path=item.prim_path,
+                            on_config_changed=lambda idx, i=item: (
+                                self._on_joint_config_changed(i, idx)
+                            ),
+                            widgets_out=self._widgets,
+                            subs_out=self._subs,
+                            row_height=ROW_HEIGHT,
+                            editable=is_joint_config_editable(
+                                item_idx, item.motion_type, self.collision_free
+                            ),
                         )
-                        # First pose = trajectory start: always show the joint
-                        # selector so the start configuration can be chosen,
-                        # independent of the motion command type.
-                        shows_joint_config = (
-                            self.collision_free
-                            or item.motion_type == "PathJointPTP"
-                            or item_idx == 0
-                        )
-                        if shows_joint_config:
-                            build_joint_config_selector(
-                                joint_configs=item.joint_configs,
-                                selected_config_idx=item.selected_config_idx,
-                                is_ghost_object=item.is_ghost_object,
-                                ik_loading=item.ik_loading,
-                                prim_path=item.prim_path,
-                                on_config_changed=lambda idx, i=item: (
-                                    self._on_joint_config_changed(i, idx)
-                                ),
-                                widgets_out=self._widgets,
-                                subs_out=self._subs,
-                                row_height=ROW_HEIGHT,
-                            )
                 ui.Spacer(width=4)
         self._building = False
 

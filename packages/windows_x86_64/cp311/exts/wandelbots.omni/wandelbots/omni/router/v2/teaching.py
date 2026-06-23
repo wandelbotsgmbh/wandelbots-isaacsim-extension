@@ -228,6 +228,68 @@ async def pose_tracker_websocket(
         carb.log_error(f"Unexpected error in websocket connection: {e}")
 
 
+# -- Ghost object export ---------------------------------------------------
+
+
+class ExportedGhostObject(BaseModel):
+    name: str
+    prim_path: str
+    robot_prim_path: str | None = None
+    # Resolved NOVA TCP name (derived from the ghost's linked source TCP prim).
+    tcp_name: str | None = None
+    # [x, y, z, rx, ry, rz], relative to ``robot_prim_path`` (the linked motion group).
+    pose: list[float] = Field(default_factory=list)
+    preferred_joint_values: list[float] | None = None
+
+
+class ExportedGhostObjects(BaseModel):
+    version: str = "v1"
+    ghost_objects: list[ExportedGhostObject] = Field(default_factory=list)
+
+
+def build_ghost_objects_export() -> ExportedGhostObjects:
+    """Flatten all scene ghost objects into a NOVA-storable structure.
+
+    Poses are relative to each ghost object's linked motion group (the default of
+    ``get_ghost_objects``), so the export is independent of the world transform.
+    """
+    stage = omni.usd.get_context().get_stage()
+    items: list[ExportedGhostObject] = []
+    for ghost in GhostObjectUtils.get_ghost_objects():
+        prim = stage.GetPrimAtPath(ghost.prim_path) if stage else None
+        items.append(
+            ExportedGhostObject(
+                name=ghost.name,
+                prim_path=ghost.prim_path,
+                robot_prim_path=ghost.robot_prim_path,
+                tcp_name=GhostObjectUtils.get_nova_tcp_name(prim)
+                if prim and prim.IsValid()
+                else None,
+                pose=list(ghost.pose.pose),
+                preferred_joint_values=ghost.preferred_joint_values,
+            )
+        )
+    return ExportedGhostObjects(ghost_objects=items)
+
+
+@teaching_router.get(
+    path="/ghost-objects/export",
+    operation_id="export_ghost_objects",
+    status_code=status.HTTP_200_OK,
+    response_model=ExportedGhostObjects,
+    responses={
+        200: {"description": "Ghost objects exported as a flattened NOVA structure."},
+        500: {"description": "Unable to export ghost objects from the scene."},
+    },
+)
+def export_ghost_objects() -> ExportedGhostObjects:
+    """Export all scene ghost objects as a flattened NOVA-compatible structure."""
+    try:
+        return build_ghost_objects_export()
+    except Exception as e:
+        raise HTTPException(500, f"Unable to export ghost objects from the scene: {e}")
+
+
 # -- Trajectory plan export ------------------------------------------------
 
 
@@ -237,6 +299,8 @@ class PoseMetadata(BaseModel):
 
 class SkillMetadata(BaseModel):
     motion_group_prim_path: str | None = None
+    # USD stage (scene) the plan was exported from, for traceability on import.
+    scene_path: str | None = None
     poses: list[PoseMetadata] = Field(default_factory=list)
 
 
@@ -415,10 +479,17 @@ async def _fetch_motion_group_setups(
         return setups
 
 
-def _build_metadata(config) -> SkillMetadata:
-    """Build metadata section with motion group and per-pose prim paths."""
+def _build_metadata(config, stage=None) -> SkillMetadata:
+    """Build metadata section with motion group, scene and per-pose prim paths."""
+    scene_path: str | None = None
+    if stage is not None:
+        try:
+            scene_path = stage.GetRootLayer().identifier
+        except Exception:
+            scene_path = None
     return SkillMetadata(
         motion_group_prim_path=config.robot_prim_path,
+        scene_path=scene_path,
         poses=[PoseMetadata(prim_path=pose.prim_path) for pose in config.poses],
     )
 
@@ -622,7 +693,7 @@ async def _build_normal_skill(config, stage) -> ExportedSkill:
         type="plan_trajectory",
         plan_trajectory_request=single_request,
         plan_segmented_trajectory=segmented,
-        metadata=_build_metadata(config),
+        metadata=_build_metadata(config, stage),
     )
 
 
@@ -665,7 +736,7 @@ async def _build_collision_free_skill(config, stage) -> ExportedSkill:
         collision_setup=config.collision_setup,
         type="plan_collision_free",
         plan_collision_free_requests=requests,
-        metadata=_build_metadata(config),
+        metadata=_build_metadata(config, stage),
     )
 
 

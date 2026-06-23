@@ -535,3 +535,88 @@ class TestPlanTrajectorySegments(omni.kit.test.AsyncTestCase):
         # stopped after the first (failing) segment; no merge
         self.assertEqual(mock_plan_api.plan_trajectory.call_count, 1)
         mock_plan_api.merge_trajectories.assert_not_called()
+
+    @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.fetch_motion_group_context"
+    )
+    @patch("wandelbots.omni.ui.tool.planner_utils.get_api_client_from_config")
+    async def test_collision_setup_applied_to_segment_setups(
+        self, mock_get_client, mock_fetch_ctx
+    ):
+        mock_client = AsyncMock()
+        mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        ctx = self._ctx()
+        ctx.collision_setups = {"scene": MagicMock()}
+        mock_fetch_ctx.return_value = ctx
+
+        jt = _jt([SAMPLE_JOINT_CONFIGS[0], SAMPLE_JOINT_CONFIGS[1]])
+        mock_plan_api = AsyncMock()
+        mock_plan_api.plan_trajectory.return_value = _plan_resp(jt)
+
+        segments = [
+            TrajectorySegmentSpec(
+                tcp_name="tcp_a", motion_commands=[_cmd([600, 0, 300])]
+            )
+        ]
+        with patch(
+            "wandelbots.omni.ui.tool.planner_utils.wb.TrajectoryPlanningApi",
+            return_value=mock_plan_api,
+        ):
+            result = await plan_trajectory_segments(
+                self.api_config,
+                SAMPLE_CELL,
+                SAMPLE_CONTROLLER,
+                SAMPLE_MOTION_GROUP,
+                segments=segments,
+                start_joint_position=SAMPLE_JOINT_CONFIGS[0],
+                collision_setup_name="scene",
+            )
+
+        self.assertIsInstance(result, PlanSuccess)
+        # The collision scene is attached to the motion group setup so normal
+        # (motion-type) planning respects it.
+        req = mock_plan_api.plan_trajectory.call_args.kwargs["plan_trajectory_request"]
+        self.assertEqual(req.motion_group_setup.collision_setups, ctx.collision_setups)
+        # fetch_motion_group_context was asked for the named collision setup
+        self.assertEqual(
+            mock_fetch_ctx.call_args.kwargs.get("collision_setup_name"), "scene"
+        )
+
+    @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.fetch_motion_group_context"
+    )
+    @patch("wandelbots.omni.ui.tool.planner_utils.get_api_client_from_config")
+    async def test_no_collision_setup_leaves_setups_none(
+        self, mock_get_client, mock_fetch_ctx
+    ):
+        mock_client = AsyncMock()
+        mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_fetch_ctx.return_value = self._ctx()  # collision_setups = None
+
+        jt = _jt([SAMPLE_JOINT_CONFIGS[0], SAMPLE_JOINT_CONFIGS[1]])
+        mock_plan_api = AsyncMock()
+        mock_plan_api.plan_trajectory.return_value = _plan_resp(jt)
+
+        segments = [
+            TrajectorySegmentSpec(
+                tcp_name="tcp_a", motion_commands=[_cmd([600, 0, 300])]
+            )
+        ]
+        with patch(
+            "wandelbots.omni.ui.tool.planner_utils.wb.TrajectoryPlanningApi",
+            return_value=mock_plan_api,
+        ):
+            result = await plan_trajectory_segments(
+                self.api_config,
+                SAMPLE_CELL,
+                SAMPLE_CONTROLLER,
+                SAMPLE_MOTION_GROUP,
+                segments=segments,
+                start_joint_position=SAMPLE_JOINT_CONFIGS[0],
+            )
+
+        self.assertIsInstance(result, PlanSuccess)
+        req = mock_plan_api.plan_trajectory.call_args.kwargs["plan_trajectory_request"]
+        self.assertIsNone(req.motion_group_setup.collision_setups)

@@ -227,6 +227,32 @@ def triangulate_convex_hull(
     return mesh_vertices
 
 
+def get_convex_hull_vertex_count(
+    physx_cooking_instance: physx_bindings.PhysXCooking,
+    stage_id: int,
+    prim: Usd.Prim,
+    prim_id: int,
+) -> int:
+    """Return the unique convex-hull vertex count cooked by PhysX for a prim.
+
+    Sums vertices across hulls, so a ``convexDecomposition`` prim reports the total
+    of all its hulls while a ``convexHull`` prim reports its single hull. The cook
+    runs synchronously (``False``), matching ``get_convex_hull_colliders``.
+    """
+    total = {"n": 0}
+
+    def _on_result(convexes: list[physx_bindings.PhysxConvexMeshData]):
+        total["n"] = sum(len(hull.vertices) for hull in convexes)
+
+    physx_cooking_instance.request_convex_collision_representation(
+        stage_id,
+        prim_id,
+        False,
+        lambda _result, convexes: _on_result(convexes),
+    )
+    return total["n"]
+
+
 def get_convex_hull_colliders(
     physx_cooking_instance: physx_bindings.PhysXCooking,
     stage_id: int,

@@ -309,7 +309,12 @@ class GhostTeachingOverlay(ViewportOverlay):
         )
 
         if len(ik_result.joint_configs) == 0:
-            carb.log_verbose("No inverse kinematics solution found")
+            carb.log_warn(
+                "No inverse kinematics solution found for ghost object "
+                f"'{self._selected_ghost_object.GetPath()}' at pose {pose} — the "
+                "pose may be unreachable with the linked TCP, or the motion group "
+                "description was not ready yet."
+            )
             for mesh in self._active_colliders:
                 mesh.visible = False
             return

@@ -13,6 +13,7 @@ import wandelbots_api_client.v2 as wb_v2
 import wandelbots_api_client.v2.models as wb_v2_models
 from omni.kit.viewport.utility import get_active_viewport_window
 from omni.kit.viewport.window import ViewportWindow
+from pxr import Usd
 
 from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
 from wandelbots.omni.instances.instances_api import get_instances_api
@@ -33,13 +34,13 @@ from wandelbots.omni.utils.scene import SceneUtils
 class ReachabilityPreview:
     """Renders ghost collision meshes in the viewport for a selected reachability result."""
 
-    def __init__(self) -> None:
+    def __init__(self, frame_name: str = "reachability_preview") -> None:
         self._viewport: ViewportWindow | None = None
         self._scene_view: ui_scene.SceneView | None = None
         self._vstack: ui.VStack | None = None
-        self._meshes: list[ManipulatorMesh] = []
+        self._meshes_per_pose: list[list[ManipulatorMesh]] = []
         self._active_model: str | None = None
-        self._frame_name = "reachability_preview"
+        self._frame_name = frame_name
         # Cache: model_name -> (dh_parameters, collision_model)
         self._model_cache: dict[str, tuple] = {}
         # State for recreating the preview (e.g. after color change)
@@ -67,10 +68,11 @@ class ReachabilityPreview:
     async def show_preview(
         self,
         result: ReachabilityResult,
-        instance: NOVAInstance,
-        mounting_pose: Optional[list[float]],
+        instance: NOVAInstance | None = None,
+        mounting_pose: Optional[list[float]] = None,
         color: list[float] | None = None,
         force: bool = False,
+        motion_group_prim: Usd.Prim | None = None,
     ) -> None:
         if not result.joint_solutions:
             return
@@ -92,7 +94,7 @@ class ReachabilityPreview:
         if model_name in self._model_cache:
             dh_parameters, collision_model = self._model_cache[model_name]
         else:
-            api_client = self._make_api_client(instance)
+            api_client = self._resolve_api_client(instance, motion_group_prim)
             if api_client is None:
                 return
             try:
@@ -157,56 +159,126 @@ class ReachabilityPreview:
 
             mesh_color = color if color else [0.4, 1.0, 0.4, 0.15]
 
+            self._meshes_per_pose = []
             with self._scene_view.scene:
-                for pose_idx, joint_values in enumerate(result.joint_solutions):
-                    if not joint_values:
-                        continue
+                for joint_values in result.joint_solutions:
+                    pose_meshes = self._build_single_pose_meshes(
+                        joint_values,
+                        dh_parameters,
+                        collision_model,
+                        base_transform,
+                        stage_units,
+                        unit_factor,
+                        mesh_color,
+                    )
+                    self._meshes_per_pose.append(pose_meshes)
 
-                    fk_chain = [
-                        numpy_to_scene_matrix44(m)
-                        for m in compute_forward_kinematics_chain(
-                            dh_parameters=dh_parameters,
-                            dh_unit_to_stage_unit_factor=unit_factor,
-                            joint_values_rad=joint_values,
-                        )
-                    ]
-
-                    for link_idx, link in enumerate(collision_model):
-                        if link_idx >= len(fk_chain):
-                            break
-                        for _collider_id, collider in link.items():
-                            mesh_pose = list(collider.pose.position) + list(
-                                collider.pose.orientation
-                                if collider.pose.orientation
-                                else [0, 0, 0]
-                            )
-                            local_transform = nova_pose_to_scene_matrix(
-                                mesh_pose, stage_units
-                            ) * sc.Matrix44.get_scale_matrix(
-                                unit_factor, unit_factor, unit_factor
-                            )
-
-                            link_transform = base_transform * fk_chain[link_idx]
-                            world_transform = link_transform * local_transform
-
-                            mesh = create_from_collider(
-                                collider=collider,
-                                transform=world_transform,
-                                color=mesh_color,
-                                filled=True,
-                                visible=True,
-                            )
-                            if mesh:
-                                self._meshes.append(mesh)
-
+            total = sum(len(p) for p in self._meshes_per_pose)
             carb.log_info(
-                f"Reachability preview: {len(self._meshes)} meshes for "
+                f"Reachability preview: {total} meshes for "
                 f"'{result.model_name}' at {len(result.joint_solutions)} poses"
             )
 
         except Exception as exc:
             carb.log_warn(f"Failed to create reachability preview: {exc}")
             self._clear_meshes()
+
+    def _build_single_pose_meshes(
+        self,
+        joint_values: list[float],
+        dh_parameters,
+        collision_model,
+        base_transform,
+        stage_units: float,
+        unit_factor: float,
+        mesh_color: list[float],
+    ) -> list[ManipulatorMesh]:
+        """Build and return meshes for one pose. Must be called within a scene context."""
+        if not joint_values:
+            return []
+        pose_meshes: list[ManipulatorMesh] = []
+        fk_chain = [
+            numpy_to_scene_matrix44(m)
+            for m in compute_forward_kinematics_chain(
+                dh_parameters=dh_parameters,
+                dh_unit_to_stage_unit_factor=unit_factor,
+                joint_values_rad=joint_values,
+            )
+        ]
+        for link_idx, link in enumerate(collision_model):
+            if link_idx >= len(fk_chain):
+                break
+            for _collider_id, collider in link.items():
+                mesh_pose = list(collider.pose.position) + list(
+                    collider.pose.orientation
+                    if collider.pose.orientation
+                    else [0, 0, 0]
+                )
+                local_transform = nova_pose_to_scene_matrix(
+                    mesh_pose, stage_units
+                ) * sc.Matrix44.get_scale_matrix(unit_factor, unit_factor, unit_factor)
+                link_transform = base_transform * fk_chain[link_idx]
+                world_transform = link_transform * local_transform
+                mesh = create_from_collider(
+                    collider=collider,
+                    transform=world_transform,
+                    color=mesh_color,
+                    filled=True,
+                    visible=True,
+                )
+                if mesh:
+                    pose_meshes.append(mesh)
+        return pose_meshes
+
+    def set_pose_visible(self, pose_idx: int, visible: bool) -> None:
+        """Show or hide all meshes for a single target pose."""
+        if pose_idx < len(self._meshes_per_pose):
+            for mesh in self._meshes_per_pose[pose_idx]:
+                mesh.visible = visible
+
+    def update_pose_joint_config(
+        self, pose_idx: int, joint_values: list[float]
+    ) -> None:
+        """Swap the rendered joint configuration for a single pose."""
+        if not self._scene_view or self._last_result is None:
+            return
+        model_name = self._last_result.model_name
+        if model_name not in self._model_cache:
+            return
+        # Ensure the per-pose list is long enough
+        while len(self._meshes_per_pose) <= pose_idx:
+            self._meshes_per_pose.append([])
+        # Clear old meshes for this pose
+        for mesh in self._meshes_per_pose[pose_idx]:
+            mesh.visible = False
+        self._meshes_per_pose[pose_idx].clear()
+        if not joint_values:
+            return
+        stage_units = SceneUtils.get_stage_units()
+        unit_factor = stage_units / 1000.0
+        base_transform = sc.Matrix44()
+        if self._last_mounting_pose:
+            base_transform = nova_pose_to_scene_matrix(
+                self._last_mounting_pose, stage_units
+            )
+        base_offset = MODEL_BASE_OFFSETS.get(model_name, 0.0)
+        if base_offset != 0.0:
+            offset_pose = [0, 0, base_offset * 1000.0, 0, 0, 0]
+            base_transform = base_transform * nova_pose_to_scene_matrix(
+                offset_pose, stage_units
+            )
+        mesh_color = self._last_color if self._last_color else [0.4, 1.0, 0.4, 0.15]
+        dh_parameters, collision_model = self._model_cache[model_name]
+        with self._scene_view.scene:
+            self._meshes_per_pose[pose_idx] = self._build_single_pose_meshes(
+                joint_values,
+                dh_parameters,
+                collision_model,
+                base_transform,
+                stage_units,
+                unit_factor,
+                mesh_color,
+            )
 
     def update_color(self, color: list[float]) -> None:
         """Update the color by rebuilding the meshes with the new color."""
@@ -228,9 +300,10 @@ class ReachabilityPreview:
 
     def _clear_meshes(self) -> None:
         """Remove rendered meshes without resetting cached state."""
-        for mesh in self._meshes:
-            mesh.visible = False
-        self._meshes.clear()
+        for pose_meshes in self._meshes_per_pose:
+            for mesh in pose_meshes:
+                mesh.visible = False
+        self._meshes_per_pose.clear()
         if self._scene_view is not None:
             self._scene_view.scene.clear()
 
@@ -251,6 +324,29 @@ class ReachabilityPreview:
         self._scene_view = None
         self._vstack = None
         self._viewport = None
+
+    def _resolve_api_client(
+        self,
+        instance: NOVAInstance | None,
+        motion_group_prim: Usd.Prim | None,
+    ) -> wb_v2.ApiClient | None:
+        """Create an API client from an instance or motion group prim."""
+        if instance is not None:
+            return self._make_api_client(instance)
+        if motion_group_prim is not None:
+            try:
+                from wandelbots.omni.manipulators.motion_group import (
+                    get_motion_group_configuration_from_prim,
+                )
+
+                config = get_motion_group_configuration_from_prim(motion_group_prim)
+                if config is None:
+                    return None
+                return config.motion_stream_configuration.get_api_client()
+            except Exception as exc:
+                carb.log_warn(f"Failed to create API client from prim: {exc}")
+                return None
+        return None
 
     def _make_api_client(self, instance: NOVAInstance) -> wb_v2.ApiClient | None:
         if isinstance(instance, NOVACloudInstance):

@@ -39,12 +39,15 @@ class SettingsSection:
         payload_mass: float = 0.0,
         cf_algorithm: str = "RRTConnectAlgorithm",
         cf_max_iterations: int = 10000,
+        plan_collision_free: bool = False,
+        velocity_coloring: bool = False,
         move_to_start: bool = False,
         on_setting_changed: Callable[[str, object], None] | None = None,
     ) -> None:
         self.live_update = live_update
         self.overlay_color = overlay_color or self._read_overlay_color_from_carb()
         self.trajectory_color = trajectory_color or [0.808, 0.0, 0.345]
+        self.velocity_coloring = velocity_coloring
         self.tcp_velocity = tcp_velocity
         self.tcp_acceleration = tcp_acceleration
         self.auto_blending = auto_blending
@@ -55,9 +58,13 @@ class SettingsSection:
         self.payload_mass = payload_mass
         self.cf_algorithm = cf_algorithm
         self.cf_max_iterations = cf_max_iterations
+        self.plan_collision_free = plan_collision_free
         self.move_to_start = move_to_start
         self._on_setting_changed = on_setting_changed
         self._live_update_checkbox: ui.CheckBox | None = None
+        self._velocity_coloring_checkbox: ui.CheckBox | None = None
+        self._velocity_legend: ui.VStack | None = None
+        self._velocity_legend_max_label: ui.Label | None = None
         self._move_to_start_checkbox: ui.CheckBox | None = None
         self._algorithm_combo: ui.ComboBox | None = None
         self._global_settings_button: ui.Button | None = None
@@ -74,6 +81,8 @@ class SettingsSection:
                 ui.Spacer(height=4)
                 self._build_overlay_color_row()
                 self._build_trajectory_color_row()
+                self._build_velocity_coloring_row()
+                self._build_velocity_legend_row()
                 self._build_global_motion_settings_row()
                 self._build_payload_name_row()
                 self._build_float_row(
@@ -103,6 +112,8 @@ class SettingsSection:
             self.tcp_velocity = velocity
         if acceleration is not None and acceleration > 0:
             self.tcp_acceleration = acceleration
+        if self._velocity_legend_max_label:
+            self._velocity_legend_max_label.text = self._velocity_legend_max_text()
 
     def set_collision_free(self, collision_free: bool) -> None:
         """Track planning mode. Global motion settings stay available in both modes."""
@@ -155,18 +166,27 @@ class SettingsSection:
         has_overrides = (
             self.global_blending is not None or self.global_limits_override is not None
         )
+        tooltip = (
+            "Configure global blending and TCP velocity/acceleration limits "
+            "applied to all motion commands (and collision-free planning)."
+        )
         with ui.HStack(height=32, spacing=16):
             ui.Spacer(width=5)
+            ui.Label(
+                "Motion Settings",
+                width=_LABEL_WIDTH,
+                alignment=ui.Alignment.LEFT_CENTER,
+                tooltip=tooltip,
+            )
+            ui.Spacer()
             self._global_settings_button = ui.Button(
-                "Global Motion Settings…",
+                "Open Motion Settings",
+                width=180,
                 height=26,
                 clicked_fn=lambda ws=weakref.ref(self): (
                     ws()._open_global_motion_settings() if ws() else None
                 ),
-                tooltip=(
-                    "Configure global blending and TCP velocity/acceleration limits "
-                    "applied to all motion commands (and collision-free planning)."
-                ),
+                tooltip=tooltip,
                 style=self._global_settings_button_style(has_overrides),
             )
             ui.Spacer(width=5)
@@ -276,6 +296,91 @@ class SettingsSection:
             model.get_item_value_model(items[i]).get_value_as_float() for i in range(3)
         ]
         self._notify("trajectory_color", self.trajectory_color)
+
+    def _build_velocity_coloring_row(self) -> None:
+        with ui.HStack(height=26, spacing=16):
+            ui.Spacer(width=5)
+            ui.Label(
+                "Velocity Coloring",
+                width=_LABEL_WIDTH,
+                alignment=ui.Alignment.LEFT_CENTER,
+                tooltip=(
+                    "Color the trajectory curve by TCP speed (green = fast, "
+                    "red = slow). When off, the solid Trajectory Color is used."
+                ),
+            )
+            with ui.VStack(width=20):
+                ui.Spacer()
+                self._velocity_coloring_checkbox = ui.CheckBox(
+                    width=20,
+                    height=20,
+                    style={
+                        "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+                        "background_color": 0xFF1A1A1A,
+                        "font_size": 14,
+                    },
+                )
+                ui.Spacer()
+            self._velocity_coloring_checkbox.model.set_value(self.velocity_coloring)
+            self._velocity_coloring_checkbox.model.add_value_changed_fn(
+                lambda m, ws=weakref.ref(self): (
+                    ws()._on_velocity_coloring_toggled(m.get_value_as_bool())
+                    if ws()
+                    else None
+                )
+            )
+            ui.Spacer(width=5)
+
+    def _build_velocity_legend_row(self) -> None:
+        # A red(slow)->green(fast) gradient matching the trajectory velocity overlay
+        # (see planning_orchestrator._speeds_to_colors). Visible only when coloring is on.
+        self._velocity_legend = ui.VStack(
+            spacing=2, height=0, visible=self.velocity_coloring
+        )
+        # Align the spectrum's left edge with the checkbox column (label width +
+        # the row spacing), matching the velocity-coloring row layout above.
+        left_margin = 5 + _LABEL_WIDTH + 16
+        with self._velocity_legend:
+            with ui.HStack(height=10):
+                ui.Spacer(width=left_margin)
+                steps = 16
+                with ui.HStack(spacing=0):
+                    for i in range(steps):
+                        t = i / (steps - 1)
+                        ui.Rectangle(
+                            style={"background_color": ui.color(1.0 - t, t, 0.0)}
+                        )
+                ui.Spacer(width=5)
+            with ui.HStack(height=14):
+                ui.Spacer(width=left_margin)
+                ui.Label(
+                    "0",
+                    alignment=ui.Alignment.LEFT_CENTER,
+                    style={
+                        "color": NOVAColor.TEXT_SECONDARY.color,
+                        "font_size": 11,
+                    },
+                )
+                self._velocity_legend_max_label = ui.Label(
+                    self._velocity_legend_max_text(),
+                    alignment=ui.Alignment.RIGHT_CENTER,
+                    style={
+                        "color": NOVAColor.TEXT_SECONDARY.color,
+                        "font_size": 11,
+                    },
+                )
+                ui.Spacer(width=5)
+
+    def _velocity_legend_max_text(self) -> str:
+        if self.tcp_velocity and self.tcp_velocity > 0:
+            return f"{self.tcp_velocity:.0f} mm/s"
+        return "max"
+
+    def _on_velocity_coloring_toggled(self, enabled: bool) -> None:
+        self.velocity_coloring = enabled
+        if self._velocity_legend:
+            self._velocity_legend.visible = enabled
+        self._notify("velocity_coloring", enabled)
 
     def _build_float_row(
         self,

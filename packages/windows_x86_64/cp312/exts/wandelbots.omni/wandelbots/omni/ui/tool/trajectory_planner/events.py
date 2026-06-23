@@ -23,6 +23,10 @@ class TrajectoryPlannerEvents:
     replan_requested: Signal = field(default_factory=Signal)
     execute_toggle_requested: Signal = field(default_factory=Signal)
     force_stop_requested: Signal = field(default_factory=Signal)
+    start_from_here_requested: Signal = field(default_factory=Signal)
+
+    # Per-row navigation
+    go_to_requested: Signal = field(default_factory=Signal)
 
     # Pose list
     pose_added: Signal = field(default_factory=Signal)

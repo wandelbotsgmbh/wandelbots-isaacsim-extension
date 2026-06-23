@@ -18,6 +18,7 @@ def build_name_cell(
     is_ghost_object: bool,
     has_overrides: bool = False,
     on_settings_clicked: Callable[[], None] | None = None,
+    on_go_to_clicked: Callable[[], None] | None = None,
     cycle_time_s: float | None = None,
     reachable: bool | None = None,
 ) -> None:
@@ -57,6 +58,27 @@ def build_name_cell(
                     style={
                         "color": NOVAColor.TEXT_SECONDARY.color,
                         "font_size": 11,
+                    },
+                )
+            if on_go_to_clicked:
+                ui.Button(
+                    "Go to",
+                    width=0,
+                    height=24,
+                    tooltip="Move the virtual robot to this pose's joint position.",
+                    clicked_fn=on_go_to_clicked,
+                    style={
+                        "Button": {
+                            "background_color": NOVAColor.PRIMARY_MAIN.color,
+                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+                            "font_size": 12,
+                            "border_radius": 4,
+                            "padding": 6,
+                        },
+                        "Button:hovered": {
+                            "background_color": NOVAColor.PRIMARY_LIGHT.color,
+                        },
+                        **_TOOLTIP_SUB,
                     },
                 )
             if on_settings_clicked:

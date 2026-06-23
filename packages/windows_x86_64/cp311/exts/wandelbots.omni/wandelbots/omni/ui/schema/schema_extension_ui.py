@@ -23,6 +23,21 @@ from wandelbots.omni.ui.create_context_menu.robot.send_mounting_to_nova import (
     can_create_mounting_from_payload,
 )
 from wandelbots.omni.ui.create_context_menu.cell import CellSpawnWindow
+from wandelbots.omni.core.collision.collider_preset import (
+    apply_collider_preset_from_payload,
+    can_apply_collider_preset,
+)
+from wandelbots.omni.ui.create_context_menu.pose import (
+    ConvertPoseWindow,
+    is_convertible_prim,
+)
+
+
+def _has_convertible_payload(payload: dict) -> bool:
+    """Show the Convert entry when at least one selected prim is convertible
+    (any transformable prim that is not already a ghost object)."""
+    prim_list: list[Usd.Prim] = payload.get("prim_list", [])
+    return any(is_convertible_prim(prim) for prim in prim_list)
 
 
 class SchemaExtensionUI:
@@ -38,6 +53,7 @@ class SchemaExtensionUI:
         self._frame_widget = PropertyGroupFrameWidget(id="wb_schema_nova_schema_widget")
         self._robot_spawn_window = RobotSpawnWindow()
         self._cell_spawn_window = CellSpawnWindow()
+        self._convert_pose_window = ConvertPoseWindow()
 
         for component in schema_components:
             self._frame_widget.add_schema(component)
@@ -56,6 +72,7 @@ class SchemaExtensionUI:
         self._unregister_prim_menu()
         self._robot_spawn_window = None
         self._cell_spawn_window = None
+        self._convert_pose_window = None
 
     def _register_create_menu(self):
         create_menu_dict = {
@@ -115,6 +132,20 @@ class SchemaExtensionUI:
                         "name": "TCP",
                         "onclick_fn": TcpUtils.create_tcp_from_payload,
                     },
+                    {
+                        "name": "Collider Preset",
+                        "show_fn": lambda payload: can_apply_collider_preset(payload),
+                        "onclick_fn": lambda payload: (
+                            apply_collider_preset_from_payload(payload)
+                        ),
+                    },
+                    {
+                        "name": "Convert to Ghost Object",
+                        "show_fn": lambda payload: _has_convertible_payload(payload),
+                        "onclick_fn": lambda payload, weak_self=weakref.proxy(self): (
+                            weak_self._convert_pose_window.open(payload)
+                        ),
+                    },
                 ]
             },
             "glyph": get_icon("wandelbots.png"),
@@ -160,6 +191,15 @@ class SchemaExtensionUI:
                     ),
                 )
             )
+
+        # Collider Preset entry in +Add menu
+        self._add_menu_items.append(
+            PrimPathWidget.add_button_menu_entry(
+                "Wandelbots NOVA/Collider Preset",
+                show_fn=lambda payload: True,
+                onclick_fn=lambda payload: apply_collider_preset_from_payload(payload),
+            )
+        )
 
     def _unregister_prim_menu(self):
         # remove menus to property window path/+add and context menus +add submenu.

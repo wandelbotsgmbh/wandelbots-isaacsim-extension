@@ -9,13 +9,17 @@ from typing import Callable
 import carb
 import omni.kit.actions.core
 import omni.kit.menu.utils
+import omni.kit.notification_manager as nm
 import omni.ui as ui
 import omni.usd
 
 from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.styles import TOOLTIP_STYLE, _TOOLTIP_SUB
-from wandelbots.omni.ui.utils import defer_call
+from wandelbots.omni.ui.utils import defer_call, get_icon
+from wandelbots.omni.ui.tool.trajectory_planner.import_skill_dialog import (
+    ImportSkillDialog,
+)
 from wandelbots.omni.ui.tool.trajectory_planner.pose_context_menu import (
     register_trajectory_pose_context_menu,
 )
@@ -50,6 +54,7 @@ class TrajectoryPlannerWindow:
         self._name_field_model: ui.SimpleStringModel | None = None
         self._name_placeholder: ui.Label | None = None
         self._pending_ignore_prim_path: str | None = None
+        self._import_dialog: ImportSkillDialog | None = None
 
         self._window = ui.Window(
             "Trajectory Planner",
@@ -74,11 +79,8 @@ class TrajectoryPlannerWindow:
             )
         )
 
-        # Load saved configs or add a default skill
-        self._load_from_store()
-        # Sync widget visibility with initial window state
-        for w in self._widgets:
-            w.set_visible(self._window.visible)
+        # Start empty — trajectory plans are not loaded automatically (neither on
+        # window open nor on stage open); the user imports them via Load.
 
     def destroy(self) -> None:
         self._save_to_store()
@@ -117,6 +119,8 @@ class TrajectoryPlannerWindow:
             self._on_stage_selection_changed()
 
     def _reset(self) -> None:
+        # Opening/closing a stage clears the planner; trajectory plans are NOT
+        # loaded automatically — the user imports them explicitly via Load.
         for w in self._widgets:
             w.destroy()
         self._widgets.clear()
@@ -242,6 +246,28 @@ class TrajectoryPlannerWindow:
                                 },
                             )
                             ui.Spacer(width=12)
+                        with ui.HStack(height=24):
+                            ui.Spacer(width=12)
+                            ui.Button(
+                                "Load from Nova",
+                                height=24,
+                                tooltip="Load a skill stored on the Nova backend by name.",
+                                clicked_fn=lambda ws=weakref.ref(self): (
+                                    ws()._on_load_clicked() if ws() else None
+                                ),
+                                style={
+                                    "Button": {
+                                        "background_color": 0xFF292929,
+                                        "font_size": 14,
+                                        "border_radius": 4,
+                                    },
+                                    "Button:hovered": {
+                                        "background_color": NOVAColor.BUTTON_HOVER.color,
+                                    },
+                                    **_TOOLTIP_SUB,
+                                },
+                            )
+                            ui.Spacer(width=12)
                         ui.Spacer(height=8)
             ui.Spacer(width=ui.Fraction(1))
 
@@ -268,8 +294,51 @@ class TrajectoryPlannerWindow:
                         ),
                         style={
                             "Button": {
+                                "background_color": NOVAColor.PRIMARY_MAIN.color,
+                                "font_size": 14,
+                                "margin": 0,
+                            },
+                            "Button:hovered": {
+                                "background_color": NOVAColor.PRIMARY_LIGHT.color,
+                            },
+                            **_TOOLTIP_SUB,
+                        },
+                    )
+                    ui.Button(
+                        "Load",
+                        width=80,
+                        height=24,
+                        tooltip="Load a skill stored on the Nova backend by name.",
+                        clicked_fn=lambda ws=weakref.ref(self): (
+                            ws()._on_load_clicked() if ws() else None
+                        ),
+                        style={
+                            "Button": {
                                 "background_color": 0xFF292929,
                                 "font_size": 14,
+                                "margin": 0,
+                            },
+                            "Button:hovered": {
+                                "background_color": NOVAColor.BUTTON_HOVER.color
+                            },
+                            **_TOOLTIP_SUB,
+                        },
+                    )
+                    ui.Button(
+                        "",
+                        width=28,
+                        height=24,
+                        image_url=get_icon("refresh.svg"),
+                        image_width=16,
+                        image_height=16,
+                        tooltip="Redraw the stored trajectory curves for the open "
+                        "skills.",
+                        clicked_fn=lambda ws=weakref.ref(self): (
+                            ws()._on_refresh_clicked() if ws() else None
+                        ),
+                        style={
+                            "Button": {
+                                "background_color": 0xFF292929,
                                 "margin": 0,
                             },
                             "Button:hovered": {
@@ -290,15 +359,7 @@ class TrajectoryPlannerWindow:
             self._name_field_model.set_value("")
         if not name:
             name = f"Trajectory {len(self._widgets) + 1}"
-        widget = TrajectoryPlannerWidget(
-            name=name,
-            on_delete=lambda w, ws=weakref.ref(self): (
-                ws()._remove_widget(w) if ws() else None
-            ),
-            on_selection_changed=lambda w, item, ws=weakref.ref(self): (
-                ws()._on_widget_selection_changed(w, item) if ws() else None
-            ),
-        )
+        widget = self._new_widget(name)
         widget.set_visible(self._window.visible)
         self._widgets.append(widget)
         self._save_to_store()
@@ -365,18 +426,63 @@ class TrajectoryPlannerWindow:
             return
 
         for config in configs:
-            widget = TrajectoryPlannerWidget(
-                name=config.name,
-                on_delete=lambda w, ws=weakref.ref(self): (
-                    ws()._remove_widget(w) if ws() else None
-                ),
-                on_selection_changed=lambda w, item, ws=weakref.ref(self): (
-                    ws()._on_widget_selection_changed(w, item) if ws() else None
-                ),
-            )
+            widget = self._new_widget(config.name)
             widget.apply_config(config)
             self._widgets.append(widget)
         self._rebuild_widgets()
+
+    def _new_widget(self, name: str) -> TrajectoryPlannerWidget:
+        """Create a widget wired with the standard window callbacks."""
+        return TrajectoryPlannerWidget(
+            name=name,
+            on_delete=lambda w, ws=weakref.ref(self): (
+                ws()._remove_widget(w) if ws() else None
+            ),
+            on_selection_changed=lambda w, item, ws=weakref.ref(self): (
+                ws()._on_widget_selection_changed(w, item) if ws() else None
+            ),
+        )
+
+    # -- Load from Nova ----------------------------------------------------
+
+    def _on_load_clicked(self) -> None:
+        # Always open the modal — instance / cell / plan are selected inside it,
+        # so it must not depend on a motion group being connected first.
+        self._import_dialog = ImportSkillDialog(on_import=self._apply_loaded_config)
+        self._import_dialog.show()
+
+    def _on_refresh_clicked(self) -> None:
+        # Trajectory curves are never redrawn automatically; the user redraws the
+        # stored/restored trajectories for the open skills explicitly here.
+        for w in self._widgets:
+            try:
+                w.refresh_trajectory()
+            except Exception as exc:
+                carb.log_warn(f"Refresh trajectory failed: {exc}")
+
+    def _apply_loaded_config(self, config) -> None:
+        # Load by name overwrites an already-open skill with the same name.
+        for w in [w for w in self._widgets if w.name == config.name]:
+            w.destroy()
+        self._widgets = [w for w in self._widgets if w.name != config.name]
+        widget = self._new_widget(config.name)
+        widget.apply_config(config)
+        widget.set_visible(self._window.visible)
+        self._widgets.append(widget)
+        # Build first; persist locally only after the widget UI has initialized
+        # (TCP selector etc.), so to_config() doesn't capture a half-built state.
+        # The skill already lives in the Nova store it was loaded from.
+        defer_call(self._rebuild_widgets)
+        defer_call(self._save_to_store)
+        # Re-plan the imported skill so its trajectory is computed and rendered
+        # (the stored curve lives in the non-persisted session layer). Deferred
+        # after the rebuild so the motion group + poses are restored first.
+        defer_call(lambda w=widget: w.plan())
+        nm.post_notification(
+            f"Loaded skill '{config.name}' from Nova.",
+            duration=3.0,
+            status=nm.NotificationStatus.INFO,
+        )
 
     # -- Selection sync ----------------------------------------------------
 

@@ -41,10 +41,14 @@ class MotionGroupSetup:
         | None = None,
         on_tcp_changed: Callable[[str | None], None] | None = None,
         on_collision_setup_changed: Callable[[str | None], None] | None = None,
+        get_plan_collision_free: Callable[[], bool] | None = None,
+        on_plan_collision_free_changed: Callable[[bool], None] | None = None,
     ) -> None:
         self._on_motion_group_changed = on_motion_group_changed
         self._on_tcp_changed = on_tcp_changed
         self._on_collision_setup_changed = on_collision_setup_changed
+        self._get_plan_collision_free = get_plan_collision_free
+        self._on_plan_collision_free_changed = on_plan_collision_free_changed
 
         self._robot_prim = None
         self._mg_config: MotionGroupConfiguration | None = None
@@ -314,37 +318,76 @@ class MotionGroupSetup:
                     )
                 return
 
-            with ui.HStack(spacing=4):
-                labels = ["None"] + self._collision_setups
-                current_idx = 0
-                if self._selected_collision_setup in self._collision_setups:
-                    current_idx = (
-                        self._collision_setups.index(self._selected_collision_setup) + 1
+            with ui.VStack(spacing=4, height=0):
+                with ui.HStack(spacing=4):
+                    labels = ["None"] + self._collision_setups
+                    current_idx = 0
+                    if self._selected_collision_setup in self._collision_setups:
+                        current_idx = (
+                            self._collision_setups.index(self._selected_collision_setup)
+                            + 1
+                        )
+
+                    combo = ui.ComboBox(current_idx, *labels)
+                    self._collision_combo_sub = combo.model.subscribe_item_changed_fn(
+                        lambda m, _, ws=weakref.ref(self): (
+                            ws()._on_collision_setup_selected(
+                                m.get_item_value_model().get_value_as_int()
+                            )
+                            if ws()
+                            else None
+                        )
+                    )
+                    ui.Button(
+                        "",
+                        width=22,
+                        height=22,
+                        image_url=get_icon("refresh.svg"),
+                        image_width=14,
+                        image_height=14,
+                        tooltip="Refresh collision scenes",
+                        clicked_fn=lambda ws=weakref.ref(self): (
+                            run_coroutine(ws()._fetch_collision_setups())
+                            if ws()
+                            else None
+                        ),
+                        style=ICON_BTN_STYLE,
                     )
 
-                combo = ui.ComboBox(current_idx, *labels)
-                self._collision_combo_sub = combo.model.subscribe_item_changed_fn(
-                    lambda m, _, ws=weakref.ref(self): (
-                        ws()._on_collision_setup_selected(
-                            m.get_item_value_model().get_value_as_int()
-                        )
-                        if ws()
-                        else None
-                    )
+                # Collision-free planning is only meaningful with an active scene,
+                # so the toggle lives here and is shown only when one is selected.
+                if self._selected_collision_setup is not None:
+                    self._build_collision_free_toggle()
+
+    def _build_collision_free_toggle(self) -> None:
+        with ui.HStack(height=22, spacing=4):
+            checkbox = ui.CheckBox(width=20, height=20)
+            initial = (
+                bool(self._get_plan_collision_free())
+                if (self._get_plan_collision_free)
+                else False
+            )
+            checkbox.model.set_value(initial)
+            checkbox.model.add_value_changed_fn(
+                lambda m, ws=weakref.ref(self): (
+                    ws()._on_collision_free_toggled(m.get_value_as_bool())
+                    if ws()
+                    else None
                 )
-                ui.Button(
-                    "",
-                    width=22,
-                    height=22,
-                    image_url=get_icon("refresh.svg"),
-                    image_width=14,
-                    image_height=14,
-                    tooltip="Refresh collision scenes",
-                    clicked_fn=lambda ws=weakref.ref(self): (
-                        run_coroutine(ws()._fetch_collision_setups()) if ws() else None
-                    ),
-                    style=ICON_BTN_STYLE,
-                )
+            )
+            ui.Label(
+                "Collision-free Planning",
+                alignment=ui.Alignment.LEFT_CENTER,
+                tooltip=(
+                    "Plan a collision-free trajectory using the selected scene. "
+                    "When off, normal motion-type planning is used and still "
+                    "respects the selected collision scene."
+                ),
+            )
+
+    def _on_collision_free_toggled(self, enabled: bool) -> None:
+        if self._on_plan_collision_free_changed:
+            self._on_plan_collision_free_changed(enabled)
 
     def _on_collision_setup_selected(self, idx: int) -> None:
         new_value = None if idx == 0 else self._collision_setups[idx - 1]

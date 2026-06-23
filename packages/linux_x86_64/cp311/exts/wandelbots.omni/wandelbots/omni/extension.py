@@ -11,7 +11,7 @@ import omni.timeline
 import omni.ui as ui
 import omni.usd
 from fastapi.openapi.utils import get_openapi
-from omni.kit.menu.utils import add_menu_items, remove_menu_items
+from omni.kit.menu.utils import add_menu_items, remove_menu_items, MenuItemDescription
 from omni.services.core import main
 from wandelbots.omni.base import omniservice_base_app
 from wandelbots.omni.environment import host_database
@@ -29,6 +29,7 @@ from wandelbots.omni.ui.utils import make_menu_item_description
 import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
 from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
+from wandelbots.omni.ui.tool.diagnose_package import DiagnosePackageUIBuilder
 import wandelbots.omni.ui.tool
 import weakref
 from wandelbots.omni.core.nucleus.nucleus_service import get_nucleus_service
@@ -47,6 +48,7 @@ class OmniService(omni.ext.IExt):
         self.bus_io_stream_service = get_bus_io_stream_service()
         self.motion_group_service = get_motion_group_service()
         self.instance_list_window: NOVAInstanceListUIBuilder = None
+        self.diagnose_package_window: DiagnosePackageUIBuilder = None
 
         self.timeline = omni.timeline.get_timeline_interface()
         carb.log_verbose(f"{self} listening to timeline events")
@@ -145,6 +147,9 @@ class OmniService(omni.ext.IExt):
         if self.instance_list_window:
             self.instance_list_window.close()
 
+        if self.diagnose_package_window:
+            self.diagnose_package_window.close()
+
         asyncio.get_event_loop().create_task(
             OmniService._async_shutdown(
                 self.motion_group_service,
@@ -195,11 +200,27 @@ class OmniService(omni.ext.IExt):
                     ext._open_developer_portal()
                 ),
             ),
-            make_menu_item_description(
-                ext_id=ext_id,
+            MenuItemDescription(
+                name="Support",
                 header="",
-                name="About",
-                onclick_fun=lambda ext=weakref.proxy(self): ext._open_about(),
+                sub_menu=[
+                    make_menu_item_description(
+                        ext_id=ext_id,
+                        name="Diagnose Package",
+                        onclick_fun=lambda ext=weakref.proxy(self): (
+                            ext._open_diagnose_package()
+                        ),
+                        on_ticked_fn=lambda ext=weakref.proxy(self): (
+                            ext.diagnose_package_window is not None
+                            and ext.diagnose_package_window.is_visible
+                        ),
+                    ),
+                    make_menu_item_description(
+                        ext_id=ext_id,
+                        name="About",
+                        onclick_fun=lambda ext=weakref.proxy(self): ext._open_about(),
+                    ),
+                ],
             ),
         ]
         add_menu_items(self._menu_items, self.menu_item_name)
@@ -209,7 +230,7 @@ class OmniService(omni.ext.IExt):
         webbrowser.open(f"http://127.0.0.1:{port}/omniservice/api/v2/ui")
 
     def _open_documentation(self):
-        webbrowser.open("https://docs.wandelbots.io/latest/intro-simulating/")
+        webbrowser.open("https://docs.wandelbots.io/latest/simulating-introduction")
 
     def _open_developer_portal(self):
         webbrowser.open("https://portal.wandelbots.io")
@@ -222,6 +243,15 @@ class OmniService(omni.ext.IExt):
             self.instance_list_window = NOVAInstanceListUIBuilder()
             self.instance_list_window.setup()
             self.instance_list_window.build_ui()
+
+    def _open_diagnose_package(self):
+        if self.diagnose_package_window and self.diagnose_package_window.is_visible:
+            self.diagnose_package_window.close()
+            self.diagnose_package_window = None
+        else:
+            self.diagnose_package_window = DiagnosePackageUIBuilder()
+            self.diagnose_package_window.setup()
+            self.diagnose_package_window.build_ui()
 
     def _open_about(self):
         self._version = get_current_version()

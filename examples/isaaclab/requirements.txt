@@ -1,0 +1,3 @@
+
+wandelbots-nova>=3.3.0
+wandelbots-isaacsim-api>=2.10.2

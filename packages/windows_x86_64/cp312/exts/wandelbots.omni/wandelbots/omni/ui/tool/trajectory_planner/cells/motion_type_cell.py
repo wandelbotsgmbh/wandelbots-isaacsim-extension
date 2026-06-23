@@ -14,6 +14,23 @@ MOTION_TYPES = ["PathCartesianPTP", "PathLine", "PathJointPTP"]
 MOTION_TYPE_LABELS = ["Cartesian PTP", "Linear", "Joint PTP"]
 
 
+def is_joint_config_editable(
+    item_index: int, motion_type: str, collision_free: bool
+) -> bool:
+    """Whether the joint-config cell is a user choice (dropdown) vs derived (label).
+
+    The configuration is a real planner input only for the START pose (it seeds the
+    plan), for collision-free planning (passed as a preference), and for Joint PTP
+    targets (the move target). For Cartesian PTP / Linear targets the planner derives
+    the joints from the TCP pose, so the cell is shown as a read-only label.
+    """
+    if item_index == 0:
+        return True
+    if collision_free:
+        return True
+    return motion_type == "PathJointPTP"
+
+
 def build_motion_type_cell(
     motion_type: str,
     item_index: int,

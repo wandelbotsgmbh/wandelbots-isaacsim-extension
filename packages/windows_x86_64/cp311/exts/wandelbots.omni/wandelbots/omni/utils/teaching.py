@@ -2,6 +2,7 @@ import weakref
 from typing import Callable, cast
 
 import carb
+import numpy as np
 import isaacsim.core.utils.prims as prims_utils
 import isaacsim.core.utils.stage as stage_utils
 import omni.client
@@ -408,6 +409,27 @@ class GhostObjectUtils:
         return PrimUtils.get_relative_prim_pose(
             flange_tcp.GetPrimPath().pathString,
             tcp_prim.GetPrimPath().pathString,
+        )
+
+    def get_ghost_object_flange_pose(
+        ghost_prim: Usd.Prim, tcp_world_pose: WSPose
+    ) -> WSPose | None:
+        """Return the flange world pose for a ghost object positioned at tcp_world_pose.
+
+        Ghost object prims are placed at the TCP target pose. This computes the
+        corresponding flange pose: flange_target = tcp_world @ inv(flange_to_tcp_offset).
+        Returns None if the TCP/flange chain cannot be resolved.
+        """
+        tcp_offset = GhostObjectUtils.get_ghost_object_tcp_offset(ghost_prim)
+        if tcp_offset is None:
+            return None
+        # get_ghost_object_tcp_offset returns get_relative_prim_pose(flange_path, tcp_path)
+        # = inv(flange_world) @ tcp_world. We need inv(tcp_world) @ flange_world, the matrix inverse.
+        flange_to_tcp_mat = PrimUtils.pose_to_matrix(tcp_offset.pose)
+        tcp_to_flange_mat = np.linalg.inv(flange_to_tcp_mat)
+        ghost_mat = PrimUtils.pose_to_matrix(tcp_world_pose.pose)
+        return WSPose(
+            pose=PrimUtils.matrix_to_pose(ghost_mat @ tcp_to_flange_mat).tolist()
         )
 
     def create_ghost_object_pose_watcher(

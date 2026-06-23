@@ -5,6 +5,8 @@ from __future__ import annotations
 import weakref
 from typing import Callable
 
+import carb
+import omni.kit.notification_manager as nm
 import omni.ui as ui
 import omni.usd
 
@@ -107,6 +109,7 @@ class TrajectoryPlannerWidget:
             refresh_ik_fn=lambda item: self._ik_manager.refresh_ik_for_pose(item),
             settings_fn=lambda item: self._events.pose_settings_clicked.emit(item),
             get_selected_tcp=lambda: self._mg_setup.selected_tcp,
+            go_to_fn=lambda item: self._events.go_to_requested.emit(item),
         )
 
         # Sub-components - emit through the events bus instead of callbacks
@@ -114,6 +117,10 @@ class TrajectoryPlannerWidget:
             on_motion_group_changed=self._events.motion_group_changed.emit,
             on_tcp_changed=self._events.tcp_changed.emit,
             on_collision_setup_changed=self._events.collision_setup_changed.emit,
+            get_plan_collision_free=lambda: self._settings.plan_collision_free,
+            on_plan_collision_free_changed=lambda v: self._events.setting_changed.emit(
+                "plan_collision_free", v
+            ),
         )
 
         self._settings = SettingsSection(
@@ -128,6 +135,7 @@ class TrajectoryPlannerWidget:
             on_execute=self._events.execute_toggle_requested.emit,
             on_replan=self._events.replan_requested.emit,
             on_force_stop=self._events.force_stop_requested.emit,
+            on_start_from_here=self._events.start_from_here_requested.emit,
         )
 
         self._pose_list = PoseListManager(
@@ -214,6 +222,25 @@ class TrajectoryPlannerWidget:
     def selected_tcp(self) -> str | None:
         return self._mg_setup.selected_tcp
 
+    def refresh_trajectory(self) -> None:
+        """Redraw this skill's restored trajectory curve (Refresh action)."""
+        self._controller.refresh_trajectory()
+
+    def plan(self) -> None:
+        """Trigger planning for this skill (same as pressing Plan)."""
+        self._events.plan_requested.emit()
+
+    def get_api_context(self):
+        """Return (ApiConfiguration, cell) if a motion group is connected, else None."""
+        api_config = self._mg_setup.get_api_configuration()
+        mg = self._mg_setup.mg_config
+        if not api_config or not mg:
+            return None
+        try:
+            return api_config, mg.motion_stream_configuration.cell
+        except Exception:
+            return None
+
     @property
     def start_joint_position(self) -> list[float] | None:
         items = self._pose_model.items
@@ -273,6 +300,7 @@ class TrajectoryPlannerWidget:
             live_update=self._settings.live_update,
             overlay_color=list(self._settings.overlay_color),
             trajectory_color=list(self._settings.trajectory_color),
+            velocity_coloring=self._settings.velocity_coloring,
             tcp_velocity=self._settings.tcp_velocity,
             tcp_acceleration=self._settings.tcp_acceleration,
             auto_blending=self._settings.auto_blending,
@@ -283,6 +311,7 @@ class TrajectoryPlannerWidget:
             payload_mass=self._settings.payload_mass,
             cf_algorithm=self._settings.cf_algorithm,
             cf_max_iterations=self._settings.cf_max_iterations,
+            plan_collision_free=self._settings.plan_collision_free,
             move_to_start=self._settings.move_to_start,
             collapsed=self._collapsed,
             poses_collapsed=self._poses_collapsed,
@@ -292,40 +321,49 @@ class TrajectoryPlannerWidget:
     def apply_config(self, config: TrajectoryPlannerConfig) -> None:
         self._name = config.name
         self._collapsed = config.collapsed
-        self._poses_collapsed = getattr(config, "poses_collapsed", False)
+        self._poses_collapsed = config.poses_collapsed
 
         self._settings.live_update = config.live_update
         self._settings.overlay_color = list(config.overlay_color)
         self._settings.trajectory_color = list(config.trajectory_color)
+        self._settings.velocity_coloring = config.velocity_coloring
         self._settings.tcp_velocity = config.tcp_velocity
         self._settings.tcp_acceleration = config.tcp_acceleration
-        self._settings.auto_blending = getattr(config, "auto_blending", False)
-        self._settings.blending_min_velocity_percent = getattr(
-            config, "blending_min_velocity_percent", 50
+        self._settings.auto_blending = config.auto_blending
+        self._settings.blending_min_velocity_percent = (
+            config.blending_min_velocity_percent
         )
-        self._settings.global_blending = getattr(config, "global_blending", None)
-        self._settings.global_limits_override = getattr(
-            config, "global_limits_override", None
-        )
+        self._settings.global_blending = config.global_blending
+        self._settings.global_limits_override = config.global_limits_override
         self._settings.payload_name = config.payload_name
         self._settings.payload_mass = config.payload_mass
-        self._settings.cf_algorithm = getattr(
-            config, "cf_algorithm", "RRTConnectAlgorithm"
-        )
-        self._settings.cf_max_iterations = getattr(config, "cf_max_iterations", 10000)
-        self._settings.move_to_start = getattr(config, "move_to_start", False)
+        self._settings.cf_algorithm = config.cf_algorithm
+        self._settings.cf_max_iterations = config.cf_max_iterations
+        self._settings.plan_collision_free = config.plan_collision_free
+        self._settings.move_to_start = config.move_to_start
 
         self._mg_setup.set_collision_setup(config.collision_setup)
-        self._pose_delegate.collision_free = config.collision_setup is not None
-        self._pose_model.collision_free = config.collision_setup is not None
+        # Collision-free is an independent planning mode now, not implied by the
+        # presence of a collision scene.
+        plan_cf = config.plan_collision_free
+        self._pose_delegate.collision_free = plan_cf
+        self._pose_model.collision_free = plan_cf
 
+        robot_resolved = False
         if config.robot_prim_path:
             stage = omni.usd.get_context().get_stage()
             if stage:
                 prim = stage.GetPrimAtPath(config.robot_prim_path)
                 if prim.IsValid():
                     self._mg_setup.set_robot_prim(prim)
+                    robot_resolved = True
+        if robot_resolved:
+            # Notify the controller of the restored motion group so it refreshes
+            # the tree + selectors on the next rebuild without wiping restored
+            # state (see TrajectoryPlannerController.begin_restore).
+            self._controller.begin_restore()
 
+        missing_prims = False
         if config.poses and self._mg_setup.robot_prim:
             stage = omni.usd.get_context().get_stage()
             if stage:
@@ -338,6 +376,7 @@ class TrajectoryPlannerWidget:
                 for pose_cfg in config.poses:
                     prim = stage.GetPrimAtPath(pose_cfg.prim_path)
                     if not prim.IsValid():
+                        missing_prims = True
                         continue
                     pose = PrimUtils.get_relative_prim_pose(
                         prim_path_a=reference_path,
@@ -359,6 +398,20 @@ class TrajectoryPlannerWidget:
                     if item.joint_configs:
                         item.reachable = True
                     self._controller.setup_watcher_for_prim(pose_cfg.prim_path)
+        elif config.poses and not self._mg_setup.robot_prim:
+            missing_prims = True
+
+        if missing_prims:
+            carb.log_warn(
+                f"Loaded skill '{config.name}': some prims "
+                f"(motion group / poses) were not found in the current stage."
+            )
+            nm.post_notification(
+                f"Loaded '{config.name}', but some prims were not found in the "
+                f"current stage; those poses were skipped.",
+                duration=6.0,
+                status=nm.NotificationStatus.WARNING,
+            )
 
         if config.planned_trajectory and config.planned_trajectory.joint_positions:
             pt = config.planned_trajectory
@@ -657,6 +710,8 @@ class TrajectoryPlannerWidget:
             else None,
             "cf_algorithm": self._settings.cf_algorithm,
             "cf_max_iterations": self._settings.cf_max_iterations,
+            "plan_collision_free": self._settings.plan_collision_free,
+            "velocity_coloring": self._settings.velocity_coloring,
         }
 
     def _get_pose_relative_to_mg(self, prim_path: str, stage=None) -> WSPose:

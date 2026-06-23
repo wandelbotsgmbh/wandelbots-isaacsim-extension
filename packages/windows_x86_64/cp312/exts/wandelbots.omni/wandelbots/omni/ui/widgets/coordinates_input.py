@@ -18,10 +18,14 @@ class CoordinatesInput:
     colors = [COLOR_X, COLOR_Y, COLOR_Z, COLOR_W]
 
     def __init__(
-        self, fields: list[CoordinateInputFieldModel], height=LABEL_HEIGHT + 6
+        self,
+        fields: list[CoordinateInputFieldModel],
+        height=LABEL_HEIGHT + 6,
+        readonly: bool = False,
     ):
         self._fields = fields
         self._height = height
+        self._readonly = readonly
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -56,5 +60,6 @@ class CoordinatesInput:
                         step=field.step,
                         alignment=ui.Alignment.LEFT_CENTER,
                         tooltip=field.tooltip,
+                        enabled=not self._readonly,
                         style={"border_radius": 0},
                     )

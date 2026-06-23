@@ -30,7 +30,6 @@ from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
 from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.reachability.reachability_service import (
     ReachabilityResult,
-    ReachabilitySession,
     get_reachability_service,
 )
 from wandelbots.omni.ui.colors import NOVAColor, float_array_to_hex, hex_to_float_array
@@ -1370,7 +1369,6 @@ class ReachabilityWindow:
 
     async def _run_analysis(self) -> None:
         service = get_reachability_service()
-        session: Optional[ReachabilitySession] = None
         try:
             mounting_pose = None
             if self._mounting_prim_path:
@@ -1466,57 +1464,58 @@ class ReachabilityWindow:
                 static_colliders=swept_colliders,
             )
 
-            # If the table already has models, run only the filtered subset;
-            # otherwise populate with all models from the API first.
-            if not self._result_model.has_items():
-                self._result_model.populate_models(all_models)
-                self._rebuild_manufacturer_combo()
+            async with session:
+                # If the table already has models, run only the filtered subset;
+                # otherwise populate with all models from the API first.
+                if not self._result_model.has_items():
+                    self._result_model.populate_models(all_models)
+                    self._rebuild_manufacturer_combo()
 
-            # Always run only the filtered (visible) subset.
-            available = set(all_models)
-            run_models = [
-                n for n in self._result_model.get_filtered_names() if n in available
-            ]
-            # Reset only the filtered items to pending
-            self._result_model.reset_results()
+                # Always run only the filtered (visible) subset.
+                available = set(all_models)
+                run_models = [
+                    n for n in self._result_model.get_filtered_names() if n in available
+                ]
+                # Reset only the filtered items to pending
+                self._result_model.reset_results()
 
-            carb.log_info(
-                f"Running analysis for {len(run_models)} filtered model(s) "
-                f"out of {len(all_models)} available"
-            )
-
-            self._set_progress(0, len(run_models))
-            self._set_status(
-                f"Analyzing {len(run_models)} model(s) against "
-                f"{len(target_poses)} target(s)..."
-            )
-
-            # Check each model one-by-one and update the UI incrementally
-            reachable = 0
-            for idx, model_name in enumerate(run_models):
-                self._result_model.set_item_calculating(model_name)
-                result = await service.check_single_model(session, model_name)
-                self._result_model.update_item_by_name(model_name, result)
-                if result.reachable:
-                    reachable += 1
-                self._set_progress(idx + 1, len(run_models))
-                self._set_status(
-                    f"Checked {idx + 1}/{len(run_models)}: {reachable} reachable so far"
+                carb.log_info(
+                    f"Running analysis for {len(run_models)} filtered model(s) "
+                    f"out of {len(all_models)} available"
                 )
 
-            self._set_progress(0, 0)
-            mounting_str = (
-                f" | Base: ({', '.join(f'{v:.0f}' for v in mounting_pose.pose[:3])})"
-                if mounting_pose
-                else ""
-            )
-            self._set_status(
-                f"Done: {reachable}/{len(run_models)} models can reach all "
-                f"{len(target_poses)} target(s){mounting_str}"
-            )
+                self._set_progress(0, len(run_models))
+                self._set_status(
+                    f"Analyzing {len(run_models)} model(s) against "
+                    f"{len(target_poses)} target(s)..."
+                )
 
-            # Refresh the preview for the currently selected robot
-            self._refresh_selected_preview()
+                # Check each model one-by-one and update the UI incrementally
+                reachable = 0
+                for idx, model_name in enumerate(run_models):
+                    self._result_model.set_item_calculating(model_name)
+                    result = await service.check_single_model(session, model_name)
+                    self._result_model.update_item_by_name(model_name, result)
+                    if result.reachable:
+                        reachable += 1
+                    self._set_progress(idx + 1, len(run_models))
+                    self._set_status(
+                        f"Checked {idx + 1}/{len(run_models)}: {reachable} reachable so far"
+                    )
+
+                self._set_progress(0, 0)
+                mounting_str = (
+                    f" | Base: ({', '.join(f'{v:.0f}' for v in mounting_pose.pose[:3])})"
+                    if mounting_pose
+                    else ""
+                )
+                self._set_status(
+                    f"Done: {reachable}/{len(run_models)} models can reach all "
+                    f"{len(target_poses)} target(s){mounting_str}"
+                )
+
+                # Refresh the preview for the currently selected robot
+                self._refresh_selected_preview()
 
         except Exception as exc:
             carb.log_error(f"Reachability analysis failed: {exc}")
@@ -1528,8 +1527,6 @@ class ReachabilityWindow:
             self._set_status(f"Error: {exc}")
 
         finally:
-            if session:
-                await service.close_session(session)
             self._is_analyzing = False
             self._refresh_analyze_button()
 

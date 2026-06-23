@@ -21,7 +21,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.pose_tree_widget import (
     PoseItem,
     PoseModel,
 )
-from wandelbots.omni.utils.teaching import GhostObjectUtils, make_ghost_tcp_matcher
+from wandelbots.omni.utils.teaching import make_ghost_tcp_matcher
 
 if TYPE_CHECKING:
     from wandelbots.omni.ui.tool.trajectory_planner.events import (
@@ -161,20 +161,12 @@ class PoseListManager:
 
     def _resolve_ghost_tcp(self, prim) -> str | None:
         nova_tcps = self._get_nova_tcps() if self._get_nova_tcps else {}
-        if nova_tcps:
-            matched = make_ghost_tcp_matcher(prim)(nova_tcps)
-            if matched:
-                carb.log_info(
-                    f"_resolve_ghost_tcp: offset-matched tcp={matched!r} "
-                    f"for {prim.GetPath()}"
-                )
-                return matched
-        fallback = GhostObjectUtils.get_nova_tcp_name(prim)
+        matched = make_ghost_tcp_matcher(prim)(nova_tcps) if nova_tcps else None
         carb.log_info(
-            f"_resolve_ghost_tcp: name-heuristic tcp={fallback!r} "
+            f"_resolve_ghost_tcp: matched tcp={matched!r} "
             f"for {prim.GetPath()} (nova_tcps available={bool(nova_tcps)})"
         )
-        return fallback
+        return matched
 
     @staticmethod
     def _is_ghost_object_prim(prim) -> bool:

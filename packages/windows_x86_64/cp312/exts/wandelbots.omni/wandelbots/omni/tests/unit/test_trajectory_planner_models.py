@@ -98,6 +98,7 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         self.assertAlmostEqual(config.payload_mass, 0.0)
         self.assertEqual(config.cf_algorithm, "RRTConnectAlgorithm")
         self.assertEqual(config.cf_max_iterations, 10000)
+        self.assertFalse(config.plan_collision_free)
         self.assertFalse(config.collapsed)
         self.assertFalse(config.poses_collapsed)
         self.assertIsNone(config.planned_trajectory)
@@ -142,6 +143,17 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         )
         data = config.model_dump()
         restored = TrajectoryPlannerConfig(**data)
+        self.assertEqual(config, restored)
+
+    async def test_trajectory_planner_config_plan_collision_free_roundtrip(self):
+        config = TrajectoryPlannerConfig(
+            name="cf_skill",
+            collision_setup="my_setup",
+            plan_collision_free=True,
+        )
+        self.assertTrue(config.plan_collision_free)
+        restored = TrajectoryPlannerConfig(**config.model_dump())
+        self.assertTrue(restored.plan_collision_free)
         self.assertEqual(config, restored)
 
     async def test_trajectory_planner_config_ignores_unknown_fields(self):

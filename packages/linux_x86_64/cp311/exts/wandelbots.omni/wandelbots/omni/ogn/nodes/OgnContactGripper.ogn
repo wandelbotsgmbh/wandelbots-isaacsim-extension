@@ -1,7 +1,6 @@
 {
     "OgnContactGripper": {
         "version": 1,
-        "version": 1,
         "description": "Attach the first overlapping prim to a helper volume on a single trigger. While stick is true the node keeps snapping the object to the helper internally. Trigger again with stick false to release.",
         "language": "Python",
         "categories": {

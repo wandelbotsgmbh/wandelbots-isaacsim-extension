@@ -16,18 +16,7 @@ class ProgressStatusBar:
         self._hint_label: ui.Label | None = None
 
     def build(self) -> None:
-        with ui.HStack(height=16):
-            ui.Spacer(width=5)
-            self._hint_label = ui.Label(
-                "",
-                visible=False,
-                style={
-                    "color": NOVAColor.TEXT_DISABLED.color,
-                    "font_size": 13,
-                },
-            )
-            ui.Spacer(width=5)
-
+        # Progress bar first so it renders above its status label.
         self._progress_bar = ui.ProgressBar(
             height=4,
             style={
@@ -40,6 +29,18 @@ class ProgressStatusBar:
         )
         self._progress_bar.model.set_value(0.0)
         self._progress_bar.visible = False
+
+        with ui.HStack(height=16):
+            ui.Spacer(width=5)
+            self._hint_label = ui.Label(
+                "",
+                visible=False,
+                style={
+                    "color": NOVAColor.TEXT_DISABLED.color,
+                    "font_size": 13,
+                },
+            )
+            ui.Spacer(width=5)
 
     def show(self, value: float = 0.1) -> None:
         if self._progress_bar:
