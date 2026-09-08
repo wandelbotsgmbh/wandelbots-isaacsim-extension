@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import carb
 from wandelbots.omni.utils.api import get_api_client_from_config, ApiConfiguration
 import wandelbots_api_client.v2 as wb
@@ -30,6 +29,9 @@ class CollisionSetupCache:
                     )
                 )
                 if setup_name not in collision_setup_keys:
+                    # The setup is gone server-side; a stale cached copy must
+                    # not outlive it.
+                    self._cache.pop(setup_name, None)
                     carb.log_warn(f"Collision setup '{setup_name}' not found in store.")
                     return None
 
@@ -43,15 +45,26 @@ class CollisionSetupCache:
                 return None
 
 
-@dataclass
-class PrimCollisionSetupValue:
-    prim: Usd.Prim
-    cache: CollisionSetupCache
-
-
 class PrimCollisionSetupCache:
     def __init__(self):
-        self._cache: dict[str, PrimCollisionSetupValue] = dict()
+        self._cache: dict[str, CollisionSetupCache] = dict()
+
+    async def get_by_cell(
+        self,
+        cell: str,
+        api_configuration: ApiConfiguration,
+        collision_setup_name: str,
+        force_refresh: bool = False,
+    ) -> wb.models.CollisionSetup | None:
+        # Key by host and cell: instances share the default cell name "cell",
+        # so the cell alone would serve setups from the wrong instance.
+        cache_key = f"{api_configuration.host}/{cell}"
+        collision_setup_cache = self._cache.get(cache_key)
+        if collision_setup_cache is None:
+            collision_setup_cache = CollisionSetupCache(cell, api_configuration)
+            self._cache[cache_key] = collision_setup_cache
+
+        return await collision_setup_cache.get(collision_setup_name, force_refresh)
 
     async def get(
         self, prim: Usd.Prim, collision_setup_name: str, force_refresh: bool = False
@@ -63,20 +76,10 @@ class PrimCollisionSetupCache:
             )
             return None
 
-        prim_cache = self._cache.get(
-            motion_group.motion_stream_configuration.cell, None
+        stream_config = motion_group.motion_stream_configuration
+        return await self.get_by_cell(
+            stream_config.cell,
+            stream_config.get_api_configuration(),
+            collision_setup_name,
+            force_refresh,
         )
-
-        collision_setup_cache: CollisionSetupCache | None = None
-        if prim_cache:
-            collision_setup_cache = prim_cache.cache
-        else:
-            collision_setup_cache = CollisionSetupCache(
-                motion_group.motion_stream_configuration.cell,
-                motion_group.motion_stream_configuration.get_api_configuration(),
-            )
-            self._cache[prim.GetPath().pathString] = PrimCollisionSetupValue(
-                prim=prim, cache=collision_setup_cache
-            )
-
-        return await collision_setup_cache.get(collision_setup_name, force_refresh)

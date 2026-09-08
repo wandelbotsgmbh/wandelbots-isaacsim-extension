@@ -6,12 +6,13 @@ from typing import Callable
 
 import omni.ui as ui
 
-from wandelbots.omni.ui.styles import ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import ICON_BTN_STYLE, TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.utils import get_icon
 
 ROW_HEIGHT = 44
 
-_ICON_BTN_STYLE = ICON_BTN_STYLE
+# Tooltips are self-drawn via build_tooltip; reset the wrapper popup.
+_ICON_BTN_STYLE = {**ICON_BTN_STYLE, **TOOLTIP_RESET}
 
 
 def build_edit_buttons_cell(
@@ -34,7 +35,7 @@ def build_edit_buttons_cell(
                 image_url=get_icon("arrow_up.svg"),
                 image_width=16,
                 image_height=16,
-                tooltip="Move up",
+                tooltip_fn=lambda: build_tooltip("Move up"),
                 clicked_fn=on_move_up,
                 style=_ICON_BTN_STYLE,
                 enabled=item_index > 0,
@@ -47,7 +48,7 @@ def build_edit_buttons_cell(
                 image_url=get_icon("arrow_down.svg"),
                 image_width=16,
                 image_height=16,
-                tooltip="Move down",
+                tooltip_fn=lambda: build_tooltip("Move down"),
                 clicked_fn=on_move_down,
                 style=_ICON_BTN_STYLE,
                 enabled=item_index < item_count - 1,
@@ -61,7 +62,7 @@ def build_edit_buttons_cell(
                 image_url=get_icon(icon_name),
                 image_width=16,
                 image_height=16,
-                tooltip="Toggle visibility",
+                tooltip_fn=lambda: build_tooltip("Toggle visibility"),
                 clicked_fn=on_toggle_visibility,
                 style=_ICON_BTN_STYLE,
             )
@@ -73,7 +74,7 @@ def build_edit_buttons_cell(
                 image_url=get_icon("close.svg"),
                 image_width=16,
                 image_height=16,
-                tooltip="Remove from list",
+                tooltip_fn=lambda: build_tooltip("Remove from list"),
                 clicked_fn=on_remove,
                 style=_ICON_BTN_STYLE,
             )

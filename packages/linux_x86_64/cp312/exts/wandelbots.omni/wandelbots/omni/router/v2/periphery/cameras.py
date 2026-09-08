@@ -15,6 +15,7 @@ from wandelbots.omni.periphery.camera_configuration import (
 from fastapi import APIRouter
 from wandelbots.omni.periphery import (
     CameraCaptureService,
+    NoLabeledObjectsError,
     get_camera_capture_service,
 )
 import omni.kit.viewport.utility
@@ -254,6 +255,8 @@ async def capture_depth_image(
 ) -> list[list[float]]:
     """
     Retrieves depth (distance) data from the captured image.
+
+    - Pixels without geometry (infinite distance) are returned as 0.0 in the json format.
     """
     try:
         if result_type == "json":
@@ -279,6 +282,7 @@ async def capture_depth_image(
     responses={
         200: {"description": "Successfully fetched point cloud data"},
         404: {"description": "Camera not configured"},
+        422: {"description": "No semantically labeled objects in the camera view"},
         500: {"description": "Could not fetch point cloud data"},
     },
 )
@@ -303,6 +307,11 @@ async def capture_pointcloud(
             camera_path, resolution.tuple, downscale_factor
         )
 
+    except NoLabeledObjectsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

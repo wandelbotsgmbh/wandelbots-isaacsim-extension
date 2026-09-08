@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 import carb
+import carb.settings
 import omni
 import omni.client
 import omni.kit.actions.core
@@ -16,27 +17,29 @@ import omni.ui as ui
 import omni.usd
 from omni.kit.async_engine import run_coroutine
 from omni.kit.window.filepicker import FilePickerDialog
-from omni.kit.window.property.templates import HORIZONTAL_SPACING
+from omni.physx.bindings._physx import SETTING_UPDATE_TO_USD
 from pxr import Usd
 
 from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.widgets import PrimPathList
+from wandelbots.omni.ui.wb_theme import (
+    BUTTON_HEIGHT,
+    BUTTON_PRIMARY_STYLE,
+    BUTTON_STYLE,
+    FIELD_STYLE,
+    FONT_SIZE_XL,
+    SPACING_MD,
+    SPACING_SM,
+    TOOLTIP_RESET,
+    build_tooltip,
+)
+from wandelbots.omni.ui.widgets import PrimPathList, styled_checkbox
 
 
 WINDOW_MENU_ROOT = "Tools"
 _DEFAULT_RECORD_SUBFOLDER = "nova_recordings"
 _STAGE_RECORDER_EXT = "omni.kit.stagerecorder.bundle"
 _LABEL_WIDTH = 160
-_BROWSE_BUTTON_STYLE = {
-    "Button": {
-        "background_color": 0x40000000,
-        "border_radius": 2,
-        "margin": 0,
-        "padding": 0,
-        "font_size": 16,
-    },
-}
 
 
 class AnimationRecorderWindow:
@@ -51,6 +54,7 @@ class AnimationRecorderWindow:
         self._prim_path_list: PrimPathList | None = None
         self._record_controls_frame: ui.Frame | None = None
         self._playback_controls_frame: ui.Frame | None = None
+        self._saved_update_to_usd_setting: bool | None = None
 
         self._stage = omni.usd.get_context().get_stage()
 
@@ -58,6 +62,7 @@ class AnimationRecorderWindow:
         self._record_folder_model = ui.SimpleStringModel(_get_default_record_folder())
         self._recording_file_model = ui.SimpleStringModel("")
         self._main_stage_model = ui.SimpleStringModel("")
+        self._convert_materials: bool = False
 
         self.window = ui.Window("Animation Recorder", width=420, height=520)
         self.window.set_visibility_changed_fn(
@@ -82,6 +87,9 @@ class AnimationRecorderWindow:
                 vertical_scroll_bar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
                 width=ui.Percent(100),
                 height=ui.Percent(100),
+                style={
+                    "ScrollingFrame": {"background_color": NOVAColor.LAYER_BASE.color}
+                },
             ):
                 with ui.HStack():
                     ui.Spacer(width=8)
@@ -101,7 +109,7 @@ class AnimationRecorderWindow:
                 "Record Options",
                 height=30,
                 width=0,
-                style={"font_size": 18},
+                style={"font_size": FONT_SIZE_XL},
             )
             ui.Line(style={"color": NOVAColor.DIVIDER.color}, width=ui.Fraction(1))
 
@@ -112,14 +120,13 @@ class AnimationRecorderWindow:
             height=0,
         )
 
-        with ui.HStack(
-            height=0, spacing=HORIZONTAL_SPACING, style={"HStack": {"margin": 4}}
-        ):
+        with ui.HStack(height=0, spacing=SPACING_MD, style={"HStack": {"margin": 4}}):
             ui.Label(
                 "Animation Prims",
-                tooltip="The prims to record animation for",
+                tooltip_fn=lambda: build_tooltip("The prims to record animation for"),
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_TOP,
+                style=TOOLTIP_RESET,
             )
             self._prim_path_list = None
             if self._stage:
@@ -138,69 +145,71 @@ class AnimationRecorderWindow:
             with ui.HStack(spacing=4, height=28):
                 ui.Label(
                     "Output folder",
-                    tooltip="Folder to save the recorded USD file",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Folder to save the recorded USD file"
+                    ),
                     width=_LABEL_WIDTH,
+                    style=TOOLTIP_RESET,
                 )
-                field = ui.StringField(
+                ui.StringField(
                     model=self._record_folder_model,
-                    tooltip=self._record_folder_model.as_string,
-                )
-                self._record_folder_model.add_value_changed_fn(
-                    lambda m, f=field: setattr(f, "tooltip", m.as_string)
+                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+                    tooltip_fn=lambda model=self._record_folder_model: build_tooltip(
+                        model.as_string
+                    ),
                 )
                 ui.Button(
                     "...",
                     width=28,
                     height=28,
-                    tooltip="Browse for output folder",
+                    tooltip_fn=lambda: build_tooltip("Browse for output folder"),
                     clicked_fn=lambda ws=weakref.proxy(self): ws._open_folder_picker(),
-                    style=_BROWSE_BUTTON_STYLE,
+                    style={**BUTTON_STYLE, **TOOLTIP_RESET},
                 )
 
-            with ui.HStack(spacing=HORIZONTAL_SPACING, height=28):
+            with ui.HStack(spacing=SPACING_MD, height=28):
                 ui.Label(
                     "Recording name",
-                    tooltip="Base name for the recording",
+                    tooltip_fn=lambda: build_tooltip("Base name for the recording"),
                     width=_LABEL_WIDTH,
+                    style=TOOLTIP_RESET,
                 )
-                ui.StringField(model=self._recording_name_model, height=24)
+                ui.StringField(
+                    model=self._recording_name_model,
+                    height=24,
+                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+                    tooltip_fn=lambda: build_tooltip("Base name for the recording"),
+                )
 
     def _build_record_controls(self):
-        with ui.HStack(height=40, spacing=HORIZONTAL_SPACING):
-            ui.Spacer(width=_LABEL_WIDTH)
+        with ui.HStack(height=40, spacing=SPACING_MD):
+            ui.Spacer()
             if self._recording:
                 ui.Button(
                     "Stop Recording",
-                    height=36,
-                    tooltip="Stop the active recording session",
-                    style={
-                        "Button": {
-                            "background_color": NOVAColor.ERROR_MAIN.color,
-                            "color": NOVAColor.ERROR_CONTRAST_TEXT.color,
-                        },
-                        "Button:hovered": {
-                            "background_color": NOVAColor.ERROR_DARK.color,
-                        },
-                    },
+                    width=0,
+                    height=BUTTON_HEIGHT,
+                    tooltip_fn=lambda: build_tooltip(
+                        "Stop the active recording session"
+                    ),
+                    style={**BUTTON_STYLE, **TOOLTIP_RESET},
                     clicked_fn=lambda ws=weakref.proxy(self): ws._stop_recording(),
                 )
             else:
                 ui.Button(
                     "Start Recording",
-                    height=36,
-                    tooltip="Record animation for the selected prims",
+                    width=0,
+                    height=BUTTON_HEIGHT,
+                    tooltip_fn=lambda: build_tooltip(
+                        "Record animation for the selected prims"
+                    ),
                     enabled=bool(self._prim_path_list and self._prim_path_list.paths),
                     style={
-                        "Button": {
-                            "background_color": NOVAColor.PRIMARY_MAIN.color,
-                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
-                        },
-                        "Button:hovered": {
-                            "background_color": NOVAColor.PRIMARY_DARK.color,
-                        },
+                        **BUTTON_PRIMARY_STYLE,
                         "Button:disabled": {
                             "background_color": NOVAColor.DIVIDER.color,
                         },
+                        **TOOLTIP_RESET,
                     },
                     clicked_fn=lambda ws=weakref.proxy(self): ws._start_recording(),
                 )
@@ -211,7 +220,7 @@ class AnimationRecorderWindow:
                 "Playback Preparation",
                 height=30,
                 width=0,
-                style={"font_size": 18},
+                style={"font_size": FONT_SIZE_XL},
             )
             ui.Line(style={"color": NOVAColor.DIVIDER.color}, width=ui.Fraction(1))
 
@@ -228,50 +237,80 @@ class AnimationRecorderWindow:
             with ui.HStack(spacing=4, height=28):
                 ui.Label(
                     "Recording file",
-                    tooltip="The recorded USD file to combine with the stage",
+                    tooltip_fn=lambda: build_tooltip(
+                        "The recorded USD file to combine with the stage"
+                    ),
                     width=_LABEL_WIDTH,
+                    style=TOOLTIP_RESET,
                 )
-                rec_field = ui.StringField(
+                ui.StringField(
                     model=self._recording_file_model,
-                    tooltip=self._recording_file_model.as_string,
-                )
-                self._recording_file_model.add_value_changed_fn(
-                    lambda m, f=rec_field: setattr(f, "tooltip", m.as_string)
+                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+                    tooltip_fn=lambda model=self._recording_file_model: build_tooltip(
+                        model.as_string
+                    ),
                 )
                 ui.Button(
                     "...",
                     width=28,
                     height=28,
-                    tooltip="Browse for a recording file",
+                    tooltip_fn=lambda: build_tooltip("Browse for a recording file"),
                     clicked_fn=lambda ws=weakref.proxy(self): (
                         ws._open_recording_file_picker()
                     ),
-                    style=_BROWSE_BUTTON_STYLE,
+                    style={**BUTTON_STYLE, **TOOLTIP_RESET},
                 )
 
             with ui.HStack(spacing=4, height=28):
                 ui.Label(
-                    "Main stage",
-                    tooltip="The main USD stage to merge with the recording",
+                    "Stage file",
+                    tooltip_fn=lambda: build_tooltip(
+                        "The main USD stage to merge with the recording"
+                    ),
                     width=_LABEL_WIDTH,
+                    style=TOOLTIP_RESET,
                 )
-                stage_field = ui.StringField(
+                ui.StringField(
                     model=self._main_stage_model,
-                    tooltip=self._main_stage_model.as_string,
-                )
-                self._main_stage_model.add_value_changed_fn(
-                    lambda m, f=stage_field: setattr(f, "tooltip", m.as_string)
+                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+                    tooltip_fn=lambda model=self._main_stage_model: build_tooltip(
+                        model.as_string
+                    ),
                 )
                 ui.Button(
                     "...",
                     width=28,
                     height=28,
-                    tooltip="Browse for the main stage file",
+                    tooltip_fn=lambda: build_tooltip("Browse for the main stage file"),
                     clicked_fn=lambda ws=weakref.proxy(self): (
                         ws._open_main_stage_file_picker()
                     ),
-                    style=_BROWSE_BUTTON_STYLE,
+                    style={**BUTTON_STYLE, **TOOLTIP_RESET},
                 )
+
+        ui.Spacer(height=SPACING_SM)
+        with ui.HStack(height=28, spacing=SPACING_SM, style={"HStack": {"margin": 4}}):
+            convert_model = ui.SimpleBoolModel(self._convert_materials)
+            convert_model.add_value_changed_fn(
+                lambda m, _ws=weakref.ref(self): (
+                    setattr(_ws(), "_convert_materials", m.get_value_as_bool())
+                    if _ws()
+                    else None
+                )
+            )
+            ui.Label(
+                "Convert material",
+                tooltip_fn=lambda: build_tooltip(
+                    "After processing, rewrite the playback USD's materials from "
+                    "Omniverse MDL shaders to UsdPreviewSurface so it renders in "
+                    "Blender and other UsdPreviewSurface-aware viewers."
+                ),
+                width=_LABEL_WIDTH,
+                alignment=ui.Alignment.LEFT_CENTER,
+                style=TOOLTIP_RESET,
+            )
+            ui.Spacer()
+            styled_checkbox(model=convert_model, width=18, height=18)
 
         ui.Spacer(height=4)
 
@@ -280,23 +319,22 @@ class AnimationRecorderWindow:
             self._build_playback_controls()
 
     def _build_playback_controls(self):
-        with ui.HStack(height=40, spacing=HORIZONTAL_SPACING):
-            ui.Spacer(width=_LABEL_WIDTH)
+        with ui.HStack(height=40, spacing=SPACING_MD):
+            ui.Spacer()
             ui.Button(
                 "Process & Open for Playback",
-                height=36,
+                width=0,
+                height=BUTTON_HEIGHT,
                 enabled=self._recording_file_valid and self._main_stage_valid,
-                tooltip="Combine the recording with the current stage and open for playback",
+                tooltip_fn=lambda: build_tooltip(
+                    "Combine the recording with the current stage and open for playback"
+                ),
                 style={
-                    "Button": {
-                        "background_color": NOVAColor.PRIMARY_MAIN.color,
-                    },
-                    "Button:hovered": {
-                        "background_color": NOVAColor.PRIMARY_LIGHT.color,
-                    },
+                    **BUTTON_PRIMARY_STYLE,
                     "Button:disabled": {
                         "background_color": NOVAColor.DIVIDER.color,
                     },
+                    **TOOLTIP_RESET,
                 },
                 clicked_fn=lambda ws=weakref.proxy(self): (
                     ws._combine_recording_and_stage_and_open()
@@ -344,29 +382,53 @@ class AnimationRecorderWindow:
         if not _is_nucleus_path(output_folder):
             os.makedirs(output_folder, exist_ok=True)
 
-        omni.kit.commands.execute(
-            "StartRecording",
-            target_paths=target_paths,
-            live_mode=True,
-            use_frame_range=False,
-            start_frame=0,
-            end_frame=100,
-            use_preroll=False,
-            preroll_frame=0,
-            record_to="FILE",
-            take_name=recording_name,
-            record_folder=output_folder,
-            increment_name=True,
-            apply_root_anim=False,
-            fps=0.0,
-        )
+        # PhysX only writes simulated transforms to the real Usd stage when
+        # physics.updateToUsd is on; otherwise they land in Fabric only, and
+        # Stage Recorder (which reads the Usd stage, not Fabric) captures
+        # nothing. Force it on for the recording and restore the prior value
+        # on stop, since leaving it on all the time reintroduces the per-frame
+        # Usd-notice cost the streaming hot path was tuned to avoid.
+        settings = carb.settings.get_settings()
+        self._saved_update_to_usd_setting = settings.get(SETTING_UPDATE_TO_USD)
+        settings.set(SETTING_UPDATE_TO_USD, True)
+
+        try:
+            omni.kit.commands.execute(
+                "StartRecording",
+                target_paths=target_paths,
+                live_mode=True,
+                use_frame_range=False,
+                start_frame=0,
+                end_frame=100,
+                use_preroll=False,
+                preroll_frame=0,
+                record_to="FILE",
+                take_name=recording_name,
+                record_folder=output_folder,
+                increment_name=True,
+                apply_root_anim=False,
+                fps=0.0,
+            )
+        except (ValueError, RuntimeError):
+            self._restore_update_to_usd_setting()
+            raise
 
         self._recording = True
         self._last_recorded_file = None
         self._deferred_build_ui()
 
+    def _restore_update_to_usd_setting(self) -> None:
+        if self._saved_update_to_usd_setting is not None:
+            carb.settings.get_settings().set(
+                SETTING_UPDATE_TO_USD, self._saved_update_to_usd_setting
+            )
+            self._saved_update_to_usd_setting = None
+
     def _stop_recording(self):
-        omni.kit.commands.execute("StopRecording")
+        try:
+            omni.kit.commands.execute("StopRecording")
+        finally:
+            self._restore_update_to_usd_setting()
         self._recording = False
         run_coroutine(self._find_and_set_last_recording())
 
@@ -511,11 +573,34 @@ class AnimationRecorderWindow:
             )
             return
 
+        # Drop our handle now that the playback stage is built: this URL matches
+        # the context's own currently-open stage, so holding a second reference
+        # past this point keeps it resident when the context closes it below.
+        original_stage = None
+
         nm.post_notification(
             f"Playback stage created: {_url_basename(playback_url)}",
             duration=5.0,
             status=nm.NotificationStatus.INFO,
         )
+
+        if self._convert_materials:
+            try:
+                from .mdl_to_usd_preview import convert_file
+
+                count = convert_file(playback_url)
+                nm.post_notification(
+                    f"Converted {count} material(s) to USD Preview Surface.",
+                    duration=5.0,
+                    status=nm.NotificationStatus.INFO,
+                )
+            except Exception as e:
+                carb.log_error(f"Material conversion failed: {e}")
+                nm.post_notification(
+                    f"Material conversion failed: {e}",
+                    duration=5.0,
+                    status=nm.NotificationStatus.WARNING,
+                )
 
         await omni.kit.app.get_app().next_update_async()
         omni.usd.get_context().open_stage(playback_url)
@@ -565,6 +650,15 @@ class AnimationRecorderWindow:
 
     def destroy(self) -> None:
         """Tear down all resources. Safe to call multiple times."""
+        if self._recording:
+            try:
+                omni.kit.commands.execute("StopRecording")
+            except (ValueError, RuntimeError):
+                carb.log_warn(
+                    "StopRecording failed during teardown; releasing window resources anyway."
+                )
+            self._recording = False
+        self._restore_update_to_usd_setting()
         self._stage_event_sub = None
         if self._prim_path_list:
             self._prim_path_list.destroy()

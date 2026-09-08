@@ -8,12 +8,14 @@ from wandelbots.omni.utils.math import (
     numpy_to_scene_matrix44,
 )
 from pxr import Usd
+from wandelbots.omni.core.collision.utils import merge_link_chain_extras
 from wandelbots.omni.manipulators import (
     MotionGroupConfiguration,
     compute_forward_kinematics_chain,
     get_motion_group_configuration_from_prim,
 )
 from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
+from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
 from wandelbots.omni.utils.prims import PrimUtils, Pose
 from wandelbots.omni.utils.scene import SceneUtils
 from .manipulator_mesh import create_from_collider, ManipulatorMesh
@@ -32,7 +34,13 @@ class MotionGroupMesh:
         motion_group_prim: Usd.Prim,
         color: color_utils.ColorRGBA = [0.4, 1.0, 0.4, 0.15],
         filled: bool = True,
+        api_configuration: ApiConfiguration | None = None,
+        cell: str | None = None,
     ):
+        """`api_configuration` and `cell` override the host and cell baked into
+        the prim's MotionGroupAPI attributes, which can be stale from an earlier
+        connection. The prim's controller and motion group names still identify
+        the robot."""
         motion_group = get_motion_group_configuration_from_prim(motion_group_prim)
         if motion_group is None:
             raise ValueError(
@@ -42,6 +50,13 @@ class MotionGroupMesh:
         # Store path instead of prim reference to prevent stale references
         self._motion_group_path: str = motion_group_prim.GetPath().pathString
         self._motion_group_configuration: MotionGroupConfiguration = motion_group
+        stream_config = motion_group.motion_stream_configuration
+        self._api_configuration: ApiConfiguration = (
+            api_configuration
+            if api_configuration is not None
+            else stream_config.get_api_configuration()
+        )
+        self._cell: str = cell if cell is not None else stream_config.cell
         self._motion_group_description: wb_models.MotionGroupDescription | None = None
 
         self._stage_meters_per_unit = SceneUtils.get_stage_units()
@@ -72,37 +87,46 @@ class MotionGroupMesh:
     async def _fetch_motion_group_description(
         self,
     ) -> wb_models.MotionGroupDescription:
-        async with (
-            self._motion_group_configuration.motion_stream_configuration.get_api_client() as client
-        ):
+        stream_config = self._motion_group_configuration.motion_stream_configuration
+        async with get_api_client_from_config(self._api_configuration) as client:
             motion_group_description = await wb.MotionGroupApi(
                 client
             ).get_motion_group_description(
-                cell=self._motion_group_configuration.motion_stream_configuration.cell,
-                controller=self._motion_group_configuration.motion_stream_configuration.controller,
-                motion_group=self._motion_group_configuration.motion_stream_configuration.motion_group,
+                cell=self._cell,
+                controller=stream_config.controller,
+                motion_group=stream_config.motion_group,
             )
         return motion_group_description
 
     async def _fetch_motion_collision_model(
         self, motion_group_model: str
     ) -> list[dict[str, wb_models.Collider]]:
-        async with (
-            self._motion_group_configuration.motion_stream_configuration.get_api_client() as client
-        ):
+        async with get_api_client_from_config(self._api_configuration) as client:
             collision_model = await wb.MotionGroupModelsApi(
                 client
             ).get_motion_group_collision_model(motion_group_model=motion_group_model)
         return collision_model
 
     async def load_meshes(
-        self, link_chain_colliders: list[dict[str, wb_models.Collider]] | None = None
+        self, extra_link_colliders: list[dict[str, wb_models.Collider]] | None = None
     ):
         motion_group_description = await self._fetch_motion_group_description()
-        if not link_chain_colliders:
-            link_chain_colliders = await self._fetch_motion_collision_model(
-                motion_group_description.motion_group_model
+        # The robot's own geometry always comes from the canonical NOVA
+        # collision model; stored setups only carry additional link-mounted
+        # equipment (extras-only convention), which is merged on top.
+        link_chain_colliders = await self._fetch_motion_collision_model(
+            motion_group_description.motion_group_model
+        )
+        merged_extras = bool(extra_link_colliders)
+        if merged_extras:
+            link_chain_colliders = merge_link_chain_extras(
+                link_chain_colliders, extra_link_colliders
             )
+        carb.log_info(
+            f"Link chain source for {self._motion_group_path}: canonical model of "
+            f"'{motion_group_description.motion_group_model}'"
+            + (" merged with stored link extras" if merged_extras else "")
+        )
         self._motion_group_description = motion_group_description
         self._joint_values = [0.0] * len(self.dh_parameters)
 
@@ -217,6 +241,20 @@ class MotionGroupMesh:
                 link_transform = self._motion_group_transform * fk_transforms[link_idx]
                 world_transform = link_transform * local_transform
                 mesh.set_transform(world_transform)
+
+    @property
+    def flange_transform(self) -> sc.Matrix44 | None:
+        """World transform of the flange (end of the DH chain) at the current
+        joint values - the frame NOVA attaches tool colliders to. None until
+        the motion group description has been fetched."""
+        if self._motion_group_description is None:
+            return None
+        fk_transforms = compute_forward_kinematics_chain(
+            dh_parameters=self._motion_group_description.dh_parameters,
+            dh_unit_to_stage_unit_factor=self._unit_factor,
+            joint_values_rad=self._joint_values,
+        )
+        return self._motion_group_transform * numpy_to_scene_matrix44(fk_transforms[-1])
 
     @property
     def motion_group_transform(self) -> sc.Matrix44:

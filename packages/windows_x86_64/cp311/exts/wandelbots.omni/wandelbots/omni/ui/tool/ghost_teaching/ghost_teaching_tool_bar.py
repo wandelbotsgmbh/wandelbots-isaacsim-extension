@@ -9,6 +9,10 @@ import omni.ui as ui
 import omni.kit.app
 import omni.kit.viewport.utility
 from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
+from wandelbots.omni.instances.events import (
+    subscribe_to_motion_group_connection_changed,
+    push_open_instances_panel,
+)
 from .widgets.ghost_object_selector import GhostObjectSelector
 from omni.kit.async_engine import run_coroutine
 import omni.kit.menu.utils
@@ -17,7 +21,10 @@ from wandelbots.omni.utils.teaching import (
     GhostObject,
     make_ghost_tcp_matcher,
 )
-from wandelbots.omni.utils.kinematics import fetch_joint_configs_for_pose
+from wandelbots.omni.utils.kinematics import (
+    fetch_joint_configs_for_pose,
+    InverseKinematicsResult,
+)
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.teaching.ghost_teaching_follow_service import (
     GhostTeachingFollowService,
@@ -59,6 +66,8 @@ class GhostTeachingToolBar:
         self._tcp_selector: TcpSelector = None
         self._ghost_object_selector: GhostObjectSelector = None
         self._deferred_build_task: asyncio.Task = None
+        self._connectivity_check_task: asyncio.Task = None
+        self._motion_group_reachable: bool | None = None
         self._follow_button: ui.Button = None
         self._joint_config_selector: JointConfigSelector | None = None
         self._selected_ghost_object_path: str = None
@@ -90,6 +99,16 @@ class GhostTeachingToolBar:
             )
         )
 
+        self._motion_group_connection_sub = (
+            subscribe_to_motion_group_connection_changed(
+                lambda payload, weak_self=weakref.ref(self): (
+                    weak_self()._on_motion_group_connection_changed(payload)
+                    if weak_self()
+                    else None
+                )
+            )
+        )
+
         self._settings_model.property_changed_fn = (
             lambda prop, old, new, obj=weakref.proxy(self): (
                 obj._on_settings_property_changed(prop, old, new)
@@ -106,11 +125,14 @@ class GhostTeachingToolBar:
         if self._tool_bar is None:
             carb.log_verbose("GhostTeachingToolBar is already destroyed")
             return
-        stream_config = (
-            get_motion_group_configuration_from_prim(
-                self._motion_group_prim
-            ).motion_stream_configuration
+        motion_group_config = (
+            get_motion_group_configuration_from_prim(self._motion_group_prim)
             if self._motion_group_prim
+            else None
+        )
+        stream_config = (
+            motion_group_config.motion_stream_configuration
+            if motion_group_config is not None
             else None
         )
 
@@ -121,6 +143,32 @@ class GhostTeachingToolBar:
                 horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
             ):
                 with ui.HStack(spacing=4):
+                    if self._motion_group_prim is not None and stream_config is None:
+                        ui.Spacer(width=ui.Pixel(10))
+                        ui.Label(
+                            self._motion_group_prim.GetPath().pathString,
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
+                        )
+                        ui.Label(
+                            "Robot not configured",
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
+                        )
+                        ui.Spacer(width=ui.Fraction(1))
+                        ui.Button(
+                            "Open connector",
+                            clicked_fn=push_open_instances_panel,
+                            width=ui.Pixel(110),
+                            height=ui.Fraction(1),
+                            style={
+                                "margin": 0,
+                                "background_color": NOVAColor.PRIMARY_MAIN.color,
+                                "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+                                ":hovered": {
+                                    "background_color": NOVAColor.PRIMARY_LIGHT.color,
+                                },
+                            },
+                        )
+                        return
                     if stream_config is None:
                         ui.Label("Select a ghost object from the scene", height=30)
                         return
@@ -130,6 +178,35 @@ class GhostTeachingToolBar:
                         f"{stream_config.cell}/{stream_config.motion_group}",
                         style={"color": NOVAColor.TEXT_SECONDARY.color},
                     )
+
+                    if self._motion_group_reachable is None:
+                        ui.Label(
+                            "Checking connection...",
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
+                        )
+                        return
+                    if not self._motion_group_reachable:
+                        ui.Label(
+                            "Not connected",
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
+                        )
+                        ui.Spacer(width=ui.Fraction(1))
+                        ui.Button(
+                            "Open connector",
+                            clicked_fn=push_open_instances_panel,
+                            width=ui.Pixel(110),
+                            height=ui.Fraction(1),
+                            style={
+                                "margin": 0,
+                                "background_color": NOVAColor.PRIMARY_MAIN.color,
+                                "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
+                                ":hovered": {
+                                    "background_color": NOVAColor.PRIMARY_LIGHT.color,
+                                },
+                            },
+                        )
+                        return
+
                     ui.Spacer(width=ui.Fraction(1))
 
                     with ui.HStack(width=ui.Pixel(200)):
@@ -236,17 +313,22 @@ class GhostTeachingToolBar:
                             ):
                                 self._joint_config_selector = JointConfigSelector(
                                     ghost_object_prim=ghost_prim,
-                                    initial_joint_configs=ghost_overlay.cached_joints
-                                    if ghost_overlay
-                                    else [],
-                                    initial_joint_limits=ghost_overlay.cached_joint_limits
-                                    if ghost_overlay
-                                    else [],
+                                    initial_joint_configs=[],
+                                    initial_joint_limits=[],
                                 )
                             if ghost_overlay:
                                 ghost_overlay.joint_configs_changed_fn = (
                                     self._joint_config_selector.update_joint_configs
                                 )
+                                if ghost_overlay.cached_joints:
+                                    self._joint_config_selector.update_joint_configs(
+                                        InverseKinematicsResult(
+                                            joint_configs=ghost_overlay.cached_joints,
+                                            joint_limits=ghost_overlay.cached_joint_limits,
+                                        )
+                                    )
+                                elif ghost_overlay.is_loading:
+                                    self._joint_config_selector.set_loading()
 
                     # Recreating the button would lead to losing the move to task and blocking the motion group control so we recycle the existing one
                     if self._move_to_button is None:
@@ -418,7 +500,6 @@ class GhostTeachingToolBar:
             nm.post_notification(
                 f"Ghost object robot {self._motion_group_prim} has no motion group configured",
                 duration=5.0,
-                notification_type=nm.NotificationStatus.WARNING,
             )
             return None
 
@@ -450,13 +531,19 @@ class GhostTeachingToolBar:
         if cmd_type == "cartesian_p2p":
             motion_command = wb_models.MotionCommand(
                 path=wb_models.MotionCommandPath(
-                    wb_models.PathCartesianPTP(target_pose=target_pose.to_nova_pose())
+                    wb_models.PathCartesianPTP(
+                        target_pose=target_pose.to_nova_pose(),
+                        path_definition_name="PathCartesianPTP",
+                    )
                 )
             )
         elif cmd_type == "line":
             motion_command = wb_models.MotionCommand(
                 path=wb_models.MotionCommandPath(
-                    wb_models.PathLine(target_pose=target_pose.to_nova_pose())
+                    wb_models.PathLine(
+                        target_pose=target_pose.to_nova_pose(),
+                        path_definition_name="PathLine",
+                    )
                 )
             )
         else:
@@ -495,7 +582,8 @@ class GhostTeachingToolBar:
                 wb_models.MotionCommand(
                     path=wb_models.MotionCommandPath(
                         wb_models.PathJointPTP(
-                            target_joint_position=ik_result.joint_configs[0]
+                            target_joint_position=ik_result.joint_configs[0],
+                            path_definition_name="PathJointPTP",
                         )
                     )
                 )
@@ -546,6 +634,7 @@ class GhostTeachingToolBar:
         if self._motion_group_prim == motion_group_prim:
             return
         self._motion_group_prim = motion_group_prim
+        self._motion_group_reachable = None
 
         motion_group = get_motion_group_configuration_from_prim(self._motion_group_prim)
         carb.log_info(
@@ -555,8 +644,8 @@ class GhostTeachingToolBar:
             nm.post_notification(
                 f"Ghost object robot {self._motion_group_prim} has no motion group configured",
                 duration=5.0,
-                notification_type=nm.NotificationStatus.WARNING,
             )
+            self._deferred_build_ui()
             return
 
         if self.visible:
@@ -570,9 +659,67 @@ class GhostTeachingToolBar:
         self._refresh_ghost_objects()
         self._deferred_build_ui()
 
+        if self._connectivity_check_task and not self._connectivity_check_task.done():
+            self._connectivity_check_task.cancel()
+        self._connectivity_check_task = run_coroutine(
+            self._check_motion_group_connectivity()
+        )
+
     def _ghost_object_changed_fn(self):
         self._refresh_ghost_objects()
         self._deferred_build_ui()
+
+    async def _check_motion_group_connectivity(self):
+        config = get_motion_group_configuration_from_prim(self._motion_group_prim)
+        if config is None:
+            return
+        try:
+            await config.check_connection()
+            self._motion_group_reachable = True
+        except Exception as exception:
+            carb.log_verbose(
+                f"Motion group {config.motion_stream_configuration.cell}/{config.motion_stream_configuration.motion_group} not reachable: {exception}"
+            )
+            self._motion_group_reachable = False
+        self._deferred_build_ui()
+
+    def _on_motion_group_connection_changed(self, payload: dict) -> None:
+        if self._motion_group_prim is None:
+            return
+
+        event_prim_path = payload.get("prim_path")
+        if not event_prim_path:
+            return
+
+        # Disconnecting removes the MotionGroupAPI, so match on prim_path instead
+        # of the (possibly gone) config. _motion_group_prim may be the ghost prim
+        # when unconfigured, so resolve its linked motion group in that case.
+        if GhostObjectUtils.is_ghost_object(self._motion_group_prim):
+            linked_prim = GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(
+                self._motion_group_prim
+            )
+            tracked_prim_path = (
+                linked_prim.GetPath().pathString if linked_prim else None
+            )
+        else:
+            tracked_prim_path = self._motion_group_prim.GetPath().pathString
+
+        if tracked_prim_path != event_prim_path:
+            return
+
+        if payload.get("action") != "connected":
+            self._motion_group_reachable = False
+            self._deferred_build_ui()
+            return
+
+        stage: Usd.Stage = omni.usd.get_context().get_stage()
+        robot_prim = stage.GetPrimAtPath(event_prim_path)
+        if self._motion_group_prim != robot_prim:
+            # Switch from the ghost prim to the now-configured robot prim.
+            self._assign_motion_group_prim(robot_prim)
+        else:
+            self._motion_group_reachable = True
+            self._deferred_build_ui()
 
     def _on_stage_event(self, event: carb.events.IEvent):
         if event.type == int(omni.usd.StageEventType.SELECTION_CHANGED):
@@ -605,26 +752,46 @@ class GhostTeachingToolBar:
         motion_group_prim = (
             GhostObjectUtils.get_linked_motion_group_to_ghost_object_prim(selected_prim)
         )
-        if motion_group_prim:
-            reference_prim = get_link_0_from_motion_group_prim(
-                motion_group_prim, fallback_to_motion_group=False
-            )
-            reference_prim_path = (
-                reference_prim.GetPath().pathString if reference_prim else None
-            )
-        else:
-            reference_prim_path = None
+        if not motion_group_prim:
+            # Ghost prim exists but its linked motion group could not be resolved —
+            # show "Robot not configured" in the toolbar
+            self._motion_group_prim = selected_prim
+            self._motion_group_reachable = None
+            self._deferred_build_ui()
+            if not self.visible and self.settings.open_with_ghost_object:
+                self.show()
+            return
+
+        reference_prim = get_link_0_from_motion_group_prim(
+            motion_group_prim, fallback_to_motion_group=False
+        )
+        reference_prim_path = (
+            reference_prim.GetPath().pathString if reference_prim else None
+        )
 
         ghost_object: GhostObject = GhostObjectUtils.get_ghost_object_from_prim(
             selected_prim, reference_prim_path
         )
 
         if not ghost_object:
+            # motion group prim found but ghost could not be resolved
+            self._motion_group_prim = motion_group_prim
+            self._motion_group_reachable = None
+            self._deferred_build_ui()
+            if not self.visible and self.settings.open_with_ghost_object:
+                self.show()
             return
+
+        current_config = (
+            get_motion_group_configuration_from_prim(self._motion_group_prim)
+            if self._motion_group_prim
+            else None
+        )
         if (
             self._motion_group_prim
             and self._motion_group_prim.GetPath().pathString
             == ghost_object.robot_prim_path
+            and current_config is not None
         ):
             return
 
@@ -648,12 +815,14 @@ class GhostTeachingToolBar:
             run_coroutine(self.dock())
 
         if self._motion_group_prim and not self._settings_window:
-            self._settings_window = GhostTeachingSettingsWindow(
-                self._settings_model,
-                get_motion_group_configuration_from_prim(
-                    self._motion_group_prim
-                ).motion_stream_configuration,
+            motion_group_config = get_motion_group_configuration_from_prim(
+                self._motion_group_prim
             )
+            if motion_group_config is not None:
+                self._settings_window = GhostTeachingSettingsWindow(
+                    self._settings_model,
+                    motion_group_config.motion_stream_configuration,
+                )
         self._tool_bar.visible = True
         omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
 
@@ -664,6 +833,9 @@ class GhostTeachingToolBar:
         self._stop_follow_service()
         self._follow_button_model.set_value(False)
         self._reset_selection()
+        if self._connectivity_check_task and not self._connectivity_check_task.done():
+            self._connectivity_check_task.cancel()
+            self._connectivity_check_task = None
         if self._settings_window:
             self._settings_model = self._settings_window.model
             self._settings_window.visible = False

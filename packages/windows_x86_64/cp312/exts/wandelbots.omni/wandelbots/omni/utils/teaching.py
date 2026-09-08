@@ -2,7 +2,6 @@ import weakref
 from typing import Callable, cast
 
 import carb
-import numpy as np
 import isaacsim.core.utils.prims as prims_utils
 import isaacsim.core.utils.stage as stage_utils
 import omni.client
@@ -11,7 +10,7 @@ import omni.usd
 import omni.usd.commands
 from omni.kit.property.usd import prim_selection_payload
 from omni.usd.commands import DeletePrimsCommand
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.datatypes import (
@@ -38,9 +37,8 @@ PREFERRED_JOINT_VALUES_ATTR = "preferredJointValues"
 class GhostObjectUtils:
     @staticmethod
     def refresh_all_ghost_objects_material():
-        ghost_object: GhostObject
-        for ghost_object in GhostObjectUtils.get_ghost_objects():
-            prim = stage_utils.get_current_stage().GetPrimAtPath(ghost_object.prim_path)
+        for prim_path in GhostObjectUtils.get_ghost_object_prim_paths():
+            prim = stage_utils.get_current_stage().GetPrimAtPath(prim_path)
             if prim:
                 GhostObjectUtils.refresh_ghost_material(prim)
 
@@ -269,10 +267,27 @@ class GhostObjectUtils:
             ghost_objects.append(ghost_prim)
         return ghost_objects
 
+    def get_ghost_object_prim_paths() -> list[str]:
+        """Enumerate ghost-object prim paths without touching physics.
+
+        Unlike get_ghost_objects this never builds a GhostObject and never reads
+        a pose, so it does NOT construct RigidPrim views over robot links. Use it
+        wherever only the prim paths are needed -- especially on stage-event hot
+        paths (e.g. HIERARCHY_CHANGED), where a physics-view query would hit the
+        simulation view PhysX is rebuilding and raise "Simulation view object is
+        invalidated".
+        """
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return []
+        return [
+            prim.GetPath().pathString
+            for prim in stage_utils.traverse_stage()
+            if GhostObjectUtils.is_ghost_object(prim)
+        ]
+
     def delete_ghost_objects(prim_paths: list[str]) -> None:
-        ghost_paths = {
-            ghost.prim_path for ghost in GhostObjectUtils.get_ghost_objects()
-        }
+        ghost_paths = set(GhostObjectUtils.get_ghost_object_prim_paths())
         valid_paths = ghost_paths.intersection(prim_paths)
         for path in valid_paths:
             prims_utils.delete_prim(path)
@@ -411,27 +426,6 @@ class GhostObjectUtils:
             tcp_prim.GetPrimPath().pathString,
         )
 
-    def get_ghost_object_flange_pose(
-        ghost_prim: Usd.Prim, tcp_world_pose: WSPose
-    ) -> WSPose | None:
-        """Return the flange world pose for a ghost object positioned at tcp_world_pose.
-
-        Ghost object prims are placed at the TCP target pose. This computes the
-        corresponding flange pose: flange_target = tcp_world @ inv(flange_to_tcp_offset).
-        Returns None if the TCP/flange chain cannot be resolved.
-        """
-        tcp_offset = GhostObjectUtils.get_ghost_object_tcp_offset(ghost_prim)
-        if tcp_offset is None:
-            return None
-        # get_ghost_object_tcp_offset returns get_relative_prim_pose(flange_path, tcp_path)
-        # = inv(flange_world) @ tcp_world. We need inv(tcp_world) @ flange_world, the matrix inverse.
-        flange_to_tcp_mat = PrimUtils.pose_to_matrix(tcp_offset.pose)
-        tcp_to_flange_mat = np.linalg.inv(flange_to_tcp_mat)
-        ghost_mat = PrimUtils.pose_to_matrix(tcp_world_pose.pose)
-        return WSPose(
-            pose=PrimUtils.matrix_to_pose(ghost_mat @ tcp_to_flange_mat).tolist()
-        )
-
     def create_ghost_object_pose_watcher(
         ghost_object_prim: Usd.Prim, pose_changed_fn: Callable[[Pose], None]
     ):
@@ -471,13 +465,39 @@ class GhostObjectUtils:
 
     @staticmethod
     def get_preferred_joint_values(ghost_object_prim: Usd.Prim) -> list[float] | None:
-        """Read ``preferredJointValues`` from a ghost-object prim."""
+        """Read ``preferredJointValues`` from a prim (ghost object or plain pose)."""
         if not ghost_object_prim or not ghost_object_prim.IsValid():
             return None
         attr = ghost_object_prim.GetAttribute(PREFERRED_JOINT_VALUES_ATTR)
         if not attr or not attr.HasValue():
             return None
         return list(attr.Get())
+
+    @staticmethod
+    def set_preferred_joint_values(prim: Usd.Prim, joint_values: list[float]) -> None:
+        """Persist ``preferredJointValues`` on a prim (ghost object or plain pose)."""
+        if not prim or not prim.IsValid():
+            return
+        attr = prim.GetAttribute(PREFERRED_JOINT_VALUES_ATTR)
+        if not attr:
+            attr = prim.CreateAttribute(
+                PREFERRED_JOINT_VALUES_ATTR, Sdf.ValueTypeNames.FloatArray
+            )
+        attr.Set(Vt.FloatArray(joint_values))
+
+    @staticmethod
+    def clear_preferred_joint_values(prim: Usd.Prim) -> None:
+        """Remove a persisted ``preferredJointValues`` from a prim, if present.
+
+        Used when a genuine pose edit invalidates a previously manual-selected
+        config: without this, a later batch IK refresh, stage reload, or
+        re-add would call ``get_preferred_joint_values`` again and resurrect
+        the stale selection.
+        """
+        if not prim or not prim.IsValid():
+            return
+        if prim.HasAttribute(PREFERRED_JOINT_VALUES_ATTR):
+            prim.RemoveProperty(PREFERRED_JOINT_VALUES_ATTR)
 
     @staticmethod
     def find_preferred_config_index(

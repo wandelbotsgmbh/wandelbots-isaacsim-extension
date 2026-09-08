@@ -53,6 +53,9 @@ class ConvertPoseWindow:
         self._progress_bar: ui.ProgressBar | None = None
         self._progress_label: ui.Label | None = None
         self._converting: bool = False
+        # Set by the Cancel button or by closing the window; the conversion loop
+        # checks it between poses and stops.
+        self._cancel_requested: bool = False
 
         self.window = ui.Window(
             "Convert Poses to Ghost Objects",
@@ -61,6 +64,7 @@ class ConvertPoseWindow:
             flags=ui.WINDOW_FLAGS_NO_SCROLLBAR | ui.WINDOW_FLAGS_NO_COLLAPSE,
         )
         self.window.visible = False
+        self.window.set_visibility_changed_fn(self._on_visibility_changed)
         self._build_ui()
 
     # -- lifecycle ---------------------------------------------------------
@@ -80,6 +84,7 @@ class ConvertPoseWindow:
         self._selected_mg_idx = 0
         self._selected_tcp_idx = 0
         self._converting = False
+        self._cancel_requested = False
         self._build_action_buttons()
 
         self._refresh_motion_groups()
@@ -219,11 +224,35 @@ class ConvertPoseWindow:
                     },
                 )
                 self._progress_bar.model.set_value(0.0)
-                self._progress_label = ui.Label(
-                    "",
-                    height=0,
-                    style={"color": NOVAColor.TEXT_SECONDARY.color, "font_size": 13},
-                )
+                with ui.HStack(spacing=8):
+                    self._progress_label = ui.Label(
+                        "",
+                        height=0,
+                        style={
+                            "color": NOVAColor.TEXT_SECONDARY.color,
+                            "font_size": 13,
+                        },
+                    )
+                    ui.Spacer()
+                    ui.Button(
+                        "Cancel",
+                        width=100,
+                        height=24,
+                        clicked_fn=lambda ws=weakref.proxy(self): ws._request_cancel(),
+                    )
+
+    def _request_cancel(self) -> None:
+        """Ask the running conversion to stop after the current pose."""
+        if not self._converting or self._cancel_requested:
+            return
+        self._cancel_requested = True
+        if self._progress_label is not None:
+            self._progress_label.text = "Cancelling…"
+
+    def _on_visibility_changed(self, visible: bool) -> None:
+        # Closing the window mid-conversion cancels it.
+        if not visible and self._converting:
+            self._cancel_requested = True
 
     def _rebuild_description(self) -> None:
         if self._description_frame is None:
@@ -325,8 +354,10 @@ class ConvertPoseWindow:
             return
 
         # Swap the buttons for a progress bar and convert one ghost at a time.
+        # The swap happens inside the coroutine: _on_confirm runs in the
+        # button's clicked_fn, i.e. during the UI event/draw pass, where
+        # omni.ui forbids clearing/rebuilding containers.
         self._converting = True
-        self._build_action_progress()
         run_coroutine(self._run_conversion(stage, tcp_prim, tool_prim))
 
     def _update_progress(self, ghost_name: str, done: int, total: int) -> None:
@@ -343,28 +374,59 @@ class ConvertPoseWindow:
         tcp_prim: Usd.Prim,
         tool_prim: Usd.Prim,
     ) -> None:
-        """Create the ghost objects one at a time, updating the progress bar between
-        each so the UI stays responsive."""
+        """Convert poses one at a time (override in place), updating the progress bar
+        between each so the UI stays responsive and the Cancel/close flag is honoured.
+
+        The first pose builds the ghost (merge mesh + material); the rest reuse it via
+        a cheap copy instead of re-merging the tool meshes."""
         total = len(self._pose_prim_paths)
         created = 0
+        cancelled = False
         failed: list[str] = []
+        template_path: str | None = None
+        # Yield a frame first so the action area is rebuilt outside the click
+        # event that started the conversion (see _on_confirm).
+        await omni.kit.app.get_app().next_update_async()
+        self._build_action_progress()
         try:
             for pose_path in self._pose_prim_paths:
+                if self._cancel_requested:
+                    cancelled = True
+                    break
                 pose_name = Sdf.Path(pose_path).name or pose_path
-                self._update_progress(f"{pose_name}_go", created, total)
+                self._update_progress(pose_name, created, total)
                 # Yield first so the label/bar render before the (blocking) USD work.
                 await omni.kit.app.get_app().next_update_async()
 
-                if ConvertPoseService.create_ghost_for_pose(
-                    stage, pose_path, tcp_prim, tool_prim
+                if template_path is None:
+                    # First conversion builds the ghost from the tool meshes.
+                    result = ConvertPoseService.create_ghost_override(
+                        stage, pose_path, tcp_prim, tool_prim
+                    )
+                    if result:
+                        template_path = result
+                        created += 1
+                    else:
+                        failed.append(pose_name)
+                # Reuse the template ghost for every subsequent pose (no re-merge).
+                elif ConvertPoseService.copy_ghost_to_pose(
+                    stage, template_path, pose_path
                 ):
                     created += 1
                 else:
                     failed.append(pose_name)
-                self._update_progress(f"{pose_name}_go", created, total)
+                self._update_progress(pose_name, created, total)
         finally:
             self._converting = False
 
+        if cancelled:
+            nm.post_notification(
+                f"Conversion cancelled — created {created} of {total}.",
+                duration=5.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            self.window.visible = False
+            return
         if created == 0:
             nm.post_notification(
                 "Failed to create any ghost objects.",

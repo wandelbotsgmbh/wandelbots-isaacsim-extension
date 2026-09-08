@@ -33,6 +33,7 @@ MODEL_BASE_OFFSETS: dict[str, float] = {
     "ABB_6730_210_310": 0.0,
     "ABB_6730_240_290": 0.0,
     "ABB_IRT710": 0.0,
+    "FANUC_ARC_Mate_100iC12S": 0.45,
     "FANUC_ARC_Mate_100iD": 0.446,
     "FANUC_ARC_Mate_100iD16S": 0.45,
     "FANUC_ARC_Mate_120iD": 0.425,

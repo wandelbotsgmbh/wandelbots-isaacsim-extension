@@ -2,13 +2,25 @@ import json
 from urllib.parse import urlparse
 import omni.kit.app
 import carb.settings
-from omni.kit.window.filepicker.extension import NUCLEUS_SERVER_ADDED_GLOBAL_EVENT
 import omni.client
 from omni.kit.window.content_browser import get_content_instance
 from omni.kit.window.filepicker.collections.filesystem_collection import (
     FileSystemCollectionItem,
 )
 from pydantic import BaseModel, Field, field_validator
+
+try:
+    # Isaac Sim 6.0: server connections are managed by the connection manager
+    from omni.kit.widget.connection_manager import (
+        get_instance as get_connection_manager,
+    )
+
+    _HAS_CONNECTION_MANAGER = True
+except ImportError:
+    # Isaac Sim 5.1: the filepicker adds server connections via a global event
+    from omni.kit.window.filepicker.extension import NUCLEUS_SERVER_ADDED_GLOBAL_EVENT
+
+    _HAS_CONNECTION_MANAGER = False
 
 _CARB_TOKENS_KEY = "/persistent/exts/wandelbots.omni/nucleus/api_tokens"
 
@@ -55,6 +67,12 @@ class NucleusService:
         self._auth_subs: dict = {}
 
     def add_nucleus_server(self, server: NucleusServerModel):
+        if _HAS_CONNECTION_MANAGER:
+            connection_manager = get_connection_manager()
+            if connection_manager is None:
+                raise RuntimeError("Connection manager is not available")
+            connection_manager.registry.add_manual_server(server.name, server.url)
+            return
         omni.kit.app.queue_event(
             NUCLEUS_SERVER_ADDED_GLOBAL_EVENT,
             {"name": server.name, "url": server.url},

@@ -9,14 +9,18 @@ import carb
 import omni.ui as ui
 import omni.ui.scene as sc
 import omni.ui_scene as ui_scene
+import pydantic
 import wandelbots_api_client.v2 as wb_v2
 import wandelbots_api_client.v2.models as wb_v2_models
 from omni.kit.viewport.utility import get_active_viewport_window
 from omni.kit.viewport.window import ViewportWindow
-from pxr import Usd
+from pxr import Tf, Usd
 
-from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
+from wandelbots.omni.instances.models import NOVAInstance
 from wandelbots.omni.instances.instances_api import get_instances_api
+from wandelbots.omni.manipulators.motion_group import (
+    get_motion_group_configuration_from_prim,
+)
 from wandelbots.omni.manipulators.utils import compute_forward_kinematics_chain
 from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.reachability.reachability_service import ReachabilityResult
@@ -29,6 +33,39 @@ from wandelbots.omni.utils.math import (
     numpy_to_scene_matrix44,
 )
 from wandelbots.omni.utils.scene import SceneUtils
+
+
+class _ToolMeshManipulator(sc.Manipulator):
+    """Lightweight triangle-soup renderer for the attached tool's mesh.
+
+    Unlike ManipulatorMesh it does not merge coplanar faces: that merge is a
+    BFS that hangs the app on a full-detail tool mesh, so the triangles are
+    drawn as they are, in one sc.PolygonMesh call.
+    """
+
+    def __init__(
+        self,
+        transform: sc.Transform,
+        vertices: list[tuple[float, float, float]],
+        color: list[float],
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._transform = transform
+        self._vertices = vertices
+        self._color = color
+
+    def on_build(self):
+        if not self._vertices:
+            return
+        triangle_count = len(self._vertices) // 3
+        with sc.Transform(transform=self._transform):
+            sc.PolygonMesh(
+                positions=self._vertices,
+                colors=[self._color] * len(self._vertices),
+                vertex_counts=[3] * triangle_count,
+                vertex_indices=list(range(triangle_count * 3)),
+            )
 
 
 class ReachabilityPreview:
@@ -145,31 +182,43 @@ class ReachabilityPreview:
             stage_units = SceneUtils.get_stage_units()
             unit_factor = stage_units / 1000.0
 
-            # Build base transform: mounting pose + base offset from lookup.
-            base_transform = sc.Matrix44()
-            if mounting_pose:
-                base_transform = nova_pose_to_scene_matrix(mounting_pose, stage_units)
-
             base_offset = MODEL_BASE_OFFSETS.get(result.model_name, 0.0)
+            offset_transform = None
             if base_offset != 0.0:
                 offset_pose = [0, 0, base_offset * 1000.0, 0, 0, 0]
-                base_transform = base_transform * nova_pose_to_scene_matrix(
-                    offset_pose, stage_units
+                offset_transform = nova_pose_to_scene_matrix(offset_pose, stage_units)
+
+            def base_transform_for(pose_index: int) -> sc.Matrix44:
+                """Base transform: per-pose mounting (multi-base analysis)
+                falls back to the single mounting pose, plus the model's
+                kinematic base offset."""
+                pose = mounting_pose
+                per_pose = result.per_pose_mounting_poses
+                if per_pose and pose_index < len(per_pose) and per_pose[pose_index]:
+                    pose = per_pose[pose_index]
+                transform = (
+                    nova_pose_to_scene_matrix(pose, stage_units)
+                    if pose
+                    else sc.Matrix44()
                 )
+                if offset_transform is not None:
+                    transform = transform * offset_transform
+                return transform
 
             mesh_color = color if color else [0.4, 1.0, 0.4, 0.15]
 
             self._meshes_per_pose = []
             with self._scene_view.scene:
-                for joint_values in result.joint_solutions:
+                for pose_index, joint_values in enumerate(result.joint_solutions):
                     pose_meshes = self._build_single_pose_meshes(
                         joint_values,
                         dh_parameters,
                         collision_model,
-                        base_transform,
+                        base_transform_for(pose_index),
                         stage_units,
                         unit_factor,
                         mesh_color,
+                        result.tool_mesh_vertices,
                     )
                     self._meshes_per_pose.append(pose_meshes)
 
@@ -192,6 +241,7 @@ class ReachabilityPreview:
         stage_units: float,
         unit_factor: float,
         mesh_color: list[float],
+        tool_mesh_vertices: Optional[list[tuple[float, float, float]]] = None,
     ) -> list[ManipulatorMesh]:
         """Build and return meshes for one pose. Must be called within a scene context."""
         if not joint_values:
@@ -205,8 +255,8 @@ class ReachabilityPreview:
                 joint_values_rad=joint_values,
             )
         ]
-        for link_idx, link in enumerate(collision_model):
-            if link_idx >= len(fk_chain):
+        for link_index, link in enumerate(collision_model):
+            if link_index >= len(fk_chain):
                 break
             for _collider_id, collider in link.items():
                 mesh_pose = list(collider.pose.position) + list(
@@ -217,7 +267,7 @@ class ReachabilityPreview:
                 local_transform = nova_pose_to_scene_matrix(
                     mesh_pose, stage_units
                 ) * sc.Matrix44.get_scale_matrix(unit_factor, unit_factor, unit_factor)
-                link_transform = base_transform * fk_chain[link_idx]
+                link_transform = base_transform * fk_chain[link_index]
                 world_transform = link_transform * local_transform
                 mesh = create_from_collider(
                     collider=collider,
@@ -228,16 +278,31 @@ class ReachabilityPreview:
                 )
                 if mesh:
                     pose_meshes.append(mesh)
+
+        if tool_mesh_vertices:
+            # fk_chain[-1] is the flange frame; the tool mesh (meters,
+            # relative to its own root - see AttachToolWidget) anchors
+            # there directly, needing only a unit scale.
+            flange_transform = base_transform * fk_chain[-1]
+            scale = 1.0 / stage_units if stage_units else 1.0
+            scale_matrix = sc.Matrix44.get_scale_matrix(scale, scale, scale)
+            mesh = _ToolMeshManipulator(
+                transform=flange_transform * scale_matrix,
+                vertices=tool_mesh_vertices,
+                color=mesh_color,
+                visible=True,
+            )
+            pose_meshes.append(mesh)
         return pose_meshes
 
-    def set_pose_visible(self, pose_idx: int, visible: bool) -> None:
+    def set_pose_visible(self, pose_index: int, visible: bool) -> None:
         """Show or hide all meshes for a single target pose."""
-        if pose_idx < len(self._meshes_per_pose):
-            for mesh in self._meshes_per_pose[pose_idx]:
+        if pose_index < len(self._meshes_per_pose):
+            for mesh in self._meshes_per_pose[pose_index]:
                 mesh.visible = visible
 
     def update_pose_joint_config(
-        self, pose_idx: int, joint_values: list[float]
+        self, pose_index: int, joint_values: list[float]
     ) -> None:
         """Swap the rendered joint configuration for a single pose."""
         if not self._scene_view or self._last_result is None:
@@ -246,12 +311,12 @@ class ReachabilityPreview:
         if model_name not in self._model_cache:
             return
         # Ensure the per-pose list is long enough
-        while len(self._meshes_per_pose) <= pose_idx:
+        while len(self._meshes_per_pose) <= pose_index:
             self._meshes_per_pose.append([])
         # Clear old meshes for this pose
-        for mesh in self._meshes_per_pose[pose_idx]:
+        for mesh in self._meshes_per_pose[pose_index]:
             mesh.visible = False
-        self._meshes_per_pose[pose_idx].clear()
+        self._meshes_per_pose[pose_index].clear()
         if not joint_values:
             return
         stage_units = SceneUtils.get_stage_units()
@@ -270,7 +335,7 @@ class ReachabilityPreview:
         mesh_color = self._last_color if self._last_color else [0.4, 1.0, 0.4, 0.15]
         dh_parameters, collision_model = self._model_cache[model_name]
         with self._scene_view.scene:
-            self._meshes_per_pose[pose_idx] = self._build_single_pose_meshes(
+            self._meshes_per_pose[pose_index] = self._build_single_pose_meshes(
                 joint_values,
                 dh_parameters,
                 collision_model,
@@ -278,6 +343,7 @@ class ReachabilityPreview:
                 stage_units,
                 unit_factor,
                 mesh_color,
+                self._last_result.tool_mesh_vertices if self._last_result else None,
             )
 
     def update_color(self, color: list[float]) -> None:
@@ -332,24 +398,14 @@ class ReachabilityPreview:
     ) -> wb_v2.ApiClient | None:
         """Create an API client from an instance or motion group prim."""
         if instance is not None:
-            return self._make_api_client(instance)
-        if motion_group_prim is not None:
-            try:
-                from wandelbots.omni.manipulators.motion_group import (
-                    get_motion_group_configuration_from_prim,
-                )
-
-                config = get_motion_group_configuration_from_prim(motion_group_prim)
-                if config is None:
-                    return None
-                return config.motion_stream_configuration.get_api_client()
-            except Exception as exc:
-                carb.log_warn(f"Failed to create API client from prim: {exc}")
+            return get_instances_api().create_api_client_for_instance(instance)
+        if motion_group_prim is None:
+            return None
+        try:
+            config = get_motion_group_configuration_from_prim(motion_group_prim)
+            if config is None:
                 return None
-        return None
-
-    def _make_api_client(self, instance: NOVAInstance) -> wb_v2.ApiClient | None:
-        if isinstance(instance, NOVACloudInstance):
-            token = get_instances_api().get_auth_token_from_host(instance.host)
-            return instance.create_api_client(token=token)
-        return instance.create_api_client()
+            return config.motion_stream_configuration.get_api_client()
+        except (pydantic.ValidationError, Tf.ErrorException) as exc:
+            carb.log_warn(f"Failed to create API client from prim: {exc}")
+            return None

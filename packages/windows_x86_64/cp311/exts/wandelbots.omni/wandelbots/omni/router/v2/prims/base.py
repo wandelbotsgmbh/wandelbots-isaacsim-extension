@@ -11,7 +11,7 @@ from wandelbots.omni.datatypes import (
     WSPose,
     RelativePoseMode,
 )
-import isaacsim.core.utils.semantics as semantic_utils
+from wandelbots.omni.utils.synthetic_data import SyntheticDataUtils
 from wandelbots.omni.environment import host_database
 from wandelbots.omni.utils.prims import PrimUtils
 import omni.usd
@@ -61,7 +61,7 @@ async def get_pose(
     ),
 ) -> Pose:
     """
-    Returns the current pose of a prim in WandelScript (WS) 6D format — a 3D position and 3D rotation vector.
+    Returns the current pose of a prim in WS 6D format — a 3D position and 3D rotation vector.
     Rotations are in radians, position in millimeters.
     The pose can be returned in either local or world coordinate system.
     """
@@ -91,7 +91,7 @@ async def update_pose(
     input_pose: WSPose = Body(..., description="input pose of the object in WS format"),
 ) -> None:
     """
-    Sets the pose of the given prim using WandelScript (WS) format — a 6D vector (3D position, 3D rotation).
+    Sets the pose of the given prim using WS format — a 6D vector (3D position, 3D rotation).
     Rotations are in radians. Position is in millimeters.
     """
     try:
@@ -130,7 +130,7 @@ async def get_relative_pose(
     |`inverse_second`| Computes prim1::~prim2|
     |`inverse_both`| Computes ~prim1::~prim2|
 
-    The resulting pose is returned in WandelScript (WS) 6D format.
+    The resulting pose is returned in WS 6D format.
     Rotations are in radians, position in millimeters.
     The coordinate system used depends on the rotation_type parameter: either 'cartesian' or 'quaternion'.
     """
@@ -164,12 +164,17 @@ async def apply_relative_pose(
     ),
     object_first: bool = Body(
         default=False,
-        description="If True, apply object's pose first, then relative pose. If False, apply relative pose first.",
+        description=(
+            "Controls the SE(3) composition order. If True, the relative pose is "
+            "applied in the object's local frame (T_new = T_object ∘ T_relative). "
+            "If False, the relative pose is applied in the world frame "
+            "(T_new = T_relative ∘ T_object)."
+        ),
     ),
 ) -> None:
     """
-    Applies a relative pose to a prim using WandelScript (WS) Cartesian format. This modifies the prim's pose by composing it with the input relative transform.
-    If `object_first` is True, the prim's pose is applied before the relative transform, otherwise, the relative transform is applied first.
+    Applies a relative pose to a prim using WS Cartesian format. This modifies the prim's pose by composing it with the input relative transform as a full SE(3) transformation (the relative translation is rotated into the correct frame).
+    If `object_first` is True, the relative pose is interpreted in the object's local frame (T_new = T_object ∘ T_relative); otherwise it is interpreted in the world frame (T_new = T_relative ∘ T_object).
     """
     try:
         PrimUtils.set_relative_pose(
@@ -197,8 +202,7 @@ async def set_semantic_label(
     Sets a semantic label for an object to capture synthetic data. Can also assign multiple labels for a prim.
     """
     try:
-        prim = PrimUtils.get_prim(prim_path)
-        semantic_utils.add_update_semantics(prim, label)
+        SyntheticDataUtils.set_semantic_label(prim_path, label)
     except Exception as e:
         raise HTTPException(422, f"Invalid label: {e}")
 
@@ -237,12 +241,9 @@ async def list_semantic_labels(
     try:
         labels: dict[str, list[str]] = {}
         for prim in prims:
-            label = semantic_utils.get_semantics(prim)
-
-            # Read label name from object
-            # e.g. {'Semantics': ('class', 'robot')} where robot is the label name
-            if label and "Semantics" in label:
-                labels[prim.GetPrimPath().pathString] = [label["Semantics"][1]]
+            class_labels = SyntheticDataUtils.get_prim_labels(prim)
+            if class_labels:
+                labels[prim.GetPrimPath().pathString] = class_labels
         return PrimsLabelsResponse(labels)
     except Exception as e:
         raise HTTPException(422, f"Failed to collect labels. {e}")
@@ -279,9 +280,9 @@ async def clear_semantic_labels(
         ]
 
     try:
-        for prim_path in prim_paths:
-            prim = PrimUtils.get_prim(prim_path)
-            semantic_utils.remove_all_semantics(prim, recursive=False)
+        for target_path in prim_paths:
+            prim = PrimUtils.get_prim(target_path)
+            SyntheticDataUtils.remove_prim_labels(prim)
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Unable to remove semantic labels for prim: {e}"

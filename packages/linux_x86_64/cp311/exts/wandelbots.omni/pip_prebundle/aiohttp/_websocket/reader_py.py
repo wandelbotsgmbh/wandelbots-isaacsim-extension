@@ -138,8 +138,8 @@ class WebSocketReader:
         self,
         queue: WebSocketDataQueue,
         max_msg_size: int,
-        compress: bool = True,
-        decode_text: bool = True,
+        compress: bool,
+        decode_text: bool,
     ) -> None:
         self.queue = queue
         self._max_msg_size = max_msg_size
@@ -404,7 +404,11 @@ class WebSocketReader:
                         "Received frame with non-zero reserved bits",
                     )
 
-                self._frame_fin = bool(fin)
+                # Control frames (opcode > 0x7) may be interleaved between the
+                # fragments of a data message.
+                # https://datatracker.ietf.org/doc/html/rfc6455#section-5.4
+                if opcode <= 0x7:
+                    self._frame_fin = bool(fin)
                 self._frame_opcode = opcode
                 self._has_mask = bool(has_mask)
                 self._payload_len_flag = length

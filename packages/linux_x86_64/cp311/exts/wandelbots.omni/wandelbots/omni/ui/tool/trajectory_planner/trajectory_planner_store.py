@@ -3,9 +3,39 @@
 from __future__ import annotations
 
 import carb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from wandelbots.omni.utils.database import BaseStore
+
+
+# Fields unique to BlendingPosition (BlendingAuto only ever has
+# `min_velocity_in_percent`). Used to backfill the `blending_name`
+# discriminator on blending dicts saved before the NOVA API client
+# required it.
+_BLENDING_POSITION_KEYS = {
+    "position_zone_radius",
+    "position_zone_percentage",
+    "orientation_zone_radius",
+    "orientation_zone_percentage",
+    "joints_zone_radius",
+    "joints_zone_percentage",
+    "space",
+}
+
+
+def migrate_blending_dict(d: dict | None) -> dict | None:
+    """Backfill the `blending_name` discriminator on a legacy blending dict.
+
+    Configs saved before the client that introduced this discriminator
+    (MotionCommandBlending.from_dict requires it) don't have it, so
+    reopening or replanning a pre-upgrade skill would otherwise raise.
+    """
+    if d is None or "blending_name" in d:
+        return d
+    blending_name = (
+        "BlendingPosition" if _BLENDING_POSITION_KEYS & d.keys() else "BlendingAuto"
+    )
+    return {**d, "blending_name": blending_name}
 
 
 class PoseConfig(BaseModel):
@@ -18,6 +48,11 @@ class PoseConfig(BaseModel):
     tcp_name: str | None = None  # per-pose TCP override; falls back to skill tcp_name
     blending: dict | None = None  # serialized MotionCommandBlending.to_dict()
     limits_override: dict | None = None  # serialized LimitsOverride.to_dict()
+
+    @field_validator("blending", mode="before")
+    @classmethod
+    def _backfill_blending_name(cls, v):
+        return migrate_blending_dict(v) if isinstance(v, dict) else v
 
 
 class PlannedTrajectoryConfig(BaseModel):
@@ -46,6 +81,12 @@ class TrajectoryPlannerConfig(BaseModel):
     blending_min_velocity_percent: int = 50
     global_blending: dict | None = None  # serialized MotionCommandBlending.to_dict()
     global_limits_override: dict | None = None  # serialized LimitsOverride.to_dict()
+
+    @field_validator("global_blending", mode="before")
+    @classmethod
+    def _backfill_blending_name(cls, v):
+        return migrate_blending_dict(v) if isinstance(v, dict) else v
+
     payload_name: str = ""
     payload_mass: float = 0.0
     cf_algorithm: str = "RRTConnectAlgorithm"
@@ -57,6 +98,14 @@ class TrajectoryPlannerConfig(BaseModel):
     collapsed: bool = False
     poses_collapsed: bool = False
     planned_trajectory: PlannedTrajectoryConfig | None = None
+    # Visualization-only adjustments. None of these affect the planned motion.
+    # Prim the trajectory is anchored to (None = robot base).
+    reference_frame_path: str | None = None
+    # Mounting offset: translation (mm) and rotation (degrees, extrinsic XYZ)
+    # applied to correct the trajectory's placement when the robot is mounted
+    # on an external axis or otherwise offset from the reference frame.
+    mounting_offset: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    mounting_rotation: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
 
 
 class TrajectoryPlannerStore(BaseStore):

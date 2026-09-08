@@ -102,6 +102,9 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         self.assertFalse(config.collapsed)
         self.assertFalse(config.poses_collapsed)
         self.assertIsNone(config.planned_trajectory)
+        self.assertIsNone(config.reference_frame_path)
+        self.assertEqual(config.mounting_offset, [0.0, 0.0, 0.0])
+        self.assertEqual(config.mounting_rotation, [0.0, 0.0, 0.0])
 
     async def test_trajectory_planner_config_with_poses(self):
         poses = [

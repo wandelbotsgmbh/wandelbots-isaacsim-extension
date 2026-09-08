@@ -53,9 +53,7 @@ class TestIKService(omni.kit.test.AsyncTestCase):
         ctx = MagicMock()
         ctx.model_name = "UR10e"
         ctx.tcp_offset = None
-        ctx.description.mounting = wb_v2_models.Pose(
-            position=[0, 0, 0], orientation=[0, 0, 0]
-        )
+        ctx.mounting = wb_v2_models.Pose(position=[0, 0, 0], orientation=[0, 0, 0])
         ctx.joint_position_limits = None
         ctx.collision_setups = None
         mock_fetch_ctx.return_value = ctx
@@ -82,6 +80,12 @@ class TestIKService(omni.kit.test.AsyncTestCase):
         self.assertIsInstance(result, IKResult)
         self.assertEqual(result.joint_configs, expected_joints)
         self.assertIsNone(result.error)
+        # World-frame convention: the request must carry the stage-derived
+        # mounting from the context.
+        sent_request = mock_ik_api.inverse_kinematics.call_args.kwargs[
+            "inverse_kinematics_request"
+        ]
+        self.assertEqual(sent_request.mounting, ctx.mounting)
 
     @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.ik_service.fetch_motion_group_context"
@@ -97,9 +101,7 @@ class TestIKService(omni.kit.test.AsyncTestCase):
         ctx = MagicMock()
         ctx.model_name = "UR10e"
         ctx.tcp_offset = None
-        ctx.description.mounting = wb_v2_models.Pose(
-            position=[0, 0, 0], orientation=[0, 0, 0]
-        )
+        ctx.mounting = wb_v2_models.Pose(position=[0, 0, 0], orientation=[0, 0, 0])
         ctx.joint_position_limits = None
         ctx.collision_setups = None
         mock_fetch_ctx.return_value = ctx
@@ -137,9 +139,7 @@ class TestIKService(omni.kit.test.AsyncTestCase):
         ctx = MagicMock()
         ctx.model_name = "UR10e"
         ctx.tcp_offset = None
-        ctx.description.mounting = wb_v2_models.Pose(
-            position=[0, 0, 0], orientation=[0, 0, 0]
-        )
+        ctx.mounting = wb_v2_models.Pose(position=[0, 0, 0], orientation=[0, 0, 0])
         ctx.joint_position_limits = None
         ctx.collision_setups = None
         mock_fetch_ctx.return_value = ctx
@@ -202,9 +202,7 @@ class TestIKService(omni.kit.test.AsyncTestCase):
         ctx = MagicMock()
         ctx.model_name = "UR10e"
         ctx.tcp_offset = None
-        ctx.description.mounting = wb_v2_models.Pose(
-            position=[0, 0, 0], orientation=[0, 0, 0]
-        )
+        ctx.mounting = wb_v2_models.Pose(position=[0, 0, 0], orientation=[0, 0, 0])
         ctx.joint_position_limits = None
         ctx.collision_setups = None
         mock_fetch_ctx.return_value = ctx

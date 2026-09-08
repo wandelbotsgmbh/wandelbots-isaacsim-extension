@@ -11,18 +11,30 @@ from wandelbots.omni.manipulators import (
 )
 import omni.usd
 from wandelbots.omni.ui.overlay.collision_world.utils import (
-    CARB_OVERLAY_RENDER_MODE,
     get_overlay_color,
-    get_overlay_render_link_chain,
     set_overlay_color,
-    set_overlay_render_link_chain,
 )
-from wandelbots.omni.ui.tool.collision_setup.widgets import settings_string_values_model
 from wandelbots.omni.ui.widgets import (
     CollisionSetupSelector,
     PrimPicker,
     PrimPickerDialogProperties,
 )
+from wandelbots.omni.ui.utils import defer_call, weak_cb
+from wandelbots.omni.ui.widgets.form_row import form_row
+from wandelbots.omni.ui.widgets.instance_picker import InstancePicker
+from wandelbots.omni.ui.wb_theme import (
+    TOOLTIP_RESET,
+    BUTTON_HEIGHT,
+    BUTTON_PRIMARY_STYLE,
+    BUTTON_STYLE,
+    FORM_HEADER_GAP,
+    FORM_SIDE_MARGIN,
+    SPACING_MD,
+    SPACING_SM,
+    build_tooltip,
+)
+from wandelbots.omni.instances.instances_api import get_instances_api
+from wandelbots.omni.instances.models import NOVAInstance
 import carb.events
 from omni.kit.async_engine import run_coroutine
 import wandelbots.omni.ui.colors as color_utils
@@ -31,15 +43,7 @@ import wandelbots.omni.ui.overlay.collision_world.collision_world_overlay as ove
 from wandelbots.omni.ui.overlay.overlay_registry import (
     get_overlay_registry,
 )
-import wandelbots_api_client.v2 as wb
 from wandelbots.omni.ui.colors import NOVAColor
-
-WINDOW_MENU_ROOT = "Tools"
-
-
-class SphereRadiusModel(ui.SimpleFloatModel):
-    def min(self):
-        return 0
 
 
 class CollisionLoadSetupForm:
@@ -49,12 +53,17 @@ class CollisionLoadSetupForm:
 
         # model data
         self._motion_group_prim: Usd.Prim | None = None
-        self._base_prim: Usd.Prim | None = None
         self._collision_setup_name: str | None = None
+        self._cell_id: str | None = None
+
+        self._instance_picker = InstancePicker(
+            tooltip="NOVA instance to load a stored collision setup from.",
+            instance_changed_fn=weak_cb(self, "_on_instance_changed"),
+            instances_refreshed_fn=weak_cb(self, "_on_instances_refreshed"),
+        )
 
         # model inputs
         self._motion_group_prim_picker: PrimPicker | None = None
-        self._base_prim_picker: PrimPicker | None = None
 
         self._stage_event_subscription = (
             cast(
@@ -71,9 +80,7 @@ class CollisionLoadSetupForm:
         )
 
         self._build_ui()
-        run_coroutine(self._prefetch_collision_setup()).add_done_callback(
-            lambda _: self._deferred_build_ui()
-        )
+        self._instance_picker.refresh()
 
     def _build_ui(self):
         self.frame.clear()
@@ -83,240 +90,233 @@ class CollisionLoadSetupForm:
             return
 
         with self.frame:
-            with ui.VStack(spacing=4):
-                with ui.VGrid(column_count=2, row_height=ui.Pixel(30)):
-                    ui.Label(
-                        "Motion group prim",
-                        tooltip="Prim representing the robot motion group for which to export collisions",
-                    )
-                    with ui.HStack(height=20):
+            with ui.VStack(spacing=SPACING_SM):
+                ui.Spacer(height=FORM_HEADER_GAP)
+                self._instance_picker.build_row()
 
-                        def assign_prim(
-                            prim: Usd.Prim,
-                            weak_self: CollisionLoadSetupForm = weakref.proxy(self),
-                        ):
-                            weak_self._motion_group_prim = prim
-                            weak_self._deferred_build_ui()
-
-                        self._motion_group_prim_picker = PrimPicker(
-                            stage=self._stage,
-                            prim_picked_fn=assign_prim,
-                            prim=self._motion_group_prim,
-                            dialog_properties=PrimPickerDialogProperties(
-                                filter_fn=is_prim_motion_group,
-                                title="Select Motion Group",
-                            ),
-                        )
-
-                    if not self._motion_group_prim:
+                instance = self._instance_picker.instance
+                if instance is None:
+                    with ui.HStack(height=0):
+                        ui.Spacer(width=FORM_SIDE_MARGIN)
                         ui.Label(
-                            "Please select a motion group prim to load a collision setup.",
+                            "Select a NOVA instance to load a collision setup.",
                             word_wrap=True,
                             height=40,
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
                         )
-                        return
+                        ui.Spacer(width=FORM_SIDE_MARGIN)
+                    return
 
-                    motion_group_configuration = (
-                        get_motion_group_configuration_from_prim(
-                            self._motion_group_prim
-                        )
-                    )
-
-                    if not motion_group_configuration:
+                if self._cell_id is None:
+                    with ui.HStack(height=0):
+                        ui.Spacer(width=FORM_SIDE_MARGIN)
                         ui.Label(
-                            "The selected prim does not have a valid motion group configuration.",
+                            f"Instance '{instance.display_name}' has no cells available.",
                             word_wrap=True,
                             height=40,
+                            style={"color": NOVAColor.TEXT_SECONDARY.color},
                         )
+                        ui.Spacer(width=FORM_SIDE_MARGIN)
+                    return
+
+                with form_row(
+                    "Collision setup",
+                    tooltip="Stored collision setup to load into the viewport",
+                ):
+
+                    def assign_collision_setup(
+                        collision_setup: str,
+                        weak_self: CollisionLoadSetupForm = weakref.proxy(self),
+                    ):
+                        weak_self._collision_setup_name = collision_setup
+                        weak_self._deferred_build_ui()
+
+                    def on_setups_loaded(
+                        setups: list[str],
+                        weak_self: CollisionLoadSetupForm = weakref.proxy(self),
+                    ):
+                        # The remembered setup may be gone from the instance,
+                        # and the Load button must not stay enabled for it.
+                        if (
+                            weak_self._collision_setup_name is not None
+                            and weak_self._collision_setup_name not in setups
+                        ):
+                            weak_self._collision_setup_name = None
+                            weak_self._deferred_build_ui()
+
+                    CollisionSetupSelector(
+                        api_configuration=get_instances_api().get_api_configuration_for_instance(
+                            instance
+                        ),
+                        cell=self._cell_id,
+                        collision_setup_changed_fn=assign_collision_setup,
+                        selected_collision_setup=self._collision_setup_name,
+                        collision_setups_loaded_fn=on_setups_loaded,
+                    )
+
+                with form_row(
+                    "Motion group prim",
+                    tooltip=(
+                        "Optional. With a motion group selected, the overlay "
+                        "renders the full assembled view a consumer checks: "
+                        "static colliders plus the robot's live link chain, "
+                        "stored link equipment and tool, tracked on that robot. "
+                        "Without one, only the static colliders are rendered. "
+                        "Auto-detected when exactly one motion group in the "
+                        "scene is connected to the selected instance."
+                    ),
+                ):
+
+                    def assign_prim(
+                        prim: Usd.Prim,
+                        weak_self: CollisionLoadSetupForm = weakref.proxy(self),
+                    ):
+                        weak_self._motion_group_prim = prim
+                        weak_self._deferred_build_ui()
+
+                    self._motion_group_prim_picker = PrimPicker(
+                        stage=self._stage,
+                        prim_picked_fn=assign_prim,
+                        prim=self._motion_group_prim,
+                        dialog_properties=PrimPickerDialogProperties(
+                            filter_fn=is_prim_motion_group,
+                            title="Select Motion Group",
+                        ),
+                    )
+
+                def _overlay_color_changed(
+                    model: ui.AbstractItemModel,
+                    item: ui.AbstractItem,
+                    weak_self=weakref.ref(self),
+                ):
+                    self_instance = weak_self()
+
+                    if not self_instance:
                         return
 
-                    ui.Label(
-                        "Collision setup", tooltip="Collision setup to use for planning"
-                    )
+                    color = []
+                    for item in model.get_item_children():
+                        val = model.get_item_value_model(item).get_value_as_float()
+                        color.append(val)
+
+                    set_overlay_color(color_utils.float_array_to_hex(color))
+
+                with form_row(
+                    "Mesh color", tooltip="Color of the collision overlay meshes"
+                ):
                     with ui.HStack(height=20):
-                        stream_config = (
-                            motion_group_configuration.motion_stream_configuration
-                        )
-
-                        def assign_collision_setup(
-                            collision_setup: str,
-                            weak_self: CollisionLoadSetupForm = weakref.proxy(self),
-                        ):
-                            weak_self._collision_setup_name = collision_setup
-                            weak_self._deferred_build_ui()
-
-                        CollisionSetupSelector(
-                            api_configuration=stream_config.get_api_configuration(),
-                            cell=stream_config.cell,
-                            collision_setup_changed_fn=assign_collision_setup,
-                            selected_collision_setup=self._collision_setup_name,
-                        )
-
-                    ui.Label(
-                        "Coordinate system base",
-                        tooltip="Prim representing the base of the coordinate system for which to load the collision setup",
-                    )
-                    with ui.HStack(height=20):
-
-                        def assign_prim(
-                            prim: Usd.Prim,
-                            weak_self: CollisionLoadSetupForm = weakref.proxy(self),
-                        ):
-                            weak_self._base_prim = prim
-                            weak_self._deferred_build_ui()
-
-                        self._base_prim_picker = PrimPicker(
-                            stage=self._stage,
-                            prim_picked_fn=assign_prim,
-                            prim=self._base_prim,
-                            dialog_properties=PrimPickerDialogProperties(
-                                filter_fn=is_prim_motion_group,
-                                title="Select prim",
+                        color_picker = ui.ColorWidget(
+                            *color_utils.hex_to_float_array(get_overlay_color()),
+                            width=20,
+                            height=20,
+                            style=TOOLTIP_RESET,
+                            tooltip_fn=lambda: build_tooltip(
+                                "Color of the collision overlay meshes"
                             ),
                         )
+                        color_picker.model.add_end_edit_fn(_overlay_color_changed)
+                        ui.Spacer()
 
-                    ui.Spacer()
+                ui.Spacer(height=SPACING_SM)
+                with ui.HStack(height=BUTTON_HEIGHT, spacing=SPACING_MD):
+                    ui.Spacer(width=ui.Fraction(1))
+                    ui.Button(
+                        "Clear",
+                        width=0,
+                        height=BUTTON_HEIGHT,
+                        style=BUTTON_STYLE,
+                        tooltip="Remove the loaded collision setup from the viewport",
+                        clicked_fn=lambda weak_self=weakref.ref(self): (
+                            weak_self()._request_clear_collision_setup()
+                            if weak_self()
+                            else None
+                        ),
+                    )
                     ui.Button(
                         "Load Collision Setup",
-                        height=30,
-                        width=150,
+                        width=0,
+                        height=BUTTON_HEIGHT,
                         style={
-                            "background_color": NOVAColor.PRIMARY_MAIN.color,
-                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
-                            ":hovered": {
-                                "background_color": NOVAColor.PRIMARY_DARK.color
+                            **BUTTON_PRIMARY_STYLE,
+                            "Button:disabled": {
+                                "background_color": (
+                                    NOVAColor.ACTION_DISABLED_BACKGROUND.color
+                                )
                             },
-                            ":disabled": {"background_color": NOVAColor.DIVIDER.color},
                         },
-                        enabled=bool(
-                            self._motion_group_prim
-                            and self._base_prim
-                            and self._collision_setup_name
-                        ),
+                        enabled=bool(self._collision_setup_name),
                         clicked_fn=lambda weak_self=weakref.ref(self): (
                             weak_self()._request_load_collision_setup()
                             if weak_self()
                             else None
                         ),
                     )
-
-                    ui.Label("Collision Overlay")
-                    ui.Spacer()
-
-                    ui.Label("Mesh color", width=ui.Fraction(1))
-
-                    def _overlay_color_changed(
-                        model: ui.AbstractItemModel,
-                        item: ui.AbstractItem,
-                        weak_self=weakref.ref(self),
-                    ):
-                        self_instance = weak_self()
-
-                        if not self_instance:
-                            return
-
-                        color = []
-                        for item in model.get_item_children():
-                            val = model.get_item_value_model(item).get_value_as_float()
-                            color.append(val)
-
-                        set_overlay_color(color_utils.float_array_to_hex(color))
-
-                    stored_color_value = get_overlay_color()
-
-                    with ui.HStack():
-                        ui.Spacer(width=ui.Fraction(1), height=40)
-                        color_picker = ui.ColorWidget(
-                            *color_utils.hex_to_float_array(stored_color_value),
-                            width=20,
-                            height=20,
-                            tooltip="Color of the ghost object overlay",
-                        )
-                        color_picker.model.add_end_edit_fn(_overlay_color_changed)
-                        ui.Spacer(width=ui.Fraction(1), height=40)
-
-                    ui.Label("Display")
-                    with ui.VStack(height=20):
-                        ui.Spacer(height=4)
-                        ui.ComboBox(
-                            settings_string_values_model.SettingsStringValuesModel(
-                                CARB_OVERLAY_RENDER_MODE,
-                                [
-                                    ("None", "None"),
-                                    ("Selected", "Selected"),
-                                    ("All", "All"),
-                                ],
-                            )
-                        )
-                    ui.Label("Show link chain")
-                    with ui.VStack(height=20):
-                        ui.Spacer(height=4)
-                        model = ui.SimpleBoolModel(get_overlay_render_link_chain())
-                        ui.CheckBox(
-                            model,
-                        )
-                        model.add_value_changed_fn(
-                            lambda value: set_overlay_render_link_chain(
-                                value.get_value_as_bool()
-                            )
-                        )
+                    ui.Spacer(width=FORM_SIDE_MARGIN)
+                ui.Spacer(height=SPACING_SM)
 
     def _deferred_build_ui(self):
-        async def wait_one_frame_and_build():
-            await omni.kit.app.get_app().next_update_async()
-            self._build_ui()
+        defer_call(self._build_ui)
 
-        run_coroutine(wait_one_frame_and_build())
+    def refresh_instances(self) -> None:
+        """Refetch the instance list in the background. The owning window calls
+        this whenever it becomes visible, so instances added or removed via
+        Connect-to-NOVA since the constructor's fetch show up."""
+        self._instance_picker.refresh()
 
-    def reset(self):
-        pass
-        self._base_prim = None
+    def _on_instances_refreshed(self) -> None:
+        run_coroutine(self._resolve_selected_instance())
+
+    def _on_instance_changed(self) -> None:
+        # Another instance serves other setups, and the detected motion group
+        # was picked for the previous one.
         self._motion_group_prim = None
         self._collision_setup_name = None
-        run_coroutine(self._prefetch_collision_setup()).add_done_callback(
-            lambda _: self._deferred_build_ui()
-        )
+        self._on_instances_refreshed()
 
-    def refresh(self):
-        run_coroutine(self._prefetch_collision_setup()).add_done_callback(
-            lambda _: self._deferred_build_ui()
-        )
+    async def _resolve_selected_instance(self) -> None:
+        """Resolve the selected instance's cell and auto-detect a motion group
+        prim in the scene connected to it, then rebuild the dependent UI."""
+        instance = self._instance_picker.instance
+        self._cell_id = None
+        if instance is not None:
+            self._cell_id = await get_instances_api().fetch_primary_cell_id(instance)
+            self._auto_detect_motion_group_prim(instance)
 
-    async def _prefetch_collision_setup(self):
-        if self._stage is None:
+        self._deferred_build_ui()
+
+    def _auto_detect_motion_group_prim(self, instance: NOVAInstance) -> None:
+        """Auto-select the scene's motion group prim connected to `instance`,
+        when exactly one such prim exists. Left unset (for manual override)
+        when there's none or more than one."""
+        if self._stage is None or self._motion_group_prim is not None:
             return
 
-        raw_motion_group_prims: list[Usd.Prim] = [
-            self._stage.GetPrimAtPath(prim_path)
-            for prim_path in get_scene_motion_group_prim_paths(self._stage)
-        ]
+        candidates: list[Usd.Prim] = []
+        for prim_path in get_scene_motion_group_prim_paths(
+            include_prims_without_api=False
+        ):
+            prim = self._stage.GetPrimAtPath(prim_path)
+            if not prim or not prim.IsValid():
+                continue
+            config = get_motion_group_configuration_from_prim(prim)
+            if config is None:
+                continue
+            stream = config.motion_stream_configuration
+            if (
+                stream.host == instance.host
+                and stream.secure_connection == instance.is_secure_connection
+            ):
+                candidates.append(prim)
 
-        motion_group_prims = [
-            (prim, get_motion_group_configuration_from_prim(prim))
-            for prim in raw_motion_group_prims
-            if prim and get_motion_group_configuration_from_prim(prim)
-        ]
+        if len(candidates) == 1:
+            self._motion_group_prim = candidates[0]
 
-        if len(motion_group_prims) == 0 or len(motion_group_prims) > 1:
-            return
-
-        motion_group_prim, motion_group_config = motion_group_prims[0]
-
-        self._motion_group_prim = motion_group_prim
-        self._base_prim = self._motion_group_prim
-
-        try:
-            motion_stream_config = motion_group_config.motion_stream_configuration
-            async with motion_stream_config.get_api_client() as api:
-                collision_setups = await wb.StoreCollisionSetupsApi(
-                    api
-                ).list_stored_collision_setups_keys(cell=motion_stream_config.cell)
-                if len(collision_setups) > 0:
-                    self._collision_setup_name = collision_setups[0]
-        except Exception as e:
-            carb.log_warn(
-                f"Failed to fetch collision setups for motion group prim {self._motion_group_prim.GetPath().pathString}: {e}"
-            )
+    def reset(self):
+        self._motion_group_prim = None
+        self._collision_setup_name = None
+        self._cell_id = None
+        self._instance_picker.reset_selection()
+        self._instance_picker.refresh()
 
     def _on_stage_event(self, event: carb.events.IEvent):
         if event.type == int(omni.usd.StageEventType.OPENED):
@@ -327,6 +327,14 @@ class CollisionLoadSetupForm:
             self.reset()
 
     def _request_load_collision_setup(self):
+        instance = self._instance_picker.instance
+        if instance is None or self._cell_id is None:
+            nm.post_notification(
+                text="Select a NOVA instance with an available cell before loading.",
+                status=nm.NotificationStatus.WARNING,
+            )
+            return
+
         collision_world_overlay: overlay.CollisionWorldOverlay = (
             get_overlay_registry().get_overlay(overlay.COLLISION_WORLD_OVERLAY_NAME)
         )
@@ -338,7 +346,21 @@ class CollisionLoadSetupForm:
             )
             return
         collision_world_overlay.selection = overlay.CollisionSetupSelection(
-            motion_group_prim=self._motion_group_prim,
-            base_prim=self._base_prim,
+            # Static colliders live in the stage world frame, which is where the
+            # overlay's None fallback anchors them.
+            base_prim=None,
             collision_setup_name=self._collision_setup_name,
+            api_configuration=get_instances_api().get_api_configuration_for_instance(
+                instance
+            ),
+            cell=self._cell_id,
+            motion_group_prim=self._motion_group_prim,
         )
+
+    def _request_clear_collision_setup(self):
+        collision_world_overlay: overlay.CollisionWorldOverlay = (
+            get_overlay_registry().get_overlay(overlay.COLLISION_WORLD_OVERLAY_NAME)
+        )
+        if not collision_world_overlay:
+            return
+        collision_world_overlay.selection = None

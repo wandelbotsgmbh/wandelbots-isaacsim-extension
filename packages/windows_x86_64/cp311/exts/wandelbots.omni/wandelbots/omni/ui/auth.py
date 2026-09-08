@@ -12,6 +12,15 @@ from wandelbots.omni.utils.auth import (
     create_auth_controller,
 )
 from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.wb_theme import (
+    TOOLTIP_RESET,
+    BUTTON_HEIGHT,
+    BUTTON_PRIMARY_STYLE,
+    BUTTON_STYLE,
+    CORNER_RADIUS,
+    FORM_SIDE_MARGIN,
+    build_tooltip,
+)
 from omni.kit.async_engine import run_coroutine
 
 
@@ -49,70 +58,77 @@ class Auth0UIBuilder:
             verification_url = f"{verification_url}?user_code={user_code}"
 
         with self._container:
-            with ui.VStack(spacing=10, alignment=ui.Alignment.CENTER):
-                ui.Label(
-                    "Authenticate by following these steps:",
-                    style={"font_size": 16},
-                    alignment=ui.Alignment.CENTER,
-                )
-                ui.Label(
-                    "1. Click 'Open in browser' below (or 'Copy URL' to paste it in your browser)",
-                    word_wrap=True,
-                    alignment=ui.Alignment.CENTER,
-                )
-                ui.Label(
-                    "2. If asked, enter this code on the website:",
-                    word_wrap=True,
-                    alignment=ui.Alignment.CENTER,
-                )
-
-                with ui.HStack():
-                    ui.Spacer()
-                    ui.StringField(
-                        ui.SimpleStringModel(user_code),
-                        read_only=True,
-                        height=60,
-                        style={
-                            "font_size": 24,
-                            "alignment": ui.Alignment.CENTER,
-                            "padding": 20,
-                            "color": 0xFFFFFFFF,
-                            "background_color": 0xFF3C3C3C,
-                        },
+            with ui.HStack():
+                ui.Spacer(width=FORM_SIDE_MARGIN)
+                with ui.VStack(spacing=8, width=ui.Fraction(1)):
+                    ui.Label(
+                        "Authenticate by following these steps:",
+                        style={"font_size": 16},
+                        alignment=ui.Alignment.LEFT,
                     )
-                    ui.Spacer()
-
-                ui.Label(
-                    "3. Complete the authentication in your browser",
-                    word_wrap=True,
-                    alignment=ui.Alignment.CENTER,
-                )
-
-                ui.Spacer(height=5)
-
-                with ui.HStack(spacing=5):
-                    ui.Spacer(width=5)
-                    ui.Button(
-                        "Cancel", height=30, clicked_fn=lambda: self._on_dismissed()
+                    ui.Label(
+                        '1. Click "Open in browser" below (or "Copy URL" to paste it in your browser)',
+                        word_wrap=True,
+                        alignment=ui.Alignment.LEFT,
                     )
-                    ui.Spacer()
-                    ui.Button(
-                        "Copy URL",
-                        height=30,
-                        tooltip=f"Copies the verification URL to your clipboard: {verification_url}",
-                        clicked_fn=lambda: self._on_copy_to_clipboard(verification_url),
+                    ui.Label(
+                        "2. If asked, enter the following code and complete authentication",
+                        word_wrap=True,
+                        alignment=ui.Alignment.LEFT,
                     )
-                    ui.Button(
-                        "Open in browser",
-                        height=30,
-                        style={
-                            "background_color": NOVAColor.PRIMARY_MAIN.color,
-                            "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
-                        },
-                        tooltip=f"Opens the verification URL in your default web browser: {verification_url}",
-                        clicked_fn=lambda: self._on_open_in_browser(verification_url),
-                    )
-                    ui.Spacer(width=5)
+
+                    with ui.ZStack(height=60):
+                        ui.Rectangle(
+                            style={
+                                "background_color": NOVAColor.LAYER_DROPDOWN_BODY.color,
+                                "border_radius": CORNER_RADIUS,
+                            }
+                        )
+                        ui.Label(
+                            user_code,
+                            alignment=ui.Alignment.CENTER,
+                            style={"font_size": 24, "color": 0xFFFFFFFF},
+                        )
+
+                    ui.Spacer(height=5)
+
+                    with ui.HStack(spacing=5):
+                        ui.Button(
+                            "Cancel",
+                            width=0,
+                            height=BUTTON_HEIGHT,
+                            style={**BUTTON_STYLE, **TOOLTIP_RESET},
+                            tooltip_fn=lambda: build_tooltip(
+                                "Cancel the sign-in and close this dialog."
+                            ),
+                            clicked_fn=lambda: self._on_dismissed(),
+                        )
+                        ui.Spacer()
+                        ui.Button(
+                            "Copy URL",
+                            width=0,
+                            height=BUTTON_HEIGHT,
+                            style={**BUTTON_STYLE, **TOOLTIP_RESET},
+                            tooltip_fn=lambda url=verification_url: build_tooltip(
+                                f"Copies the verification URL to your clipboard: {url}"
+                            ),
+                            clicked_fn=lambda: self._on_copy_to_clipboard(
+                                verification_url
+                            ),
+                        )
+                        ui.Button(
+                            "Open in browser",
+                            width=0,
+                            height=BUTTON_HEIGHT,
+                            style={**BUTTON_PRIMARY_STYLE, **TOOLTIP_RESET},
+                            tooltip_fn=lambda url=verification_url: build_tooltip(
+                                f"Opens the verification URL in your default web browser: {url}"
+                            ),
+                            clicked_fn=lambda: self._on_open_in_browser(
+                                verification_url
+                            ),
+                        )
+                ui.Spacer(width=FORM_SIDE_MARGIN)
 
     async def _check_auth_status(self):
         """Async function to check authentication status and update UI"""

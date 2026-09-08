@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import omni.kit.test
+import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.tests.unit.test_fixtures import (
     SAMPLE_CELL,
@@ -176,6 +177,7 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
         ctx.description = make_mock_description()
         ctx.joint_position_limits = None
         ctx.collision_setups = None
+        ctx.mounting = None
         mock_fetch_ctx.return_value = ctx
 
         joint_trajectory = wb_v2_models.JointTrajectory(
@@ -196,7 +198,8 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
                         target_pose=wb_v2_models.Pose(
                             position=[600.0, 200.0, 300.0],
                             orientation=[0.0, 3.14, 0.0],
-                        )
+                        ),
+                        path_definition_name="PathCartesianPTP",
                     )
                 )
             )
@@ -236,6 +239,7 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
         ctx.description = make_mock_description()
         ctx.joint_position_limits = None
         ctx.collision_setups = None
+        ctx.mounting = None
         mock_fetch_ctx.return_value = ctx
 
         mock_plan_api = AsyncMock()
@@ -264,7 +268,8 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
                         target_pose=wb_v2_models.Pose(
                             position=[600.0, 200.0, 300.0],
                             orientation=[0.0, 3.14, 0.0],
-                        )
+                        ),
+                        path_definition_name="PathCartesianPTP",
                     )
                 )
             )
@@ -303,6 +308,7 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
         ctx.description = make_mock_description()
         ctx.joint_position_limits = None
         ctx.collision_setups = None
+        ctx.mounting = None
         mock_fetch_ctx.return_value = ctx
 
         mock_plan_api = AsyncMock()
@@ -323,7 +329,8 @@ class TestPlanTrajectory(omni.kit.test.AsyncTestCase):
                         target_pose=wb_v2_models.Pose(
                             position=[600.0, 200.0, 300.0],
                             orientation=[0.0, 3.14, 0.0],
-                        )
+                        ),
+                        path_definition_name="PathCartesianPTP",
                     )
                 )
             )
@@ -353,7 +360,8 @@ def _cmd(pos):
             wb_v2_models.PathCartesianPTP(
                 target_pose=wb_v2_models.Pose(
                     position=pos, orientation=[0.0, 3.14, 0.0]
-                )
+                ),
+                path_definition_name="PathCartesianPTP",
             )
         )
     )
@@ -389,6 +397,7 @@ class TestPlanTrajectorySegments(omni.kit.test.AsyncTestCase):
         ctx.description = make_mock_description()
         ctx.joint_position_limits = None
         ctx.collision_setups = None
+        ctx.mounting = None
         return ctx
 
     @patch(
@@ -500,8 +509,10 @@ class TestPlanTrajectorySegments(omni.kit.test.AsyncTestCase):
         mock_fetch_ctx.return_value = self._ctx()
 
         # First segment returns a non-JointTrajectory instance -> PlanFailure.
+        # error_feedback must be a real None: an auto-created child mock would
+        # leak a MagicMock into _format_error_feedback's string assembly.
         fail_resp = MagicMock()
-        fail_resp.response.actual_instance = MagicMock()  # not a JointTrajectory
+        fail_resp.response.actual_instance = MagicMock(error_feedback=None)
         mock_plan_api = AsyncMock()
         mock_plan_api.plan_trajectory.return_value = fail_resp
         # raw fallback path returns no parsable error
@@ -547,7 +558,9 @@ class TestPlanTrajectorySegments(omni.kit.test.AsyncTestCase):
         mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
         ctx = self._ctx()
-        ctx.collision_setups = {"scene": MagicMock()}
+        # A real CollisionSetup: MotionGroupSetup validates on assignment and
+        # rejects a MagicMock for its collision_setups dict.
+        ctx.collision_setups = {"scene": wb_v2_models.CollisionSetup()}
         mock_fetch_ctx.return_value = ctx
 
         jt = _jt([SAMPLE_JOINT_CONFIGS[0], SAMPLE_JOINT_CONFIGS[1]])

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import weakref
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from isaacsim.gui.components.ui_utils import get_style
 
 from wandelbots.omni.ui.base import BaseUIBuilder
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE, ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import TOOLTIP_STYLE, ICON_BTN_STYLE
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.ui.widgets.switch import Switch
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
@@ -117,8 +118,9 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
         with ui.HStack(height=0):
             ui.Spacer(width=_GUTTER)
             ui.Label(
-                "Bundle the diagnosis package of the selected NOVA instances and "
-                "the current Isaac Sim session log into one zip next to your scene.",
+                "Bundle the current Isaac Sim session log - and optionally the "
+                "diagnosis package of selected NOVA instances - into one zip next "
+                "to your scene.",
                 style={"font_size": 13, "color": NOVAColor.TEXT_SECONDARY.color},
                 word_wrap=True,
                 height=0,
@@ -149,7 +151,7 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
 
     def _build_instances_section(self):
         with ui.VStack(spacing=4, height=0):
-            self._build_section_header("NOVA INSTANCES", show_refresh=True)
+            self._build_section_header("NOVA INSTANCES (OPTIONAL)", show_refresh=True)
             with ui.HStack(height=0):
                 ui.Spacer(width=_GUTTER)
                 with ui.ZStack(height=0):
@@ -160,8 +162,18 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
                         ui.Spacer(height=4)
                 ui.Spacer(width=_GUTTER)
 
-    def _build_log_section(self):
+    @staticmethod
+    def _available_log_path() -> str | None:
+        """The session log, but only if it is actually readable.
+
+        Same condition create_diagnose_package uses, so the button gate and the
+        section text cannot promise a file the package will not contain.
+        """
         log_path = get_isaac_sim_log_path()
+        return log_path if log_path and os.path.isfile(log_path) else None
+
+    def _build_log_section(self):
+        log_path = self._available_log_path()
         with ui.VStack(spacing=4, height=0):
             self._build_section_header("ISAAC SIM SESSION LOG")
             with ui.HStack(height=0):
@@ -243,9 +255,11 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
 
     def _on_stage_tree_toggled(self, value: bool):
         self._include_stage_tree = value
+        self._update_create_button_enabled()
 
     def _on_motion_groups_toggled(self, value: bool):
         self._include_motion_groups = value
+        self._update_create_button_enabled()
 
     def _build_additional_info_section(self):
         with ui.VStack(spacing=4, height=0):
@@ -334,8 +348,13 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
                 with ui.HStack(height=40):
                     ui.Spacer(width=10)
                     ui.Label(
-                        "No reachable instances. Connect one via 'Connected "
-                        "Instances' first.",
+                        "No reachable instances. The package will contain the "
+                        "Isaac Sim data only - connect one via 'Connected "
+                        "Instances' to include its NOVA diagnosis."
+                        if self._available_log_path()
+                        else "No reachable instances and no session log. Enable a "
+                        "stage option below, or connect an instance via "
+                        "'Connected Instances'.",
                         style={
                             "font_size": 13,
                             "color": NOVAColor.TEXT_SECONDARY.color,
@@ -412,9 +431,22 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
     def _selected_instances(self) -> list[NOVAInstance]:
         return [inst for inst in self._instances if self._selection.get(inst.host)]
 
+    def _has_any_source(self) -> bool:
+        """Whether anything at all would end up in the package.
+
+        Instances are optional, but every source being absent is the one state in
+        which create_diagnose_package can only raise, so the button stays off.
+        """
+        return bool(
+            self._selected_instances()
+            or self._available_log_path()
+            or self._include_stage_tree
+            or self._include_motion_groups
+        )
+
     def _update_create_button_enabled(self):
         if self._create_button is not None:
-            self._create_button.enabled = len(self._selected_instances()) > 0
+            self._create_button.enabled = self._has_any_source()
 
     def _set_status(self, message: str, is_error: bool = False):
         if self._status_label is None:
@@ -442,9 +474,8 @@ class DiagnosePackageUIBuilder(BaseUIBuilder):
             self._progress_bar.visible = False
 
     def _on_create_clicked(self):
+        # May be empty - see _update_create_button_enabled.
         selected = self._selected_instances()
-        if not selected:
-            return
         if self._create_button is not None:
             self._create_button.enabled = False
         self._set_status("Creating diagnose package…")

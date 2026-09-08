@@ -20,7 +20,11 @@ from wandelbots.omni.manipulators import (
 )
 from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import (
+    ICON_BTN_STYLE,
+    TOOLTIP_RESET,
+    build_tooltip,
+)
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.ui.widgets.prim_picker import (
     PrimPicker,
@@ -286,14 +290,19 @@ class MotionGroupSetup:
                         "Open Collision Setup",
                         width=150,
                         height=22,
-                        tooltip="Open the Collision Setup window to create one.",
+                        tooltip_fn=lambda: build_tooltip(
+                            "Open the Collision Setup window to create one."
+                        ),
                         clicked_fn=lambda: self._open_collision_setup_window(),
                         style={
-                            "background_color": 0xFF292929,
-                            "font_size": 12,
-                            ":hovered": {
+                            "Button": {
+                                "background_color": 0xFF292929,
+                                "font_size": 12,
+                            },
+                            "Button:hovered": {
                                 "background_color": NOVAColor.BUTTON_HOVER.color
                             },
+                            **TOOLTIP_RESET,
                         },
                     )
                     ui.Button(
@@ -303,18 +312,13 @@ class MotionGroupSetup:
                         image_url=get_icon("refresh.svg"),
                         image_width=14,
                         image_height=14,
-                        tooltip="Refresh collision scenes",
+                        tooltip_fn=lambda: build_tooltip("Refresh collision scenes"),
                         clicked_fn=lambda ws=weakref.ref(self): (
                             run_coroutine(ws()._fetch_collision_setups())
                             if ws()
                             else None
                         ),
-                        style={
-                            "background_color": 0x00000000,
-                            ":hovered": {
-                                "background_color": NOVAColor.BUTTON_HOVER.color
-                            },
-                        },
+                        style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
                     )
                 return
 
@@ -345,13 +349,13 @@ class MotionGroupSetup:
                         image_url=get_icon("refresh.svg"),
                         image_width=14,
                         image_height=14,
-                        tooltip="Refresh collision scenes",
+                        tooltip_fn=lambda: build_tooltip("Refresh collision scenes"),
                         clicked_fn=lambda ws=weakref.ref(self): (
                             run_coroutine(ws()._fetch_collision_setups())
                             if ws()
                             else None
                         ),
-                        style=ICON_BTN_STYLE,
+                        style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
                     )
 
                 # Collision-free planning is only meaningful with an active scene,
@@ -378,11 +382,13 @@ class MotionGroupSetup:
             ui.Label(
                 "Collision-free Planning",
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=(
-                    "Plan a collision-free trajectory using the selected scene. "
-                    "When off, normal motion-type planning is used and still "
-                    "respects the selected collision scene."
+                tooltip_fn=lambda: build_tooltip(
+                    "Plan a collision-free trajectory through the selected "
+                    "scene; per-pose motion types are ignored. When off, "
+                    "motion-type (LIN/PTP) planning checks each pose against "
+                    "the scene, but not the path between poses."
                 ),
+                style=TOOLTIP_RESET,
             )
 
     def _on_collision_free_toggled(self, enabled: bool) -> None:

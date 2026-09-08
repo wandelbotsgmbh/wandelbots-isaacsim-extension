@@ -99,7 +99,9 @@ class TestSegmentBlending(omni.kit.test.AsyncTestCase):
 
     async def test_position_blend_is_exported(self):
         config = _config("a", [None, None])
-        position = wb_v2_models.BlendingPosition(position_zone_radius=12.5)
+        position = wb_v2_models.BlendingPosition(
+            position_zone_radius=12.5, blending_name="BlendingPosition"
+        )
         config.poses[1].blending = wb_v2_models.MotionCommandBlending(
             position
         ).to_dict()
@@ -109,7 +111,9 @@ class TestSegmentBlending(omni.kit.test.AsyncTestCase):
 
     async def test_auto_blend_falls_back_to_hard_transition(self):
         config = _config("a", [None, None])
-        auto = wb_v2_models.BlendingAuto(min_velocity_in_percent=50)
+        auto = wb_v2_models.BlendingAuto(
+            min_velocity_in_percent=50, blending_name="BlendingAuto"
+        )
         config.poses[1].blending = wb_v2_models.MotionCommandBlending(auto).to_dict()
         self.assertIsNone(_segment_blending(config.poses[1], config, None))
 
@@ -163,10 +167,16 @@ class TestSegmentedExport(omni.kit.test.AsyncTestCase):
         config = self._config_with_joints("a", [None, None, "b", "b"])
         config.global_limits_override = {"tcp_velocity_limit": 250.0}
         # position blend on the boundary pose (last of run 0) -> inter-segment blend
-        pos = wb_v2_models.BlendingPosition(position_zone_radius=12.5)
+        pos = wb_v2_models.BlendingPosition(
+            position_zone_radius=12.5, blending_name="BlendingPosition"
+        )
         config.poses[1].blending = wb_v2_models.MotionCommandBlending(pos).to_dict()
 
-        skill = await build_skill(config, MagicMock())
+        # _build_metadata feeds stage.GetRootLayer().identifier into the
+        # str-typed SkillMetadata.scene_path - a bare MagicMock fails pydantic.
+        stage = MagicMock()
+        stage.GetRootLayer.return_value.identifier = "/scenes/test.usd"
+        skill = await build_skill(config, stage)
 
         self.assertIsNone(skill.plan_trajectory_request)
         sp = skill.plan_segmented_trajectory
@@ -196,7 +206,9 @@ class TestSegmentedExport(omni.kit.test.AsyncTestCase):
     async def test_single_tcp_emits_flat_request(self, _mock_pose):
         config = self._config_with_joints("a", [None, None, None])
 
-        skill = await build_skill(config, MagicMock())
+        stage = MagicMock()
+        stage.GetRootLayer.return_value.identifier = "/scenes/test.usd"
+        skill = await build_skill(config, stage)
 
         self.assertIsNone(skill.plan_segmented_trajectory)
         self.assertIsNotNone(skill.plan_trajectory_request)

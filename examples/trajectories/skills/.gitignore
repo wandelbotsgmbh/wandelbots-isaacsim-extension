@@ -1,0 +1,6 @@
+# Generated trajectory programs are not checked in — regenerate them with
+# `python ../generate_trajectories.py`. Only the runtime helper and this file
+# are tracked.
+*
+!.gitignore
+!_trajectory_runtime.py

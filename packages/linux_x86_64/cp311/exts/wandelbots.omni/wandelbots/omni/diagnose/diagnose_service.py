@@ -15,6 +15,7 @@ import wandelbots_api_client.v2 as wb_v2
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVAInstance, NOVACloudInstance
 from wandelbots.omni.utils.api import _get_user_agent
+from wandelbots.omni.utils.locations import is_url, join_location, parent_location
 
 # Carb setting holding the path of the current Kit/Isaac Sim session log file.
 ISAAC_SIM_LOG_SETTING = "/log/file"
@@ -134,6 +135,9 @@ async def _resolve_scene_dir() -> str | None:
     Resolve the directory of the current scene, prompting the user to save the
     stage first if it has no file path yet. Returns None if no path could be
     determined (caller should notify the user).
+
+    The result is either an OS path or a remote URL - never a ``file:`` URL, see
+    :mod:`wandelbots.omni.utils.locations`.
     """
     stage_url = omni.usd.get_context().get_stage_url() or ""
     if not stage_url:
@@ -141,9 +145,10 @@ async def _resolve_scene_dir() -> str | None:
         stage_url = omni.usd.get_context().get_stage_url() or ""
     if not stage_url:
         return None
-    if "://" in stage_url:
-        return stage_url.rsplit("/", 1)[0] if "/" in stage_url else stage_url
-    return os.path.dirname(stage_url)
+    # The shape of this string decides local vs. remote handling below.
+    carb.log_info(f"Diagnose package: stage url is '{stage_url}'")
+    scene_dir = parent_location(stage_url)
+    return scene_dir or None
 
 
 async def _fetch_instance_package(instance: NOVAInstance) -> bytearray | None:
@@ -166,7 +171,7 @@ async def _fetch_instance_package(instance: NOVAInstance) -> bytearray | None:
 
 async def _write_package(path: str, data: bytes) -> None:
     """Write the final zip next to the scene (local filesystem or Nucleus)."""
-    if "://" in path:
+    if is_url(path):
         result = await omni.client.write_file_async(path, data)
         if result != omni.client.Result.OK:
             raise RuntimeError(f"omni.client.write_file_async failed: {result}")
@@ -196,7 +201,8 @@ async def create_diagnose_package(
     files when the respective opt-in flag is set.
 
     Args:
-        instances: NOVA instances to include in the package.
+        instances: NOVA instances to include in the package. May be empty - the
+            NOVA diagnosis is optional and an Isaac-Sim-only package is valid.
         timestamp: Timestamp prefix for the output file name (e.g. "20260608-143000").
         additional_info: Free-form text provided by the user, stored in README.md.
         include_stage_tree: Add the USD stage hierarchy as stage_tree.txt.
@@ -208,8 +214,9 @@ async def create_diagnose_package(
         DiagnosePackageResult describing the written file and per-instance outcome.
 
     Raises:
-        RuntimeError: If the scene has no path (after a save prompt) or no
-            instance package could be downloaded.
+        RuntimeError: If the scene has no path (after a save prompt), or if no
+            data at all could be collected - no instance package, no session log
+            and no stage data.
     """
     # One step per instance download, plus log, optional stage tree / motion
     # groups, and the final packaging step.
@@ -234,11 +241,8 @@ async def create_diagnose_package(
     if scene_dir is None:
         raise RuntimeError("Please save the scene before creating a diagnose package.")
 
-    is_nucleus = "://" in scene_dir
     file_name = f"{timestamp}-{PACKAGE_NAME_SUFFIX}"
-    output_path = (
-        f"{scene_dir}/{file_name}" if is_nucleus else os.path.join(scene_dir, file_name)
-    )
+    output_path = join_location(scene_dir, file_name)
 
     succeeded: list[str] = []
     failed: list[str] = []
@@ -272,12 +276,6 @@ async def create_diagnose_package(
             carb.log_warn(f"Could not read Isaac Sim log '{log_path}': {exc}")
     completed += 1
 
-    if not packages and log_bytes is None:
-        raise RuntimeError(
-            "No diagnose data could be collected. Check that the selected "
-            "instances are reachable."
-        )
-
     stage_tree: str | None = None
     if include_stage_tree:
         await report("Extracting stage tree…")
@@ -289,6 +287,15 @@ async def create_diagnose_package(
         await report("Extracting motion groups…")
         motion_groups = get_motion_groups_json()
         completed += 1
+
+    # Checked here, after every source: instances are optional, so a log-only or
+    # stage-only package is a valid result.
+    if not packages and log_bytes is None and stage_tree is None and not motion_groups:
+        raise RuntimeError(
+            "No diagnose data could be collected - no NOVA instance selected, no "
+            "Isaac Sim session log found, and no stage data included. Enable one "
+            "of the stage options or select a reachable instance."
+        )
 
     await report("Writing package…")
     buffer = io.BytesIO()

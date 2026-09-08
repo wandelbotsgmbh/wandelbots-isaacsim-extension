@@ -9,7 +9,7 @@ import omni.ui as ui
 
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE
+from wandelbots.omni.ui.wb_theme import TOOLTIP_STYLE
 
 from wandelbots.omni.ui.tool.trajectory_planner.cells import (
     build_name_cell,
@@ -89,6 +89,13 @@ class PoseModel(ui.AbstractItemModel):
         super().__init__()
         self._items: list[PoseItem] = []
         self.collision_free: bool = False
+        # Drag-and-drop reordering is only offered while the list is in edit
+        # mode; the delegate's ``edit_mode`` flag is mirrored here so the model's
+        # drop hooks can gate accordingly.
+        self.edit_mode: bool = False
+        # Invoked with the moved item after a drag reorder so the owner can
+        # invalidate the plan / refresh the tree, mirroring move_up/move_down.
+        self.on_reordered: Callable[[PoseItem], None] | None = None
 
     def get_item_children(self, item=None):
         if item is None:
@@ -175,6 +182,42 @@ class PoseModel(ui.AbstractItemModel):
         self._items[idx], self._items[idx + 1] = self._items[idx + 1], self._items[idx]
         self._item_changed(None)
 
+    # -- Drag-and-drop reordering -----------------------------------------
+    # omni.ui drives TreeView reordering through these three hooks when the view
+    # is created with ``drop_between_items=True``. Only top-level PoseItems are
+    # reorderable, only while editing, and only for "between item" drops (root
+    # target, drop_location >= 0) so a pose can't be dropped into another pose.
+
+    def get_drag_mime_data(self, item):
+        if self.edit_mode and isinstance(item, PoseItem):
+            return str(self.get_item_index(item))
+        return ""
+
+    def drop_accepted(self, target_item, source, drop_location=-1) -> bool:
+        return (
+            self.edit_mode
+            and isinstance(source, PoseItem)
+            and target_item is None
+            and drop_location >= 0
+        )
+
+    def drop(self, target_item, source, drop_location=-1) -> None:
+        if not self.drop_accepted(target_item, source, drop_location):
+            return
+        src = self.get_item_index(source)
+        if src < 0:
+            return
+        # drop_location is the gap index among root children; once the source is
+        # removed, every gap after it shifts down by one.
+        dst = drop_location - 1 if src < drop_location else drop_location
+        if dst == src:
+            return
+        item = self._items.pop(src)
+        self._items.insert(dst, item)
+        self._item_changed(None)
+        if self.on_reordered:
+            self.on_reordered(item)
+
     def clear(self) -> None:
         self._items = []
         self._item_changed(None)
@@ -183,7 +226,9 @@ class PoseModel(ui.AbstractItemModel):
     def items(self) -> list[PoseItem]:
         return self._items
 
-    def notify_item_changed(self, item: PoseItem | None = None) -> None:
+    def notify_item_changed(
+        self, item: PoseItem | PoseDetailItem | None = None
+    ) -> None:
         """Notify the TreeView that an item has changed.
 
         This is the public API that external code should call instead

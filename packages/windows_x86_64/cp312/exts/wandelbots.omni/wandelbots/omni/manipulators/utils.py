@@ -1,18 +1,106 @@
 import carb
 import isaacsim.core.utils.stage as stage_utils
+import omni.usd
 import wandelbots.usd as wb_schema  # type: ignore
-from pxr import UsdPhysics, Usd
+from pxr import Sdf, Tf, UsdPhysics, Usd
 import math
 import wandelbots_api_client.v2 as wb
 import numpy as np
-from .motion_group import (
-    MotionGroup,
-    get_root_articulation_path,
+from .motion_group import MotionGroup
+from .articulation_cache import (
     find_physx_articulation_path,
+    get_articulation_cache,
+    get_root_articulation_path,
 )
-from .articulation_cache import get_articulation_cache
 from usd.schema.isaac import robot_schema
 from usd.schema.isaac.robot_schema import utils as robot_schema_utils
+
+
+# ---------------------------------------------------------------------------
+# Scene motion-group prim cache
+#
+# get_scene_motion_group_prim_paths runs a full-stage traverse that costs
+# hundreds of ms on large scenes, and the connect UI calls it once or twice per
+# motion-group section per rebuild (measured: ~60 traverses / ~25 s of blocked
+# main thread on one window open). The prim SET only changes on structural
+# (resync) edits — prims added/removed, API schemas applied — so the result is
+# cached and invalidated on resync notices; attribute-only churn (e.g. the
+# 32 Hz pose streaming while robots run) leaves the cache valid.
+# ---------------------------------------------------------------------------
+_scene_mg_prim_cache: dict[bool, list[str]] = {}
+_scene_mg_tf_listener = None
+# Strong reference to the tracked root layer. Compared by object identity:
+# anonymous layers (in-memory stages) embed their memory address in the
+# identifier, which the allocator reuses across stages, so an identifier
+# comparison can wrongly keep the cache of a previous stage. The strong
+# reference also keeps the tracked address from being recycled.
+_scene_mg_cache_root_layer: Sdf.Layer | None = None
+_scene_mg_stage_event_sub = None
+
+
+def _invalidate_scene_mg_prim_cache(notice=None, sender=None):
+    # Attribute/metadata-only changes cannot alter which prims carry the APIs,
+    # so only structural resyncs invalidate.
+    if notice is not None and not notice.GetResyncedPaths():
+        return
+    _scene_mg_prim_cache.clear()
+
+
+def _on_scene_mg_cache_stage_event(event):
+    # A (re)opened or closed stage invalidates both the cache and the Tf
+    # listener (which is bound to the previous stage object; reopening the same
+    # file yields a new stage under the same identifier, so the layer-id check
+    # alone would not catch it).
+    global _scene_mg_tf_listener, _scene_mg_cache_root_layer
+    if event.type in (
+        int(omni.usd.StageEventType.OPENED),
+        int(omni.usd.StageEventType.CLOSED),
+    ):
+        _scene_mg_prim_cache.clear()
+        if _scene_mg_tf_listener is not None:
+            _scene_mg_tf_listener.Revoke()
+            _scene_mg_tf_listener = None
+        _scene_mg_cache_root_layer = None
+
+
+def _ensure_scene_mg_cache_tracks(stage: Usd.Stage) -> None:
+    global _scene_mg_tf_listener, _scene_mg_cache_root_layer, _scene_mg_stage_event_sub
+    if _scene_mg_stage_event_sub is None:
+        _scene_mg_stage_event_sub = (
+            omni.usd.get_context()
+            .get_stage_event_stream()
+            .create_subscription_to_pop(
+                _on_scene_mg_cache_stage_event,
+                name="wandelbots scene motion-group prim cache",
+            )
+        )
+    root_layer = stage.GetRootLayer()
+    if _scene_mg_tf_listener is not None and root_layer == _scene_mg_cache_root_layer:
+        return
+    if _scene_mg_tf_listener is not None:
+        _scene_mg_tf_listener.Revoke()
+    _scene_mg_prim_cache.clear()
+    _scene_mg_tf_listener = Tf.Notice.Register(
+        Usd.Notice.ObjectsChanged, _invalidate_scene_mg_prim_cache, stage
+    )
+    _scene_mg_cache_root_layer = root_layer
+
+
+def release_scene_motion_group_prim_cache() -> None:
+    """Drop the cache and both of its listeners. Called on extension shutdown.
+
+    The Tf listener and the stage-event subscription live at module scope, so
+    without this they outlive the extension: after an unload/reload the
+    subscription keeps firing into the stale module. Idempotent, since Kit calls
+    on_shutdown again on reload.
+    """
+    global _scene_mg_tf_listener, _scene_mg_cache_root_layer, _scene_mg_stage_event_sub
+    _scene_mg_prim_cache.clear()
+    if _scene_mg_tf_listener is not None:
+        _scene_mg_tf_listener.Revoke()
+        _scene_mg_tf_listener = None
+    _scene_mg_stage_event_sub = None
+    _scene_mg_cache_root_layer = None
 
 
 def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[str]:
@@ -26,6 +114,11 @@ def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[st
     if stage is None:
         return []
 
+    _ensure_scene_mg_cache_tracks(stage)
+    cached = _scene_mg_prim_cache.get(include_prims_without_api)
+    if cached is not None:
+        return list(cached)
+
     def _filter(prim: Usd.Prim) -> bool:
         if prim.HasAPI(wb_schema.MotionGroupAPI):
             return True
@@ -35,7 +128,11 @@ def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[st
             return True
         return False
 
-    return [prim.GetPrimPath().pathString for prim in stage.Traverse() if _filter(prim)]
+    result = [
+        prim.GetPrimPath().pathString for prim in stage.Traverse() if _filter(prim)
+    ]
+    _scene_mg_prim_cache[include_prims_without_api] = result
+    return list(result)
 
 
 def dh_transform_matrix(
@@ -165,10 +262,8 @@ def get_motion_group_current_joint_positions(
     motion_group_prim: Usd.Prim,
 ) -> list[float] | None:
     try:
-        usd_root_path = get_root_articulation_path(motion_group_prim)
-        usd_root_prim = motion_group_prim.GetStage().GetPrimAtPath(usd_root_path)
-        handle = get_articulation_cache().get_articulation(
-            find_physx_articulation_path(usd_root_prim)
+        handle = get_articulation_cache().get_articulation_for_motion_group(
+            motion_group_prim
         )
         articulation = handle.articulation
         if articulation and articulation.is_valid():

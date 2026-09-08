@@ -11,13 +11,18 @@ from typing import Any, Callable, cast
 
 from .datastructures import Headers, MultipleValuesError
 from .exceptions import (
+    HeaderLineTooLong,
     InvalidHandshake,
     InvalidHeader,
     InvalidHeaderValue,
     InvalidMessage,
+    InvalidMethod,
     InvalidOrigin,
+    InvalidProtocol,
     InvalidUpgrade,
     NegotiationError,
+    RequestLineTooLong,
+    TooManyHeaders,
 )
 from .extensions import Extension, ServerExtensionFactory
 from .headers import (
@@ -109,6 +114,9 @@ class ServerProtocol(Protocol):
                 "select_subprotocol",
                 select_subprotocol.__get__(self, self.__class__),
             )
+        # True when a WebSocket handshake was attempted via accept();
+        # False when a plain HTTP response sent by process_request().
+        self.accept_called = False
 
     def accept(self, request: Request) -> Response:
         """
@@ -132,6 +140,7 @@ class ServerProtocol(Protocol):
             WebSocket handshake response or HTTP response to send to the client.
 
         """
+        self.accept_called = True
         try:
             (
                 accept_header,
@@ -145,6 +154,26 @@ class ServerProtocol(Protocol):
                 self.logger.debug("! invalid origin", exc_info=True)
             return self.reject(
                 http.HTTPStatus.FORBIDDEN,
+                f"Failed to open a WebSocket connection: {exc}.\n",
+            )
+        except InvalidMethod as exc:
+            request._exception = exc
+            self.handshake_exc = exc
+            if self.debug:
+                self.logger.debug("! invalid method", exc_info=True)
+            response = self.reject(
+                http.HTTPStatus.METHOD_NOT_ALLOWED,
+                f"Failed to open a WebSocket connection: {exc}.\n",
+            )
+            response.headers["Allow"] = "GET"
+            return response
+        except InvalidProtocol as exc:
+            request._exception = exc
+            self.handshake_exc = exc
+            if self.debug:
+                self.logger.debug("! invalid protocol", exc_info=True)
+            return self.reject(
+                http.HTTPStatus.HTTP_VERSION_NOT_SUPPORTED,
                 f"Failed to open a WebSocket connection: {exc}.\n",
             )
         except InvalidUpgrade as exc:
@@ -209,10 +238,9 @@ class ServerProtocol(Protocol):
         """
         Check a handshake request and negotiate extensions and subprotocol.
 
-        This function doesn't verify that the request is an HTTP/1.1 or higher
-        GET request and doesn't check the ``Host`` header. These controls are
-        usually performed earlier in the HTTP request handling code. They're
-        the responsibility of the caller.
+        This function doesn't check the ``Host`` header. This control must be
+        performed by the HTTP stack earlier. It's the responsibility of the
+        caller.
 
         Args:
             request: WebSocket handshake request received from the client.
@@ -222,10 +250,21 @@ class ServerProtocol(Protocol):
             ``Sec-WebSocket-Protocol`` headers for the handshake response.
 
         Raises:
+            InvalidMethod: If the request method isn't GET; then the
+                server must return a 405 Method Not Allowed error.
+            InvalidProtocol: If the request protocol isn't HTTP/1.1; then
+                the server must return a 505 HTTP Version Not Supported
+                error.
             InvalidHandshake: If the handshake request is invalid;
-                then the server must return 400 Bad Request error.
+                then the server must return a 400 Bad Request error.
 
         """
+        if request.method != "GET":
+            raise InvalidMethod(request.method)
+
+        if request.protocol != "HTTP/1.1":
+            raise InvalidProtocol(request.protocol)
+
         headers = request.headers
 
         connection: list[ConnectionOption] = sum(
@@ -531,8 +570,12 @@ class ServerProtocol(Protocol):
             self.logger.info("connection open")
 
         else:
+            if self.accept_called:
+                log_message = "connection rejected (%d %s)"
+            else:
+                log_message = "HTTP response sent (%d %s)"
             self.logger.info(
-                "connection rejected (%d %s)",
+                log_message,
                 response.status_code,
                 response.reason_phrase,
             )
@@ -547,10 +590,33 @@ class ServerProtocol(Protocol):
                 request = yield from Request.parse(
                     self.reader.read_line,
                 )
+            except RequestLineTooLong as exc:
+                self.handshake_exc = exc
+                if self.debug:
+                    self.logger.debug("! request line too long", exc_info=True)
+                response = self.reject(
+                    # Change to http.HTTPStatus.URI_TOO_LONG when dropping Python < 3.13
+                    http.HTTPStatus.REQUEST_URI_TOO_LONG,
+                    f"Failed to open a WebSocket connection: {exc}.\n",
+                )
+                self.send_response(response)
+                yield
+            except (HeaderLineTooLong, TooManyHeaders) as exc:
+                self.handshake_exc = exc
+                if self.debug:
+                    self.logger.debug("! header fields too large", exc_info=True)
+                response = self.reject(
+                    http.HTTPStatus.REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    f"Failed to open a WebSocket connection: {exc}.\n",
+                )
+                self.send_response(response)
+                yield
             except Exception as exc:
                 self.handshake_exc = InvalidMessage(
                     "did not receive a valid HTTP request"
                 )
+                if self.debug:
+                    self.logger.debug("! no valid HTTP request", exc_info=True)
                 self.handshake_exc.__cause__ = exc
                 self.send_eof()
                 self.parser = self.discard()
@@ -558,7 +624,9 @@ class ServerProtocol(Protocol):
                 yield
 
             if self.debug:
-                self.logger.debug("< GET %s HTTP/1.1", request.path)
+                self.logger.debug(
+                    "< %s %s %s", request.method, request.path, request.protocol
+                )
                 for key, value in request.headers.raw_items():
                     self.logger.debug("< %s: %s", key, value)
 

@@ -7,7 +7,7 @@ from typing import Callable
 import omni.ui as ui
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import _TOOLTIP_SUB
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.utils import get_icon
 
 ROW_HEIGHT = 44
@@ -40,12 +40,13 @@ def build_name_cell(
                 name,
                 alignment=ui.Alignment.LEFT_CENTER,
                 elided_text=True,
-                tooltip=name,
+                tooltip_fn=lambda n=name: build_tooltip(n),
                 tooltip_offset_y=18,
                 width=ui.Fraction(2),
                 style={
                     "color": NOVAColor.TEXT_PRIMARY.color,
                     "font_size": 14,
+                    **TOOLTIP_RESET,
                 },
             )
             if cycle_time_s is not None:
@@ -53,11 +54,14 @@ def build_name_cell(
                     f"{cycle_time_s:.1f}s",
                     width=0,
                     alignment=ui.Alignment.RIGHT_CENTER,
-                    tooltip=f"Segment cycle time: {cycle_time_s:.3f} s",
+                    tooltip_fn=lambda t=cycle_time_s: build_tooltip(
+                        f"Segment cycle time: {t:.3f} s"
+                    ),
                     tooltip_offset_y=18,
                     style={
                         "color": NOVAColor.TEXT_SECONDARY.color,
                         "font_size": 11,
+                        **TOOLTIP_RESET,
                     },
                 )
             if on_go_to_clicked:
@@ -65,7 +69,9 @@ def build_name_cell(
                     "Go to",
                     width=0,
                     height=24,
-                    tooltip="Move the virtual robot to this pose's joint position.",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Move the virtual robot to this pose's joint position."
+                    ),
                     clicked_fn=on_go_to_clicked,
                     style={
                         "Button": {
@@ -78,7 +84,7 @@ def build_name_cell(
                         "Button:hovered": {
                             "background_color": NOVAColor.PRIMARY_LIGHT.color,
                         },
-                        **_TOOLTIP_SUB,
+                        **TOOLTIP_RESET,
                     },
                 )
             if on_settings_clicked:
@@ -89,7 +95,9 @@ def build_name_cell(
                     image_url=get_icon("speed.svg"),
                     image_width=14,
                     image_height=14,
-                    tooltip="Motion command settings (blending / limits)",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Motion command settings (blending / limits)"
+                    ),
                     clicked_fn=on_settings_clicked,
                     style={
                         "Button": {
@@ -103,7 +111,7 @@ def build_name_cell(
                         "Button:hovered": {
                             "background_color": NOVAColor.BUTTON_HOVER.color
                         },
-                        **_TOOLTIP_SUB,
+                        **TOOLTIP_RESET,
                     },
                 )
         ui.Spacer()

@@ -8,6 +8,7 @@ import carb
 import omni.timeline
 import usdrt.Sdf
 from omni.graph.action_core import get_interface
+from omni.kit.async_engine import run_coroutine
 from wandelbots.omni.io import (
     IOValue,
     IOValueType,
@@ -137,20 +138,29 @@ class OgnWriteIO:
             if input_value is None:
                 return
 
-            asyncio.get_event_loop().run_until_complete(
-                get_io_stream_service().set_io_value(
-                    state.api_configuration,
-                    state.robot_config.motion_stream_configuration.cell,
-                    state.robot_config.motion_stream_configuration.controller,
-                    state.io_id,
-                    input_value,
-                )
-            )
+            # Fire-and-forget: awaiting the HTTP round trip here blocked the
+            # render/sim thread every graph tick. The outputs are set from
+            # input_value, not the response, so only errors matter -- handled
+            # inside the task, where compute()'s try/except cannot reach.
+            api_configuration = state.api_configuration
+            cell = state.robot_config.motion_stream_configuration.cell
+            controller = state.robot_config.motion_stream_configuration.controller
+            io_id = state.io_id
+            robot_prim = state.robot_prim
+
+            async def _write_io_value():
+                try:
+                    await get_io_stream_service().set_io_value(
+                        api_configuration, cell, controller, io_id, input_value
+                    )
+                except NotFoundException:
+                    carb.log_warn(f"{robot_prim} {io_id} not found")
+                except Exception as error:
+                    carb.log_error(f"Failed to write IO value for {io_id}: {error}")
+
+            run_coroutine(_write_io_value())
             set_output_value(db, input_value)
             get_interface().set_execution_enabled("outputs:exec_out")
-        except NotFoundException:
-            db.log_warn(f"{state.robot_prim} {state.io_id} not found")
-            return False
         except ValueError as error:
             db.log_warn(str(error))  # Most likely due to missing robot configuration
             return False

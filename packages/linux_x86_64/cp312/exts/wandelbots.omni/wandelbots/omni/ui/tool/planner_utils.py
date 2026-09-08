@@ -231,7 +231,10 @@ async def create_joint_p2p_command_from_pose(
 
     return wb_models.MotionCommand(
         path=wb_models.MotionCommandPath(
-            wb_models.PathJointPTP(target_joint_position=target_joint_positions[0][0])
+            wb_models.PathJointPTP(
+                target_joint_position=target_joint_positions[0][0],
+                path_definition_name="PathJointPTP",
+            )
         )
     )
 
@@ -268,9 +271,16 @@ def _parse_error_from_raw(raw_json: bytes | str) -> str | None:
 
 
 def _format_error_feedback(result_inner: object) -> str:
+    if result_inner is None:
+        return (
+            "Planning response did not match any known result schema "
+            "(JointTrajectory or PlanTrajectoryFailedResponse). This may indicate a "
+            "version mismatch between the installed wandelbots-api-client and the "
+            "NOVA server."
+        )
     feedback = getattr(result_inner, "error_feedback", None)
     if feedback is None:
-        return str(result_inner)
+        return f"{type(result_inner).__name__} response contained no error feedback: {result_inner!r}"
 
     actual = getattr(feedback, "actual_instance", feedback)
     name = getattr(actual, "error_feedback_name", None) or type(actual).__name__
@@ -298,7 +308,12 @@ async def _call_plan_trajectory(
             _request_timeout=_REQUEST_TIMEOUT,
         )
     except Exception as deser_exc:
-        carb.log_info(f"SDK deserialization failed, attempting raw parse: {deser_exc}")
+        carb.log_warn(
+            f"Failed to deserialize planning response ({type(deser_exc).__name__}): "
+            f"{deser_exc}. Retrying with raw response parsing to recover error details. "
+            "This may indicate a version mismatch between the installed "
+            "wandelbots-api-client and the NOVA server."
+        )
         raw_response = await planning_api.plan_trajectory_without_preload_content(
             cell=cell,
             plan_trajectory_request=request,
@@ -308,11 +323,19 @@ async def _call_plan_trajectory(
         error_msg = _parse_error_from_raw(raw_body)
         if error_msg:
             return PlanFailure(error=error_msg)
+        carb.log_warn(
+            f"Raw planning response contained no recognizable error "
+            f"(status={raw_response.status}): {raw_body[:2000]!r}"
+        )
         raise deser_exc
 
     result_inner = response.response.actual_instance
     if isinstance(result_inner, wb_models.JointTrajectory):
         return PlanSuccess(joint_trajectory=result_inner)
+    carb.log_warn(
+        f"Planning request did not succeed. Result type: "
+        f"{type(result_inner).__name__}, value: {result_inner!r}"
+    )
     return PlanFailure(error=_format_error_feedback(result_inner))
 
 
@@ -356,6 +379,7 @@ async def plan_trajectory(
             cycle_time=cycle_time,
             payload_name=payload_name,
             payload_mass=payload_mass,
+            mounting=ctx.mounting,
         )
 
         request = wb_models.PlanTrajectoryRequest(
@@ -415,8 +439,10 @@ async def plan_trajectory_segments(
     ``mergeTrajectories`` endpoint (with per-segment position blending) into one
     executable trajectory. A single segment is returned without a merge round-trip.
 
-    When ``collision_setup_name`` is given, the collision scene is attached to every
-    motion-group setup so normal (motion-type) planning still respects it.
+    When ``collision_setup_name`` is given, the collision scene is attached to
+    every motion-group setup, but the plan-trajectory endpoint ignores
+    collision_setups: only collision-free planning and IK collision-check, so
+    a motion-type (LIN/PTP) path between poses is not checked.
     """
     from wandelbots.omni.ui.tool.trajectory_planner.service.helpers import (
         build_motion_group_setup,
@@ -464,6 +490,7 @@ async def plan_trajectory_segments(
                 cycle_time=cycle_time,
                 payload_name=payload_name,
                 payload_mass=payload_mass,
+                mounting=ctx.mounting,
             )
             # Respect the collision scene during normal planning too.
             if ctx.collision_setups:
@@ -593,17 +620,24 @@ async def plan_collision_free(
             cycle_time=cycle_time,
             payload_name=payload_name,
             payload_mass=payload_mass,
+            mounting=ctx.mounting,
         )
         if ctx.collision_setups:
             mg_setup.collision_setups = ctx.collision_setups
 
         if cf_algorithm == "MidpointInsertionAlgorithm":
             algorithm = wb_models.CollisionFreeAlgorithm(
-                wb_models.MidpointInsertionAlgorithm(max_iterations=cf_max_iterations)
+                wb_models.MidpointInsertionAlgorithm(
+                    max_iterations=cf_max_iterations,
+                    algorithm_name="MidpointInsertionAlgorithm",
+                )
             )
         else:
             algorithm = wb_models.CollisionFreeAlgorithm(
-                wb_models.RRTConnectAlgorithm(max_iterations=cf_max_iterations)
+                wb_models.RRTConnectAlgorithm(
+                    max_iterations=cf_max_iterations,
+                    algorithm_name="RRTConnectAlgorithm",
+                )
             )
 
         planning_api = wb.TrajectoryPlanningApi(api_client)
@@ -615,7 +649,7 @@ async def plan_collision_free(
             total_attempts = len(current_start_configs) * len(tc)
             await _status(
                 f"Segment {i}/{len(target_configs) - 1}: "
-                f"{len(current_start_configs)} start × {len(tc)} target "
+                f"{len(current_start_configs)} start x {len(tc)} target "
                 f"= {total_attempts} attempts"
             )
 

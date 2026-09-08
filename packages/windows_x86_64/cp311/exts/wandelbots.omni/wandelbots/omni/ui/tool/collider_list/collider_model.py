@@ -1,4 +1,4 @@
-"""ColliderModel — AbstractItemModel backed by stage CollisionAPI prims."""
+"""ColliderModel, an AbstractItemModel backed by the stage's CollisionAPI prims."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import carb
 import omni.physx
 import omni.ui as ui
 import omni.usd
-from pxr import PhysicsSchemaTools, Usd, UsdPhysics, UsdUtils
+from pxr import PhysicsSchemaTools, PhysxSchema, Usd, UsdPhysics, UsdUtils
 
 from wandelbots.omni.core.collision.shapes import get_convex_hull_vertex_count
 from wandelbots.omni.ui.tool.collider_list.collider_item import ColliderItem
@@ -67,8 +67,24 @@ class ColliderModel(ui.AbstractItemModel):
 
         self._apply_filter()
 
+    # PhysX companions the collider preset applies next to the USD standard
+    # APIs. Looked up with getattr, the set varies between PhysX versions.
+    _PHYSX_COLLISION_API_NAMES = (
+        "PhysxCollisionAPI",
+        "PhysxConvexHullCollisionAPI",
+        "PhysxConvexDecompositionCollisionAPI",
+        "PhysxTriangleMeshCollisionAPI",
+        "PhysxTriangleMeshSimplificationCollisionAPI",
+        "PhysxSDFMeshCollisionAPI",
+        "PhysxSphereFillCollisionAPI",
+    )
+
     def remove_item(self, item: ColliderItem):
-        """Remove CollisionAPI from the prim and remove from list."""
+        """Remove the collision APIs from the prim and drop it from the list.
+
+        The PhysX companions go too. Only CollisionAPI makes a prim a collider,
+        but leftover companions still show up in the property window.
+        """
         stage = omni.usd.get_context().get_stage()
         if stage:
             prim = stage.GetPrimAtPath(item.prim_path)
@@ -76,6 +92,10 @@ class ColliderModel(ui.AbstractItemModel):
                 prim.RemoveAPI(UsdPhysics.CollisionAPI)
                 if prim.HasAPI(UsdPhysics.MeshCollisionAPI):
                     prim.RemoveAPI(UsdPhysics.MeshCollisionAPI)
+                for api_name in self._PHYSX_COLLISION_API_NAMES:
+                    api = getattr(PhysxSchema, api_name, None)
+                    if api is not None and prim.HasAPI(api):
+                        prim.RemoveAPI(api)
         if item in self._items:
             self._items.remove(item)
         self._apply_filter()
@@ -153,8 +173,8 @@ class ColliderModel(ui.AbstractItemModel):
         mesh_collision_api = UsdPhysics.MeshCollisionAPI.Get(stage, prim.GetPath())
         mesh_collision_api.GetApproximationAttr().Set(new_type)
         item.collider_type = new_type
-        # The info column (vertex count) depends on the approximation, so recompute
-        # it now — otherwise it shows the stale count of the previous type.
+        # The vertex count depends on the approximation, so it is recomputed
+        # here instead of showing the count of the previous type.
         item.info = self._get_collider_info(prim, new_type)
         self._item_changed(None)
 
@@ -222,12 +242,10 @@ class ColliderModel(ui.AbstractItemModel):
         return "mesh"
 
     def _get_collider_info(self, prim: Usd.Prim, collider_type: str) -> str:
-        """Vertices column text — the cooked collider vertex count.
+        """Vertices column text, the cooked collider vertex count.
 
-        Only mesh approximations that produce a hull (convexHull /
-        convexDecomposition) have a meaningful collider vertex count. Primitive
-        shapes and plain meshes report nothing here: only collider vertices are
-        of interest, not the source mesh/object geometry.
+        Only approximations that produce a hull have a meaningful collider
+        vertex count, so primitive shapes and plain meshes report nothing.
         """
         try:
             if collider_type in ("convexHull", "convexDecomposition"):
@@ -239,12 +257,11 @@ class ColliderModel(ui.AbstractItemModel):
             return ""
 
     def _convex_vertex_count(self, prim: Usd.Prim) -> int:
-        """Cooked convex-hull vertex count for a mesh prim.
+        """Cooked convex hull vertex count for a mesh prim.
 
-        Uses PhysX so the number matches the actual collider geometry (and the
-        exported hull). Returns 0 if cooking is unavailable or fails — we never
-        fall back to the raw source-mesh point count, since that reflects the
-        mesh/object, not the collider.
+        Uses PhysX so the number matches the collider geometry that gets
+        exported. Returns 0 when cooking fails, never the source mesh point
+        count, which describes the mesh and not the collider.
         """
         try:
             if self._physx_cooking is None:

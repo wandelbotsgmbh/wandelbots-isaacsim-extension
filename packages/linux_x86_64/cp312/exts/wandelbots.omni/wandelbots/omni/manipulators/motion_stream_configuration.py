@@ -6,6 +6,7 @@ from wandelbots.omni.utils.api import ApiConfiguration
 from pydantic import BaseModel, Field, model_validator
 from wandelbots.omni.utils.api import get_api_client_from_config
 from wandelbots.omni.instances.instances_api import get_instances_api
+from wandelbots.omni.utils.hosts import strip_host_scheme
 
 
 class MotionStreamConfiguration(BaseModel):
@@ -28,9 +29,7 @@ class MotionStreamConfiguration(BaseModel):
                 f"secure_connection={self.secure_connection}. "
                 "Please check the 'secure_connection' parameter."
             )
-        self.host = (
-            parsed.netloc or parsed.path
-        )  # netloc = hostname[:port], path as fallback for scheme-less URLs
+        self.host = strip_host_scheme(self.host)
         return self
 
     cell: str = Field(example="cell")
@@ -50,9 +49,19 @@ class MotionStreamConfiguration(BaseModel):
     def motion_group_id(self):
         return self.motion_group.split("@")[0]
 
-    def get_api_configuration(
-        self, version: Literal["v1", "v2"] = "v2"
-    ) -> ApiConfiguration:
+    @property
+    def is_connectable(self) -> bool:
+        """True only when host, cell, controller and motion_group are all set.
+
+        A prim may carry MotionGroupAPI with empty attributes (e.g. stale schema
+        left in the stage). Such a configuration must not be streamed.
+        """
+        return all(
+            bool(value)
+            for value in (self.host, self.cell, self.controller, self.motion_group)
+        )
+
+    def get_api_configuration(self, version: Literal["v2"] = "v2") -> ApiConfiguration:
         return ApiConfiguration(
             host=self.host,
             secure_connection=self.secure_connection,

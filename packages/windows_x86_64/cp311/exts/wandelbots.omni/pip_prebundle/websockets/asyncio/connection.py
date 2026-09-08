@@ -6,12 +6,12 @@ import contextlib
 import logging
 import random
 import struct
-import sys
 import traceback
 import uuid
+import weakref
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Iterable, Mapping
 from types import TracebackType
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, Self, cast, overload
 
 from ..exceptions import (
     ConcurrencyError,
@@ -19,17 +19,10 @@ from ..exceptions import (
     ConnectionClosedOK,
     ProtocolError,
 )
-from ..frames import DATA_OPCODES, CloseCode, Frame, Opcode
+from ..frames import DATA_OPCODES, PONG, CloseCode, Frame
 from ..http11 import Request, Response
 from ..protocol import CLOSED, OPEN, Event, Protocol, State
 from ..typing import BytesLike, Data, DataLike, LoggerLike, Subprotocol
-from .compatibility import (
-    TimeoutError,
-    aiter,
-    anext,
-    asyncio_timeout,
-    asyncio_timeout_at,
-)
 from .messages import Assembler
 
 
@@ -75,7 +68,7 @@ class Connection(asyncio.Protocol):
         # Inject reference to this instance in the protocol's logger.
         self.protocol.logger = logging.LoggerAdapter(
             self.protocol.logger,
-            {"websocket": self},
+            {"websocket": weakref.proxy(self)},
         )
 
         # Copy attributes from the protocol for convenience.
@@ -213,7 +206,7 @@ class Connection(asyncio.Protocol):
 
     # Public methods
 
-    async def __aenter__(self) -> Connection:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(
@@ -403,6 +396,7 @@ class Connection(asyncio.Protocol):
     async def send(
         self,
         message: DataLike | Iterable[DataLike] | AsyncIterable[DataLike],
+        *,
         text: bool | None = None,
     ) -> None:
         """
@@ -460,6 +454,7 @@ class Connection(asyncio.Protocol):
 
         Args:
             message: Message to send.
+            text: Force sending in a Text_ or Binary_ frame.
 
         Raises:
             ConnectionClosed: When the connection is closed.
@@ -471,7 +466,7 @@ class Connection(asyncio.Protocol):
         while self.send_in_progress is not None:
             await asyncio.shield(self.send_in_progress)
 
-        # Unfragmented message -- this case must be handled first because
+        # Unfragmented message — this case must be handled first because
         # strings and bytes-like objects are iterable.
 
         if isinstance(message, str):
@@ -488,12 +483,12 @@ class Connection(asyncio.Protocol):
                 else:
                     self.protocol.send_binary(message)
 
-        # Catch a common mistake -- passing a dict to send().
+        # Catch a common mistake — passing a dict to send().
 
         elif isinstance(message, Mapping):
             raise TypeError("data is a dict-like object")
 
-        # Fragmented message -- regular iterator.
+        # Fragmented message — regular iterator.
 
         elif isinstance(message, Iterable):
             chunks = iter(message)
@@ -552,7 +547,7 @@ class Connection(asyncio.Protocol):
                 self.send_in_progress.set_result(None)
                 self.send_in_progress = None
 
-        # Fragmented message -- async iterator.
+        # Fragmented message — async iterator.
 
         elif isinstance(message, AsyncIterable):
             achunks = aiter(message)
@@ -753,7 +748,7 @@ class Connection(asyncio.Protocol):
         if event.opcode in DATA_OPCODES:
             self.recv_messages.put(event)
 
-        if event.opcode is Opcode.PONG:
+        if event.opcode is PONG:
             self.acknowledge_pings(bytes(event.data))
 
     def acknowledge_pings(self, data: bytes) -> None:
@@ -823,14 +818,14 @@ class Connection(asyncio.Protocol):
                 # closing because ping(), via send_context(), waits for the
                 # connection to be closed before raising ConnectionClosed.
                 # However, connection_lost() cancels keepalive_task before
-                # it gets a chance to resume excuting.
+                # it gets a chance to resume executing.
                 pong_received = await self.ping()
                 if self.debug:
                     self.logger.debug("% sent keepalive ping")
 
                 if self.ping_timeout is not None:
                     try:
-                        async with asyncio_timeout(self.ping_timeout):
+                        async with asyncio.timeout(self.ping_timeout):
                             # connection_lost cancels keepalive immediately
                             # after setting a ConnectionClosed exception on
                             # pong_received. A CancelledError is raised here,
@@ -944,7 +939,7 @@ class Connection(asyncio.Protocol):
         # elapses, close the socket to terminate the connection.
         if wait_for_close:
             try:
-                async with asyncio_timeout_at(self.close_deadline):
+                async with asyncio.timeout_at(self.close_deadline):
                     await asyncio.shield(self.connection_lost_waiter)
             except TimeoutError:
                 # There's no risk of overwriting another error because
@@ -1031,6 +1026,8 @@ class Connection(asyncio.Protocol):
 
         if self.keepalive_task is not None:
             self.keepalive_task.cancel()
+            # Break reference cycle to allow immediate garbage collection.
+            self.keepalive_task = None
 
         # If self.connection_lost_waiter isn't pending, that's a bug, because:
         # - it's set only here in connection_lost() which is called only once;
@@ -1049,26 +1046,26 @@ class Connection(asyncio.Protocol):
 
     # Flow control callbacks
 
-    def pause_writing(self) -> None:  # pragma: no cover
+    def pause_writing(self) -> None:
         # Adapted from asyncio.streams.FlowControlMixin
         assert not self.paused
         self.paused = True
 
-    def resume_writing(self) -> None:  # pragma: no cover
+    def resume_writing(self) -> None:
         # Adapted from asyncio.streams.FlowControlMixin
         assert self.paused
         self.paused = False
         for waiter in self.drain_waiters:
-            if not waiter.done():
+            if not waiter.done():  # pragma: no branch
                 waiter.set_result(None)
 
-    async def drain(self) -> None:  # pragma: no cover
+    async def drain(self) -> None:
         # We don't check if the connection is closed because we call drain()
         # immediately after write() and write() would fail in that case.
 
         # Adapted from asyncio.streams.StreamWriter
         # Yield to the event loop so that connection_lost() may be called.
-        if self.transport.is_closing():
+        if self.transport.is_closing():  # pragma: no cover
             await asyncio.sleep(0)
 
         # Adapted from asyncio.streams.FlowControlMixin
@@ -1147,6 +1144,8 @@ class Connection(asyncio.Protocol):
 def broadcast(
     connections: Iterable[Connection],
     message: DataLike,
+    *,
+    text: bool | None = None,
     raise_exceptions: bool = False,
 ) -> None:
     """
@@ -1158,6 +1157,17 @@ def broadcast(
 
     .. _Text: https://datatracker.ietf.org/doc/html/rfc6455#section-5.6
     .. _Binary: https://datatracker.ietf.org/doc/html/rfc6455#section-5.6
+
+    You may override this behavior with the ``text`` argument:
+
+    * Set ``text=True`` to send an UTF-8 bytestring or bytes-like object
+      (:class:`bytes`, :class:`bytearray`, or :class:`memoryview`) in a
+      Text_ frame. This improves performance when the message is already
+      UTF-8 encoded, for example if the message contains JSON and you're
+      using a JSON library that produces a bytestring.
+    * Set ``text=False`` to send a string (:class:`str`) in a Binary_
+      frame. This may be useful for servers that expect binary frames
+      instead of text frames.
 
     :func:`broadcast` pushes the message synchronously to all connections even
     if their write buffers are overflowing. There's no backpressure.
@@ -1177,9 +1187,9 @@ def broadcast(
     errors on connections where the closing handshake is in progress.
 
     :func:`broadcast` ignores failures to write the message on some connections.
-    It continues writing to other connections. On Python 3.11 and above, you may
-    set ``raise_exceptions`` to :obj:`True` to record failures and raise all
-    exceptions in a :pep:`654` :exc:`ExceptionGroup`.
+    It continues writing to other connections. You may set ``raise_exceptions``
+    to :obj:`True` to record failures and raise all exceptions in a :pep:`654`
+    :exc:`ExceptionGroup`.
 
     While :func:`broadcast` makes more sense for servers, it works identically
     with clients, if you have a use case for opening connections to many servers
@@ -1189,22 +1199,21 @@ def broadcast(
         websockets: WebSocket connections to which the message will be sent.
         message: Message to send.
         raise_exceptions: Whether to raise an exception in case of failures.
+        text: Force sending in Text_ or Binary_ frames.
 
     Raises:
         TypeError: If ``message`` doesn't have a supported type.
 
     """
     if isinstance(message, str):
-        send_method = "send_text"
+        send_method = "send_binary" if text is False else "send_text"
         message = message.encode()
     elif isinstance(message, BytesLike):
-        send_method = "send_binary"
+        send_method = "send_text" if text is True else "send_binary"
     else:
         raise TypeError("data must be str or bytes")
 
     if raise_exceptions:
-        if sys.version_info[:2] < (3, 11):  # pragma: no cover
-            raise ValueError("raise_exceptions requires at least Python 3.11")
         exceptions: list[Exception] = []
 
     for connection in connections:

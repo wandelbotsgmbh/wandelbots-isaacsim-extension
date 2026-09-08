@@ -3,6 +3,8 @@ import omni.ui as ui
 from isaacsim.gui.components.style import COLOR_X, COLOR_Y, COLOR_Z, COLOR_W
 from omni.kit.window.property.templates import LABEL_HEIGHT
 
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
+
 
 @dataclass
 class CoordinateInputFieldModel:
@@ -16,20 +18,27 @@ class CoordinateInputFieldModel:
 
 class CoordinatesInput:
     colors = [COLOR_X, COLOR_Y, COLOR_Z, COLOR_W]
+    # Neutral gray used for the axis chips when the input is shown as disabled.
+    DISABLED_COLOR = 0xFF555555
 
     def __init__(
         self,
         fields: list[CoordinateInputFieldModel],
         height=LABEL_HEIGHT + 6,
         readonly: bool = False,
+        gray_when_readonly: bool = False,
     ):
         self._fields = fields
         self._height = height
         self._readonly = readonly
+        # When True, the per-axis color chips are grayed while readonly to signal a
+        # disabled state; otherwise they keep their X/Y/Z colors (read-only display).
+        self._gray_when_readonly = gray_when_readonly
         self._build_ui()
 
     def _build_ui(self) -> None:
         RECT_WIDTH = 13
+        grayed = self._readonly and self._gray_when_readonly
 
         with ui.HStack(height=self._height, spacing=4):
             for field_index, field in enumerate(self._fields):
@@ -38,7 +47,9 @@ class CoordinatesInput:
                         ui.Rectangle(
                             name="vector_label",
                             style={
-                                "background_color": CoordinatesInput.colors[
+                                "background_color": CoordinatesInput.DISABLED_COLOR
+                                if grayed
+                                else CoordinatesInput.colors[
                                     field_index % len(CoordinatesInput.colors)
                                 ],
                                 "border_radius": 3,
@@ -59,7 +70,10 @@ class CoordinatesInput:
                         max=field.max,
                         step=field.step,
                         alignment=ui.Alignment.LEFT_CENTER,
-                        tooltip=field.tooltip,
+                        # Self-drawn themed popup: a field's flat style keys
+                        # bleed into its default string tooltip in this build
+                        # (see wb_theme.build_tooltip).
+                        tooltip_fn=lambda t=field.tooltip: build_tooltip(t),
                         enabled=not self._readonly,
-                        style={"border_radius": 0},
+                        style={"border_radius": 0, **TOOLTIP_RESET},
                     )

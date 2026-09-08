@@ -15,6 +15,7 @@ from wandelbots.omni.instances.models import (
     NOVACloudInstance,
     NOVAControllerData,
     NOVACellData,
+    is_cloud_host,
 )
 from wandelbots.omni.instances.stage_discovery import (
     filter_unknown_host_instances,
@@ -30,6 +31,7 @@ from wandelbots.omni.manipulators import (
     MotionGroupConfiguration,
     MotionStreamConfiguration,
 )
+from wandelbots.omni.utils.hosts import normalize_host
 from pxr import Usd
 from omni.kit.async_engine import run_coroutine
 
@@ -46,21 +48,42 @@ class NOVAInstancesService:
         self._selected_articulations: dict[str, str] = {}
 
     def find_instance_by_host(self, host: str) -> Optional[NOVAInstance]:
-        instance = next(
-            (i for i in self._instances_api.get_custom_instances() if i.host == host),
-            None,
-        )
-        if instance is not None:
-            return instance
-        return next(
-            (
-                i
-                for instances in self._instances_api.get_cloud_instances().values()
-                for i in instances
-                if i.host == host
-            ),
-            None,
-        )
+        # Normalized: callers resolve an instance from a stored motion-group
+        # config, whose host was stripped of its scheme.
+        wanted = normalize_host(host)
+
+        def _custom():
+            return next(
+                (
+                    i
+                    for i in self._instances_api.get_custom_instances()
+                    if normalize_host(i.host) == wanted
+                ),
+                None,
+            )
+
+        def _cloud():
+            return next(
+                (
+                    i
+                    for instances in self._instances_api.get_cloud_instances().values()
+                    for i in instances
+                    if normalize_host(i.host) == wanted
+                ),
+                None,
+            )
+
+        # A cloud host resolves to the cloud instance first: only that one can
+        # authenticate, and a manually added custom duplicate would otherwise win
+        # and leave callers without a token. Everything else keeps looking in the
+        # local store first, so an on-prem lookup does not trigger a portal
+        # request.
+        order = (_cloud, _custom) if is_cloud_host(host) else (_custom, _cloud)
+        for lookup in order:
+            instance = lookup()
+            if instance is not None:
+                return instance
+        return None
 
     def get_selected_articulation(self, identifier: str) -> Optional[str]:
         return self._selected_articulations.get(identifier, None)
@@ -160,7 +183,9 @@ class NOVAInstancesService:
             if not motion_group:
                 continue
 
-            if motion_group.motion_stream_configuration.host == instance.host:
+            if normalize_host(
+                motion_group.motion_stream_configuration.host
+            ) == normalize_host(instance.host):
                 carb.log_verbose(
                     f"Removing motion group {prim_path} for instance {instance.host}"
                 )
@@ -260,11 +285,11 @@ class NOVAInstancesService:
             )
 
             async def create_motion_group_async():
+                identifier = motion_group_config.identifier
                 try:
                     await motion_group_service.create_motion_group(
                         configuration=motion_group_config
                     )
-                    identifier = motion_group_config.identifier
                     self.add_to_connected_motion_groups(identifier, motion_group_config)
                     instance.is_reachable = True
                     push_motion_group_connection_changed(
@@ -280,10 +305,12 @@ class NOVAInstancesService:
                     )
                     callback(True)
                 except Exception as e:
-                    carb.log_error(
-                        f"Failed to connect {identifier} to {prim_path}: {e}"
-                    )
-                    callback(False, "Failed to connect. Try again.")
+                    # Non-fatal: callers (e.g. the create-and-connect flow) retry
+                    # this because a freshly created controller is briefly not
+                    # pingable. Log as a warning and surface the real reason so an
+                    # exhausted retry can show a meaningful message.
+                    carb.log_warn(f"Failed to connect {identifier} to {prim_path}: {e}")
+                    callback(False, f"Failed to connect: {e}")
 
             loop = asyncio.get_event_loop()
             asyncio.ensure_future(create_motion_group_async(), loop=loop)
@@ -332,11 +359,21 @@ class NOVAInstancesService:
         instance: NOVACloudInstance,
         callback: Callable[[], None] | None = None,
     ):
-        self._instances_api.toggle_instance_status(
-            auth_config_id=auth_config_id, instance=instance
-        )
-        if callback:
-            callback()
+        # The status change is a blocking portal PUT (up to 10s); run it off the
+        # Kit main thread so clicking start/stop doesn't freeze the UI, then invoke
+        # the callback on completion.
+        async def _run():
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._instances_api.toggle_instance_status(
+                    auth_config_id=auth_config_id, instance=instance
+                ),
+            )
+            if callback:
+                callback()
+
+        run_coroutine(_run())
 
     @property
     def connected_motion_groups(self) -> dict[str, MotionGroupConfiguration]:
@@ -356,7 +393,9 @@ class NOVAInstancesService:
             if prim_path and connected_motion_group.prim_path != prim_path:
                 continue
             stream_config = connected_motion_group.motion_stream_configuration
-            if host and stream_config.host != host:
+            # Normalized: callers pass NOVAInstance.host, which may carry a
+            # scheme the stored host does not have.
+            if host and normalize_host(stream_config.host) != normalize_host(host):
                 continue
             if secured is not None and stream_config.secure_connection != secured:
                 continue
@@ -369,6 +408,20 @@ class NOVAInstancesService:
             results.append(connected_motion_group)
 
         return results
+
+    def sync_connected_motion_groups_from_stage(self):
+        # Rebuild the connection registry from the stage. Robots ship with
+        # MotionGroupAPI applied but empty attrs; only treat a prim as connected
+        # once it carries a real host, so the registry reflects actual connections
+        # (assigned) and everything else stays discoverable as unassigned.
+        try:
+            self.clear_connected_motion_groups()
+            for config in self._get_stage_motion_group_configurations():
+                if config.motion_stream_configuration.host:
+                    self.add_to_connected_motion_groups(config.identifier, config)
+                    self.set_selected_articulation(config.identifier, config.prim_path)
+        except Exception as e:
+            carb.log_error(f"Failed to sync motion group connections: {e}")
 
     def _get_stage_motion_group_configurations(self) -> list[MotionGroupConfiguration]:
         stage = stage_utils.get_current_stage()
@@ -416,10 +469,11 @@ class NOVAInstancesService:
     ) -> Optional[MotionGroupConfiguration]:
         """Return the stage configuration whose host, cell, controller and
         motion-group match the given values, or ``None``."""
+        wanted_host = normalize_host(host)
         for config in self._get_stage_motion_group_configurations():
             sc = config.motion_stream_configuration
             if (
-                sc.host == host
+                normalize_host(sc.host) == wanted_host
                 and sc.cell == cell
                 and sc.controller == controller
                 and sc.motion_group == motion_group

@@ -1,3 +1,4 @@
+import asyncio
 import weakref
 from typing import Callable, cast
 
@@ -27,10 +28,17 @@ from wandelbots.omni.ui.overlay.overlay import ViewportOverlay
 from wandelbots.omni.utils.kinematics import (
     InverseKinematicsResult,
     fetch_joint_configs_for_pose,
+    sort_joint_configs_by_proximity,
 )
 from wandelbots.omni.utils.api import get_api_client_from_config
-from wandelbots.omni.manipulators import get_motion_group_current_joint_positions
+from wandelbots.omni.manipulators import (
+    get_motion_group_current_joint_positions,
+    get_motion_group_configuration_from_prim,
+)
 from wandelbots.omni.utils.prims import PrimPoseWatcher
+from wandelbots.omni.instances.events import (
+    subscribe_to_motion_group_connection_changed,
+)
 from wandelbots.omni.utils.teaching import (
     CARB_SETTINGS_PREFIX,
     PREFERRED_JOINT_VALUES_ATTR,
@@ -66,7 +74,12 @@ class GhostTeachingOverlay(ViewportOverlay):
         self._stream_config = None
         self._motion_group_prim_path: str | None = None
         self._tcp_offset: WSPose | None = None
+        # When the Trajectory Planner window is open it shows its own preview
+        # overlay; suppress this ghost-teaching overlay so the two don't render at
+        # once. Toggled via set_suppressed() from the planner window.
+        self._suppressed: bool = False
         self._collision_setups: dict[str, wb.models.CollisionSetup] = {}
+        self._load_task: asyncio.Task | None = None
         self.joint_configs_changed_fn: (
             Callable[[InverseKinematicsResult], None] | None
         ) = None
@@ -121,6 +134,51 @@ class GhostTeachingOverlay(ViewportOverlay):
             on_color_changed,
         )
 
+        self._motion_group_connection_sub = (
+            subscribe_to_motion_group_connection_changed(
+                lambda payload, weak_self=weakref.ref(self): (
+                    weak_self()._on_motion_group_connection_changed(payload)
+                    if weak_self()
+                    else None
+                )
+            )
+        )
+
+    def _on_motion_group_connection_changed(self, payload: dict) -> None:
+        if self._selected_ghost_object is None:
+            return
+        if self._stream_config is not None:
+            if (
+                payload.get("cell") != self._stream_config.cell
+                or payload.get("motion_group") != self._stream_config.motion_group
+            ):
+                return
+        elif self._motion_group_prim_path is not None:
+            if payload.get("prim_path") != self._motion_group_prim_path:
+                return
+        else:
+            return
+        self._motion_group_colliders.clear()
+        self._cached_joints.clear()
+        self._cached_joint_limits.clear()
+        self._cached_description = None
+        self._stream_config = None
+        if self.joint_configs_changed_fn:
+            self.joint_configs_changed_fn(
+                InverseKinematicsResult(joint_configs=[], joint_limits=[])
+            )
+        if payload.get("action") == "connected":
+            self._schedule_load_scene_models()
+
+    def _schedule_load_scene_models(self) -> None:
+        if self._load_task and not self._load_task.done():
+            self._load_task.cancel()
+        self._load_task = run_coroutine(self.load_scene_models())
+
+    @property
+    def is_loading(self) -> bool:
+        return self._load_task is not None and not self._load_task.done()
+
     def attach_to_viewport(self, viewport: ViewportWindow):
         self._viewport = viewport
         if not self._viewport:
@@ -131,7 +189,7 @@ class GhostTeachingOverlay(ViewportOverlay):
         carb.log_info(f"Overlay '{self.name}' attached to viewport.")
 
         self.initialize_scene()
-        run_coroutine(self.load_scene_models())
+        self._schedule_load_scene_models()
 
     def initialize_scene(self):
         with self._viewport.get_frame(self.name):
@@ -140,6 +198,7 @@ class GhostTeachingOverlay(ViewportOverlay):
                 self._scene_view = ui_scene.SceneView()
                 with self._scene_view.scene:
                     pass
+        self._scene_view.visible = self.visible
         self._viewport.viewport_api.add_scene_view(self._scene_view)
 
     async def load_scene_models(self):
@@ -153,10 +212,27 @@ class GhostTeachingOverlay(ViewportOverlay):
             )
         )
         if not motion_group_prim:
-            carb.log_warn(
+            carb.log_verbose(
                 f"Could not find motion group prim linked to ghost object at {self._selected_ghost_object.GetPath()}"
             )
             return
+
+        motion_group_config = get_motion_group_configuration_from_prim(
+            motion_group_prim
+        )
+        if motion_group_config is None:
+            carb.log_verbose(
+                f"Motion group {motion_group_prim.GetPath()} has no configuration, skipping overlay load"
+            )
+            return
+        try:
+            await motion_group_config.check_connection()
+        except Exception as exception:
+            carb.log_verbose(
+                f"Motion group not reachable, skipping overlay load: {exception}"
+            )
+            return
+
         if not self._selected_ghost_object or not self._selected_ghost_object.IsValid():
             carb.log_warn(
                 f"Could not find ghost object prim at {self._selected_ghost_object.GetPath()}"
@@ -247,8 +323,10 @@ class GhostTeachingOverlay(ViewportOverlay):
                 selection = collision_world_overlay.selection
                 self._collision_setups[
                     "ghost_teaching"
-                ] = await get_collision_export_service().get_collision_setup(
-                    selection.motion_group_prim, selection.collision_setup_name
+                ] = await get_collision_export_service().get_collision_setup_by_cell(
+                    cell=selection.cell,
+                    api_configuration=selection.api_configuration,
+                    setup_name=selection.collision_setup_name,
                 )
 
         self._cached_joints.clear()
@@ -295,9 +373,30 @@ class GhostTeachingOverlay(ViewportOverlay):
             await self._on_pose_changed(self._pose_watcher.current_pose)
 
     async def _on_pose_changed(self, pose: Pose):
+        if not self._stream_config:
+            return
         preferred = GhostObjectUtils.get_preferred_joint_values(
             self._selected_ghost_object
         )
+
+        description = self._cached_description
+        if description is not None and (
+            description.operation_limits is None
+            or description.operation_limits.auto_limits is None
+        ):
+            try:
+                api_config = self._stream_config.get_api_configuration()
+                async with get_api_client_from_config(api_config) as api_client:
+                    description = await wb.MotionGroupApi(
+                        api_client
+                    ).get_motion_group_description(
+                        cell=self._stream_config.cell,
+                        controller=self._stream_config.controller,
+                        motion_group=self._stream_config.motion_group,
+                    )
+                self._cached_description = description
+            except Exception as e:
+                carb.log_verbose(f"Could not refresh motion group description: {e}")
 
         ik_result = await fetch_joint_configs_for_pose(
             stream_config=self._stream_config,
@@ -305,7 +404,7 @@ class GhostTeachingOverlay(ViewportOverlay):
             tcp_offset=self._tcp_offset,
             preferred_joint_values=preferred,
             collision_setups=self._collision_setups or None,
-            description=self._cached_description,
+            description=description,
         )
 
         if len(ik_result.joint_configs) == 0:
@@ -335,12 +434,8 @@ class GhostTeachingOverlay(ViewportOverlay):
                 .GetPrimAtPath(self._motion_group_prim_path)
             )
             current_positions = get_motion_group_current_joint_positions(mg_prim)
-            self._cached_joints.sort(
-                key=lambda c: (
-                    sum((a - b) ** 2 for a, b in zip(c, current_positions))
-                    if current_positions
-                    else 0
-                )
+            self._cached_joints[:] = sort_joint_configs_by_proximity(
+                self._cached_joints, current_positions
             )
 
         self._apply_joint_configs()
@@ -364,7 +459,29 @@ class GhostTeachingOverlay(ViewportOverlay):
                 )
             )
 
+    def set_suppressed(self, suppressed: bool) -> None:
+        """Hide (or restore) the ghost overlay while another overlay owns the view.
+
+        Called by the Trajectory Planner window so that only its own preview shows
+        while it is open. Restoring re-renders the current selection's IK configs.
+        """
+        if suppressed == self._suppressed:
+            return
+        self._suppressed = suppressed
+        if suppressed:
+            for meshes in self._motion_group_colliders.values():
+                for mesh in meshes:
+                    mesh.visible = False
+            for mesh in self._active_colliders:
+                mesh.visible = False
+        elif self._selected_ghost_object and self._selected_ghost_object.IsValid():
+            self._apply_joint_configs()
+
     def _apply_joint_configs(self):
+        if self._suppressed:
+            for mesh in self._active_colliders:
+                mesh.visible = False
+            return
         joints = self._cached_joints
         colliders = self._active_colliders
         if not joints:
@@ -388,7 +505,16 @@ class GhostTeachingOverlay(ViewportOverlay):
                     break
         base_color = color_utils.hex_to_float_array(self.overlay_color)
 
-        usable = joints[: min(len(colliders), max_display)]
+        usable_count = min(len(joints), len(colliders), max_display)
+        usable = list(joints[:usable_count])
+
+        if (
+            preferred_idx is not None
+            and preferred_idx >= usable_count
+            and preferred_idx < len(joints)
+        ):
+            usable[-1] = joints[preferred_idx]
+            preferred_idx = usable_count - 1
 
         order = list(range(len(usable)))
         if preferred_idx is not None and preferred_idx < len(usable):
@@ -440,6 +566,9 @@ class GhostTeachingOverlay(ViewportOverlay):
     def _reset_selection(self):
         self._selected_ghost_object = None
         self._cached_description = None
+        self._stream_config = None
+        self._cached_joints.clear()
+        self._cached_joint_limits.clear()
         for meshes in self._motion_group_colliders.values():
             for mesh in meshes:
                 mesh.visible = False
@@ -471,7 +600,7 @@ class GhostTeachingOverlay(ViewportOverlay):
                 self._reset_selection()
                 return
             self._selected_ghost_object = prim
-            run_coroutine(self.load_scene_models())
+            self._schedule_load_scene_models()
         elif event.type == int(omni.usd.StageEventType.CLOSED):
             self._reset_selection()
         elif event.type == int(omni.usd.StageEventType.OPENED):
@@ -488,6 +617,8 @@ class GhostTeachingOverlay(ViewportOverlay):
     @property
     def visible(self) -> bool:
         settings: carb.settings.ISettings = carb.settings.get_settings()
+        if settings.get(CARB_OVERLAY_VISIBLE) is None:
+            return True
         return settings.get_as_bool(CARB_OVERLAY_VISIBLE)
 
     @property

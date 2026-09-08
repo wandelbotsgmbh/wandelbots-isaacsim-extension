@@ -1,3 +1,6 @@
+import asyncio
+from contextlib import asynccontextmanager
+
 import omni.timeline
 import omni.usd
 from pxr import UsdGeom, Usd
@@ -14,6 +17,34 @@ class SceneUtils:
         timeline = omni.timeline.get_timeline_interface()
         is_playing = timeline.is_playing()
         return timeline, is_playing
+
+    @staticmethod
+    @asynccontextmanager
+    async def playing_timeline(stabilization_wait_time: float = 0.0):
+        """Run the body with the timeline playing, then restore it.
+
+        PhysX only reports collider hits while the simulation runs, so sweeps
+        start the timeline. A timeline that was paused or stopped before is put
+        back afterwards, otherwise detecting colliders would leave the
+        simulation running.
+        """
+        timeline = omni.timeline.get_timeline_interface()
+        was_playing = timeline.is_playing()
+        was_stopped = timeline.is_stopped()
+        try:
+            if not was_playing:
+                timeline.play()
+                while timeline.is_stopped():
+                    await asyncio.sleep(0.1)
+                if stabilization_wait_time:
+                    await asyncio.sleep(stabilization_wait_time)
+            yield timeline
+        finally:
+            if not was_playing:
+                if was_stopped:
+                    timeline.stop()
+                else:
+                    timeline.pause()
 
     @staticmethod
     def get_stage_units(stage: Usd.Stage = None) -> float:

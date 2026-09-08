@@ -15,6 +15,7 @@ from .exceptions import (
     InvalidStatus,
     InvalidUpgrade,
     NegotiationError,
+    StatusLineTooLong,
 )
 from .extensions import ClientExtensionFactory, Extension
 from .headers import (
@@ -305,6 +306,12 @@ class ClientProtocol(Protocol):
                     self.reader.read_exact,
                     self.reader.read_to_eof,
                 )
+            except StatusLineTooLong as exc:
+                self.handshake_exc = exc
+                self.send_eof()
+                self.parser = self.discard()
+                next(self.parser)  # start coroutine
+                yield
             except Exception as exc:
                 self.handshake_exc = InvalidMessage(
                     "did not receive a valid HTTP response"
@@ -348,6 +355,55 @@ class ClientConnection(ClientProtocol):
             DeprecationWarning,
         )
         super().__init__(*args, **kwargs)
+
+
+def process_exception(exc: Exception) -> Exception | None:
+    """
+    Determine whether a connection error is retryable or fatal.
+
+    When reconnecting automatically with ``async for ... in connect(...)``
+    (:mod:`asyncio`, :mod:`trio`) or ``for ... in reconnect(...)``
+    (:mod:`threading`), whenever a connection attempt fails,
+    :func:`process_exception` determines whether to retry connecting or to raise
+    the exception.
+
+    This function defines the default behavior, which is to retry on:
+
+    * :exc:`OSError` and :exc:`asyncio.TimeoutError`: network errors;
+    * :exc:`~websockets.exceptions.InvalidMessage` when it stems from an
+      :exc:`EOFError`: also network errors;
+    * :exc:`~websockets.exceptions.InvalidStatus` when the status code is 500,
+      502, 503, or 504: server or proxy errors.
+
+    All other exceptions are considered fatal.
+
+    You can change this behavior with the ``process_exception`` argument of
+    :func:`~websockets.asyncio.client.connect` (:mod:`asyncio`),
+    :func:`~websockets.trio.client.connect` (:mod:`trio`), or
+    :func:`~websockets.sync.client.reconnect` (:mod:`threading`).
+
+    Return :obj:`None` if the exception is retryable i.e. when the error could
+    be transient and trying to reconnect with the same parameters could succeed.
+    The exception will be logged at the ``INFO`` level.
+
+    Return an exception, either ``exc`` or a new exception, if the exception is
+    fatal i.e. when trying to reconnect will most likely produce the same error.
+    That exception will be raised, breaking out of the retry loop.
+
+    """
+    # This catches python-socks' ProxyConnectionError and ProxyTimeoutError.
+    if isinstance(exc, (OSError, TimeoutError)):
+        return None
+    if isinstance(exc, InvalidMessage) and isinstance(exc.__cause__, EOFError):
+        return None
+    if isinstance(exc, InvalidStatus) and exc.response.status_code in [
+        500,  # Internal Server Error
+        502,  # Bad Gateway
+        503,  # Service Unavailable
+        504,  # Gateway Timeout
+    ]:
+        return None
+    return exc
 
 
 BACKOFF_INITIAL_DELAY = float(os.environ.get("WEBSOCKETS_BACKOFF_INITIAL_DELAY", "5"))

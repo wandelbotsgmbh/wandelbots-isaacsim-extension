@@ -5,18 +5,13 @@ from __future__ import annotations
 import weakref
 from typing import Callable
 
-import carb
-import carb.settings
 import omni.ui as ui
 
-import wandelbots.omni.ui.colors as color_utils
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import _TOOLTIP_SUB
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
-from wandelbots.omni.utils.teaching import CARB_SETTINGS_PREFIX
 
 _LABEL_WIDTH = 170
-CARB_OVERLAY_COLOR = f"{CARB_SETTINGS_PREFIX}/overlay_color"
 _ALGORITHM_OPTIONS = ["RRTConnectAlgorithm", "MidpointInsertionAlgorithm"]
 _ALGORITHM_DISPLAY = ["RRTConnect", "MidpointInsertion"]
 
@@ -27,8 +22,6 @@ class SettingsSection:
     def __init__(
         self,
         live_update: bool = False,
-        overlay_color: list[float] | None = None,
-        trajectory_color: list[float] | None = None,
         tcp_velocity: float = 500.0,
         tcp_acceleration: float = 2000.0,
         auto_blending: bool = False,
@@ -40,14 +33,10 @@ class SettingsSection:
         cf_algorithm: str = "RRTConnectAlgorithm",
         cf_max_iterations: int = 10000,
         plan_collision_free: bool = False,
-        velocity_coloring: bool = False,
         move_to_start: bool = False,
         on_setting_changed: Callable[[str, object], None] | None = None,
     ) -> None:
         self.live_update = live_update
-        self.overlay_color = overlay_color or self._read_overlay_color_from_carb()
-        self.trajectory_color = trajectory_color or [0.808, 0.0, 0.345]
-        self.velocity_coloring = velocity_coloring
         self.tcp_velocity = tcp_velocity
         self.tcp_acceleration = tcp_acceleration
         self.auto_blending = auto_blending
@@ -62,9 +51,6 @@ class SettingsSection:
         self.move_to_start = move_to_start
         self._on_setting_changed = on_setting_changed
         self._live_update_checkbox: ui.CheckBox | None = None
-        self._velocity_coloring_checkbox: ui.CheckBox | None = None
-        self._velocity_legend: ui.VStack | None = None
-        self._velocity_legend_max_label: ui.Label | None = None
         self._move_to_start_checkbox: ui.CheckBox | None = None
         self._algorithm_combo: ui.ComboBox | None = None
         self._global_settings_button: ui.Button | None = None
@@ -79,10 +65,6 @@ class SettingsSection:
         with self._settings_section.body:
             with ui.VStack(spacing=4):
                 ui.Spacer(height=4)
-                self._build_overlay_color_row()
-                self._build_trajectory_color_row()
-                self._build_velocity_coloring_row()
-                self._build_velocity_legend_row()
                 self._build_global_motion_settings_row()
                 self._build_payload_name_row()
                 self._build_float_row(
@@ -112,8 +94,6 @@ class SettingsSection:
             self.tcp_velocity = velocity
         if acceleration is not None and acceleration > 0:
             self.tcp_acceleration = acceleration
-        if self._velocity_legend_max_label:
-            self._velocity_legend_max_label.text = self._velocity_legend_max_text()
 
     def set_collision_free(self, collision_free: bool) -> None:
         """Track planning mode. Global motion settings stay available in both modes."""
@@ -134,7 +114,10 @@ class SettingsSection:
                 "Live Update",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip="Automatically re-run IK when poses are moved.",
+                tooltip_fn=lambda: build_tooltip(
+                    "Automatically re-run IK when poses are moved."
+                ),
+                style=TOOLTIP_RESET,
             )
             with ui.VStack(width=20):
                 ui.Spacer()
@@ -176,7 +159,8 @@ class SettingsSection:
                 "Motion Settings",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
             )
             ui.Spacer()
             self._global_settings_button = ui.Button(
@@ -186,7 +170,7 @@ class SettingsSection:
                 clicked_fn=lambda ws=weakref.ref(self): (
                     ws()._open_global_motion_settings() if ws() else None
                 ),
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
                 style=self._global_settings_button_style(has_overrides),
             )
             ui.Spacer(width=5)
@@ -203,12 +187,12 @@ class SettingsSection:
                     "border_radius": 4,
                 },
                 "Button:hovered": {"background_color": NOVAColor.BUTTON_HOVER.color},
-                **_TOOLTIP_SUB,
+                **TOOLTIP_RESET,
             }
         return {
             "Button": {"background_color": 0xFF292929},
             "Button:hovered": {"background_color": NOVAColor.BUTTON_HOVER.color},
-            **_TOOLTIP_SUB,
+            **TOOLTIP_RESET,
         }
 
     def _refresh_global_settings_button(self) -> None:
@@ -248,140 +232,6 @@ class SettingsSection:
         self._notify("global_blending", self.global_blending)
         self._notify("global_limits_override", self.global_limits_override)
 
-    def _build_overlay_color_row(self) -> None:
-        with ui.HStack(height=26, spacing=16):
-            ui.Spacer(width=5)
-            ui.Label(
-                "Overlay Color",
-                width=_LABEL_WIDTH,
-                alignment=ui.Alignment.LEFT_CENTER,
-            )
-            widget = ui.ColorWidget(*self.overlay_color, width=26, height=26)
-            widget.model.add_end_edit_fn(
-                lambda m, _item, ws=weakref.ref(self): (
-                    ws()._on_overlay_color_changed(m) if ws() else None
-                )
-            )
-            ui.Spacer(width=5)
-
-    def _on_overlay_color_changed(self, model) -> None:
-        items = model.get_item_children()
-        self.overlay_color = [
-            model.get_item_value_model(items[i]).get_value_as_float() for i in range(3)
-        ]
-        hex_color = color_utils.float_array_to_hex(self.overlay_color + [0.3])
-        settings = carb.settings.get_settings()
-        settings.set(CARB_OVERLAY_COLOR, hex_color)
-        self._notify("overlay_color", self.overlay_color)
-
-    def _build_trajectory_color_row(self) -> None:
-        with ui.HStack(height=26, spacing=16):
-            ui.Spacer(width=5)
-            ui.Label(
-                "Trajectory Color",
-                width=_LABEL_WIDTH,
-                alignment=ui.Alignment.LEFT_CENTER,
-            )
-            widget = ui.ColorWidget(*self.trajectory_color, width=26, height=26)
-            widget.model.add_end_edit_fn(
-                lambda m, _item, ws=weakref.ref(self): (
-                    ws()._on_trajectory_color_changed(m) if ws() else None
-                )
-            )
-            ui.Spacer(width=5)
-
-    def _on_trajectory_color_changed(self, model) -> None:
-        items = model.get_item_children()
-        self.trajectory_color = [
-            model.get_item_value_model(items[i]).get_value_as_float() for i in range(3)
-        ]
-        self._notify("trajectory_color", self.trajectory_color)
-
-    def _build_velocity_coloring_row(self) -> None:
-        with ui.HStack(height=26, spacing=16):
-            ui.Spacer(width=5)
-            ui.Label(
-                "Velocity Coloring",
-                width=_LABEL_WIDTH,
-                alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=(
-                    "Color the trajectory curve by TCP speed (green = fast, "
-                    "red = slow). When off, the solid Trajectory Color is used."
-                ),
-            )
-            with ui.VStack(width=20):
-                ui.Spacer()
-                self._velocity_coloring_checkbox = ui.CheckBox(
-                    width=20,
-                    height=20,
-                    style={
-                        "color": NOVAColor.PRIMARY_CONTRAST_TEXT.color,
-                        "background_color": 0xFF1A1A1A,
-                        "font_size": 14,
-                    },
-                )
-                ui.Spacer()
-            self._velocity_coloring_checkbox.model.set_value(self.velocity_coloring)
-            self._velocity_coloring_checkbox.model.add_value_changed_fn(
-                lambda m, ws=weakref.ref(self): (
-                    ws()._on_velocity_coloring_toggled(m.get_value_as_bool())
-                    if ws()
-                    else None
-                )
-            )
-            ui.Spacer(width=5)
-
-    def _build_velocity_legend_row(self) -> None:
-        # A red(slow)->green(fast) gradient matching the trajectory velocity overlay
-        # (see planning_orchestrator._speeds_to_colors). Visible only when coloring is on.
-        self._velocity_legend = ui.VStack(
-            spacing=2, height=0, visible=self.velocity_coloring
-        )
-        # Align the spectrum's left edge with the checkbox column (label width +
-        # the row spacing), matching the velocity-coloring row layout above.
-        left_margin = 5 + _LABEL_WIDTH + 16
-        with self._velocity_legend:
-            with ui.HStack(height=10):
-                ui.Spacer(width=left_margin)
-                steps = 16
-                with ui.HStack(spacing=0):
-                    for i in range(steps):
-                        t = i / (steps - 1)
-                        ui.Rectangle(
-                            style={"background_color": ui.color(1.0 - t, t, 0.0)}
-                        )
-                ui.Spacer(width=5)
-            with ui.HStack(height=14):
-                ui.Spacer(width=left_margin)
-                ui.Label(
-                    "0",
-                    alignment=ui.Alignment.LEFT_CENTER,
-                    style={
-                        "color": NOVAColor.TEXT_SECONDARY.color,
-                        "font_size": 11,
-                    },
-                )
-                self._velocity_legend_max_label = ui.Label(
-                    self._velocity_legend_max_text(),
-                    alignment=ui.Alignment.RIGHT_CENTER,
-                    style={
-                        "color": NOVAColor.TEXT_SECONDARY.color,
-                        "font_size": 11,
-                    },
-                )
-                ui.Spacer(width=5)
-
-    def _velocity_legend_max_text(self) -> str:
-        if self.tcp_velocity and self.tcp_velocity > 0:
-            return f"{self.tcp_velocity:.0f} mm/s"
-        return "max"
-
-    def _on_velocity_coloring_toggled(self, enabled: bool) -> None:
-        self.velocity_coloring = enabled
-        if self._velocity_legend:
-            self._velocity_legend.visible = enabled
-        self._notify("velocity_coloring", enabled)
-
     def _build_float_row(
         self,
         label: str,
@@ -396,7 +246,8 @@ class SettingsSection:
                 label,
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
             )
             field = ui.FloatField(height=22, alignment=ui.Alignment.CENTER)
             field.model.set_value(value)
@@ -421,7 +272,10 @@ class SettingsSection:
                 "Payload Name",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip="Name of the payload attached to the TCP.",
+                tooltip_fn=lambda: build_tooltip(
+                    "Name of the payload attached to the TCP."
+                ),
+                style=TOOLTIP_RESET,
             )
             field = ui.StringField(height=22)
             field.model.set_value(self.payload_name)
@@ -445,7 +299,10 @@ class SettingsSection:
                 "CF Algorithm",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip="Path planning algorithm for collision-free segments.",
+                tooltip_fn=lambda: build_tooltip(
+                    "Path planning algorithm for collision-free segments."
+                ),
+                style=TOOLTIP_RESET,
             )
             initial_idx = 0
             if self.cf_algorithm in _ALGORITHM_OPTIONS:
@@ -473,7 +330,8 @@ class SettingsSection:
                 label,
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
             )
             field = ui.IntField(height=22, alignment=ui.Alignment.CENTER)
             field.model.set_value(value)
@@ -496,10 +354,11 @@ class SettingsSection:
                 "Move to Start",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=(
+                tooltip_fn=lambda: build_tooltip(
                     "Before executing, plan and run a PTP move to the trajectory start position. "
                     "Without this the virtual robot is teleported there."
                 ),
+                style=TOOLTIP_RESET,
             )
             with ui.VStack(width=20):
                 ui.Spacer()
@@ -526,12 +385,3 @@ class SettingsSection:
     def _on_move_to_start_toggled(self, enabled: bool) -> None:
         self.move_to_start = enabled
         self._notify("move_to_start", enabled)
-
-    @staticmethod
-    def _read_overlay_color_from_carb() -> list[float]:
-        settings = carb.settings.get_settings()
-        hex_color = settings.get_as_string(CARB_OVERLAY_COLOR)
-        if hex_color:
-            rgba = color_utils.hex_to_float_array(hex_color)
-            return rgba[:3]
-        return [0.4, 1.0, 0.4]

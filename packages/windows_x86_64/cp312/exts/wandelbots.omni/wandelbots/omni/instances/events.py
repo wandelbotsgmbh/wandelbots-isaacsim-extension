@@ -3,7 +3,11 @@ from typing_extensions import Literal
 import carb
 import carb.eventdispatcher
 
+from wandelbots.omni.ui.utils import set_ui_busy
+
+OPEN_INSTANCES_PANEL = "wandelbots.omni.OPEN_INSTANCES_PANEL"
 MOTION_GROUP_CONNECTION_CHANGED = "wandelbots.omni.MOTION_GROUP_CONNECTION_CHANGED"
+UI_BUSY_CHANGED = "wandelbots.omni.UI_BUSY_CHANGED"
 
 
 def push_motion_group_connection_changed(
@@ -47,4 +51,38 @@ def subscribe_to_motion_group_connection_changed(callback):
         event_name=MOTION_GROUP_CONNECTION_CHANGED,
         on_event=lambda event: callback(event.payload),
         observer_name="motion_group_connection_changed_sub",
+    )
+
+
+def push_open_instances_panel() -> None:
+    carb.eventdispatcher.get_eventdispatcher().dispatch_event(OPEN_INSTANCES_PANEL)
+
+
+def subscribe_to_open_instances_panel(callback):
+    return carb.eventdispatcher.get_eventdispatcher().observe_event(
+        event_name=OPEN_INSTANCES_PANEL,
+        on_event=lambda event: callback(),
+        observer_name="open_instances_panel_sub",
+    )
+
+
+def push_ui_busy_changed(busy: bool, message: str = "") -> None:
+    """Dispatch a ``UI_BUSY_CHANGED`` event.
+
+    Args:
+        busy: ``True`` while a blocking operation runs, ``False`` once done.
+        message: Optional status text describing the current operation.
+    """
+    set_ui_busy(busy)
+    carb.eventdispatcher.get_eventdispatcher().dispatch_event(
+        UI_BUSY_CHANGED,
+        payload={"busy": busy, "message": message},
+    )
+
+
+def subscribe_to_ui_busy_changed(callback):
+    return carb.eventdispatcher.get_eventdispatcher().observe_event(
+        event_name=UI_BUSY_CHANGED,
+        on_event=lambda event: callback(event.payload),
+        observer_name="ui_busy_changed_sub",
     )

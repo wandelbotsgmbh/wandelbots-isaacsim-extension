@@ -22,13 +22,19 @@ from wandelbots.omni.io import (
     get_bus_io_stream_service,
     BusIOStreamService,
 )
-from wandelbots.omni.manipulators import get_motion_group_service, MotionGroupService
+from wandelbots.omni.manipulators import (
+    get_motion_group_service,
+    release_scene_motion_group_prim_cache,
+    MotionGroupService,
+)
 import wandelbots.omni.ui.overlay as overlay
 from wandelbots.omni.utils.base import get_current_version
 from wandelbots.omni.ui.utils import make_menu_item_description
+from wandelbots.omni.constants import CONNECTED_INSTANCES_MENU_LABEL
+from wandelbots.omni.instances.events import subscribe_to_open_instances_panel
 import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
-from wandelbots.omni.ui.instances.instances_list import NOVAInstanceListUIBuilder
+from wandelbots.omni.ui.instances.main_window import NOVAInstanceListUIBuilder
 from wandelbots.omni.ui.tool.diagnose_package import DiagnosePackageUIBuilder
 import wandelbots.omni.ui.tool
 import weakref
@@ -72,6 +78,10 @@ class OmniService(omni.ext.IExt):
         self._load_carb_settings()
 
         self._create_menu(ext_id=ext_id)
+
+        self._open_instances_panel_sub = subscribe_to_open_instances_panel(
+            lambda weak_self=weakref.proxy(self): weak_self._open_connect_to_nova()
+        )
 
         self.register_snippets(ext_id)
         self._tools_subscription = wandelbots.omni.ui.tool.register_tools()
@@ -161,6 +171,10 @@ class OmniService(omni.ext.IExt):
         self.timeline_sub.unsubscribe()
         self.timeline_sub = None
 
+        # The scene motion-group prim cache keeps a USD notice listener and a
+        # stage-event subscription at module scope; both must go with us.
+        release_scene_motion_group_prim_cache()
+
         if self.timeline.is_playing():
             carb.log_verbose("Stopping timeline")
             self.timeline.stop()
@@ -168,6 +182,7 @@ class OmniService(omni.ext.IExt):
         self.schema_extension = None
         self._tools_subscription = None
         self._asset_browser_manager = None
+        self._open_instances_panel_sub = None
         if self._overlay_registry:
             self._overlay_registry.clear_overlays()
 
@@ -175,7 +190,7 @@ class OmniService(omni.ext.IExt):
         self._menu_items = [
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Connected Instances",
+                name=CONNECTED_INSTANCES_MENU_LABEL,
                 onclick_fun=lambda ext=weakref.proxy(self): ext._open_connect_to_nova(),
                 on_ticked_fn=lambda ext=weakref.proxy(self): (
                     ext.instance_list_window is not None
@@ -185,17 +200,17 @@ class OmniService(omni.ext.IExt):
             make_menu_item_description(
                 ext_id=ext_id,
                 header="",
-                name="Omniservice API ...",
+                name="Omniservice API",
                 onclick_fun=lambda ext=weakref.proxy(self): ext._open_omniservice_api(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Documentation ...",
+                name="Documentation",
                 onclick_fun=lambda ext=weakref.proxy(self): ext._open_documentation(),
             ),
             make_menu_item_description(
                 ext_id=ext_id,
-                name="Developer Portal ...",
+                name="Developer Portal",
                 onclick_fun=lambda ext=weakref.proxy(self): (
                     ext._open_developer_portal()
                 ),

@@ -52,15 +52,17 @@ def get_io_value_from_dict(io_value_dict: dict) -> IOValue | None:
         if value_type == "boolean":
             # Handle both boolean and string representations
             if isinstance(value, bool):
-                return IOBooleanValue(io=io, value=value)
+                return IOBooleanValue(io=io, value=value, value_type="boolean")
             elif isinstance(value, str):
-                return IOBooleanValue(io=io, value=value.lower() in ("true", "1"))
+                return IOBooleanValue(
+                    io=io, value=value.lower() in ("true", "1"), value_type="boolean"
+                )
             else:
-                return IOBooleanValue(io=io, value=bool(value))
+                return IOBooleanValue(io=io, value=bool(value), value_type="boolean")
         elif value_type == "integer":
-            return IOIntegerValue(io=io, value=str(value))
+            return IOIntegerValue(io=io, value=str(value), value_type="integer")
         elif value_type == "float":
-            return IOFloatValue(io=io, value=float(value))
+            return IOFloatValue(io=io, value=float(value), value_type="float")
         else:
             carb.log_error(f"Unknown value_type '{value_type}' in {io_value_dict}")
             return None

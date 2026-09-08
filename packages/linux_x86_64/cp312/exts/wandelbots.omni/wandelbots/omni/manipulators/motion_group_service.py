@@ -3,6 +3,7 @@ from copy import deepcopy
 import traceback
 
 import carb
+import omni.kit.app
 import omni.timeline
 import omni.usd
 from pxr import Sdf, Usd
@@ -26,6 +27,19 @@ class MotionGroupService:
         self.motion_group_lock = asyncio.Lock()
         self.timeline = omni.timeline.get_timeline_interface()
         self._streams: dict[str, MotionStreamConnector] = {}
+        self._apply_update_sub: carb.events.ISubscription | None = None
+
+    def _on_update(self, _event) -> None:
+        # Coalesced joint application: the websocket receive handlers only store
+        # the newest target per motion group (a plain per-connection cache, no
+        # USD involved) and reply their feedback inline from the per-frame
+        # measured-state sample; this hub refreshes that sample and applies the
+        # newest target once per rendered frame, then sleeps articulations
+        # that have been idle for a while (stops PhysX's per-frame transform
+        # writeback for a robot at rest; the next target wakes them).
+        for stream in list(self._streams.values()):
+            stream.apply_pending_joints()
+            stream.maybe_sleep_when_idle()
 
     @property
     def _stage(self) -> Usd.Stage:
@@ -90,7 +104,9 @@ class MotionGroupService:
             try:
                 await updated_configuration.check_connection()
             except Exception as ex:
-                f"Connection validation failed ({ex.__class__.__name__})"
+                raise RuntimeError(
+                    f"Connection validation failed {ex} ({ex.__class__.__name__})"
+                )
 
             updated_configuration.apply_to_prim(self._stage)
 
@@ -126,26 +142,87 @@ class MotionGroupService:
             prim: Usd.Prim = self._get_prim(motion_group_prim_path)
             prim.RemoveAPI(wb_schema.MotionGroupAPI)
 
+    def _collect_streamable_configurations(
+        self,
+    ) -> list[tuple[str, MotionGroupConfiguration]]:
+        """Stage motion groups that are enabled for simulation and fully assigned."""
+        candidates: list[tuple[str, MotionGroupConfiguration]] = []
+        for motion_group_prim_path in self.get_all_motion_group_prim_paths():
+            try:
+                configuration = get_motion_group_configuration_from_prim(
+                    self._get_prim(motion_group_prim_path)
+                )
+            except Exception as ex:
+                carb.log_error(
+                    f"Failed to read motion group {motion_group_prim_path}. {ex}"
+                )
+                continue
+
+            if configuration is None:
+                continue
+
+            if not configuration.enabled:
+                # Info, not verbose: verbose is off by default, and this is the
+                # first thing one looks for when a robot does not stream.
+                carb.log_info(
+                    f"Skipping stream for {motion_group_prim_path}: "
+                    f"not enabled for simulation."
+                )
+                continue
+
+            if not configuration.motion_stream_configuration.is_connectable:
+                carb.log_warn(
+                    f"Skipping stream for {motion_group_prim_path}: not assigned to a "
+                    f"virtual controller (missing host/cell/controller/motion_group)."
+                )
+                continue
+
+            candidates.append((motion_group_prim_path, configuration))
+        return candidates
+
+    async def _probe_connections(
+        self, candidates: list[tuple[str, MotionGroupConfiguration]]
+    ) -> list[str]:
+        """Probe every candidate concurrently; return the reachable prim paths.
+
+        Each probe waits on a network round trip with a multi-second timeout, so
+        serially this grew with the robot count and one dead host stalled every
+        robot behind it.
+        """
+        if not candidates:
+            return []
+
+        results = await asyncio.gather(
+            *(configuration.check_connection() for _, configuration in candidates),
+            return_exceptions=True,
+        )
+
+        reachable: list[str] = []
+        for (motion_group_prim_path, configuration), result in zip(candidates, results):
+            if isinstance(result, asyncio.CancelledError):
+                # Playback was aborted while probing; do not swallow it.
+                raise result
+            if isinstance(result, BaseException):
+                host = configuration.motion_stream_configuration.host
+                carb.log_warn(
+                    f"Skipping stream for {motion_group_prim_path}: host "
+                    f"'{host}' is not reachable ({result})."
+                )
+                continue
+            reachable.append(motion_group_prim_path)
+        return reachable
+
     async def start_streams(self):
         async with self.stream_action_lock:
-            for motion_group_prim_path in self.get_all_motion_group_prim_paths():
+            candidates = self._collect_streamable_configurations()
+            for motion_group_prim_path in await self._probe_connections(candidates):
                 try:
-                    motion_group_configuration = (
-                        get_motion_group_configuration_from_prim(
-                            self._get_prim(motion_group_prim_path)
-                        )
-                    )
-
-                    if not motion_group_configuration.enabled:
-                        carb.log_verbose(
-                            f"Skipping stream for {motion_group_prim_path} as it is not enabled"
-                        )
-                        continue
-
                     # Always recreate stream to ensure MotionGroup reflects current articulation structure
                     # This handles cases where articulations are connected/disconnected between runs
                     await self._remove_stream(motion_group_prim_path)
-                    stream = await self._create_stream(motion_group_prim_path)
+                    stream = await self._create_stream(
+                        motion_group_prim_path, check_connection=False
+                    )
                     try:
                         await self._start_stream(stream)
                     except Exception as start_ex:
@@ -155,20 +232,44 @@ class MotionGroupService:
                 except Exception as ex:
                     carb.log_error(f"Failed to stream {motion_group_prim_path}. {ex}")
 
+            if self._streams and self._apply_update_sub is None:
+                self._apply_update_sub = (
+                    omni.kit.app.get_app()
+                    .get_update_event_stream()
+                    .create_subscription_to_pop(
+                        self._on_update,
+                        name="wandelbots.omni.motion_group_apply_pending",
+                    )
+                )
+
     async def stop_streams(self):
+        """Close and forget every stream.
+
+        Removing the connector, not just closing its websocket, matters
+        beyond bookkeeping: each connector's MotionGroup holds the Usd.Stage
+        it was built against, so a connector left in _streams keeps that
+        stage resident and, once _apply_update_sub gets recreated by a later
+        start_streams(), still runs its per-frame update loop against it.
+        """
         async with self.stream_action_lock:
+            self._apply_update_sub = None
             for motion_group_prim_path in self.get_all_motion_group_prim_paths():
                 try:
-                    stream = self._get_motion_group_stream(motion_group_prim_path)
-                    if not stream:
-                        continue
-                    await self._stop_stream(stream)
+                    await self._remove_stream(motion_group_prim_path)
                 except Exception as ex:
                     carb.log_error(
                         f"Failed to stop stream {motion_group_prim_path}. {ex}"
                     )
 
-    async def _create_stream(self, motion_group_prim_path: str):
+    async def _create_stream(
+        self, motion_group_prim_path: str, check_connection: bool = True
+    ):
+        """Build the stream connector for *motion_group_prim_path*.
+
+        ``check_connection=False`` is for callers that already probed (see
+        ``_probe_connections``); the probe's only side effect is refreshing
+        ``connector.api_configuration``, which ``__init__`` and ``open()`` set anyway.
+        """
         if self._get_motion_group_stream(motion_group_prim_path):
             raise RuntimeError(
                 f"{motion_group_prim_path} is already created. Please delete it first to create a new stream"
@@ -180,7 +281,8 @@ class MotionGroupService:
                     self.get_motion_group_configuration(motion_group_prim_path),
                 )
             )
-            await stream.check_connection()
+            if check_connection:
+                await stream.check_connection()
         except Exception as e:
             raise RuntimeError(f"Unable to connect stream: {str(e)}")
         self._streams[motion_group_prim_path] = stream

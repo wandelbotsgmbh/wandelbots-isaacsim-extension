@@ -1,10 +1,11 @@
 import contextlib
 from typing import Annotated, Union, TypeVar
+import carb
 import omni.usd
 from pxr import Tf, Usd, UsdGeom, Gf, Sdf
 from pydantic import conlist
 from wandelbots.omni.utils.prims import PrimUtils
-from wandelbots.omni.datatypes import GIZMO_USD_FILE, WSPose
+from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.visualization.models import (
     TrajectoryData,
     TrajectoryObject,
@@ -284,6 +285,28 @@ class TrajectoryBuilder:
                 "trajectory:width_per_segment", Sdf.ValueTypeNames.Bool
             ).Set(False)
 
+    @staticmethod
+    def _apply_container_pose(stage, trajectory_path: str, container_pose) -> None:
+        """Author a visualization-only local transform on the trajectory container.
+
+        The curve waypoints are in the robot link_0 frame, so the container is given
+        the pose of link_0 relative to its parent prim (plus any external-axis
+        offset). ``set_prim_pose`` handles the mm->stage-unit scaling, but only writes
+        ops that already exist, so the translate/orient ops are ensured first."""
+        if not container_pose:
+            return
+        xform = UsdGeom.Xform.Get(stage, trajectory_path)
+        if not xform:
+            return
+        prim = xform.GetPrim()
+        if not prim.HasAttribute("xformOp:translate"):
+            xform.AddTranslateOp()
+        if not prim.HasAttribute("xformOp:orient"):
+            xform.AddOrientOp()
+        PrimUtils.set_prim_pose(
+            trajectory_path, WSPose(pose=list(container_pose)), stage=stage
+        )
+
     def create_trajectory(self, trajectory_data: TrajectoryData):
         stage = omni.usd.get_context().get_stage()
         parent_prim_path = trajectory_data.parent_prim_path
@@ -298,6 +321,9 @@ class TrajectoryBuilder:
             stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
             if not stage.GetPrimAtPath(trajectory_path):
                 UsdGeom.Xform.Define(stage, trajectory_path)
+            self._apply_container_pose(
+                stage, trajectory_path, trajectory_data.container_pose
+            )
 
             num_segments = len(trajectory_data.poses) - 1
             if num_segments < 1:
@@ -340,7 +366,7 @@ class TrajectoryBuilder:
         trajectory_path = f"{parent_prim_path}/trajectories/{name}"
         curve_path = f"{trajectory_path}/curve"
         if stage.GetPrimAtPath(curve_path):
-            raise ValueError(f"Trajectory '{name}' already exists")
+            carb.log_info(f"Trajectory '{name}' curve already exists - redrawing it.")
 
         num_segments = len(trajectory_data.poses) - 1
         if num_segments < 1:
@@ -355,6 +381,9 @@ class TrajectoryBuilder:
             stage.DefinePrim(f"{parent_prim_path}/trajectories", "Scope")
             if not stage.GetPrimAtPath(trajectory_path):
                 UsdGeom.Xform.Define(stage, trajectory_path)
+            self._apply_container_pose(
+                stage, trajectory_path, trajectory_data.container_pose
+            )
         await omni.kit.app.get_app().next_update_async()
 
         # Phase 2: visible curve geometry + per-vertex color/width.
@@ -556,19 +585,33 @@ class TrajectoryBuilder:
         markers_base_path = f"{trajectory_path}/markers"
         with _session_edit_target(stage):
             UsdGeom.Xform.Define(stage, markers_base_path)
+            # Local import to avoid a circular import: the trajectory_planner UI
+            # package imports this visualization layer (planning_orchestrator).
+            from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import (
+                embed_gizmo,
+            )
+
             for i, pose in enumerate(marker_data.poses):
                 marker_path = f"{markers_base_path}/marker_{i}"
+                # Embed the gizmo first: Sdf.CopySpec replaces the prim spec, so it
+                # must run before the xformOps are added below. Embedding (rather
+                # than AddReference(GIZMO_USD_FILE)) keeps the marker self-contained
+                # so geometry/material survive reparenting and stage save, and no
+                # absolute file path is baked into the saved stage.
+                if marker_data.prim.type == "gizmo":
+                    embed_gizmo(stage, marker_path)
+
                 xform = UsdGeom.Xform.Define(stage, marker_path)
                 ops = {op.GetOpName() for op in xform.GetOrderedXformOps()}
                 if "xformOp:translate" not in ops:
                     xform.AddTranslateOp()
                 if "xformOp:orient" not in ops:
                     xform.AddOrientOp()
+                if "xformOp:scale" not in ops:
+                    xform.AddScaleOp()
 
                 PrimUtils.set_prim_pose(marker_path, WSPose(pose=list(pose)))
-                if marker_data.prim.type == "gizmo":
-                    xform.GetPrim().GetReferences().AddReference(GIZMO_USD_FILE)
-                elif marker_data.prim.type == "custom":
+                if marker_data.prim.type == "custom":
                     xform.GetPrim().GetReferences().AddInternalReference(
                         Sdf.Path(marker_data.prim.custom_prim_path)
                     )

@@ -3,13 +3,15 @@ from typing import Any
 import carb
 import pydantic
 from isaacsim.core.prims import SingleArticulation
-from pxr import Sdf, Usd, UsdPhysics
+from pxr import Sdf, Usd
 
 import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.manipulators.motion_stream_configuration import (
     MotionStreamConfiguration,
 )
-from wandelbots.omni.manipulators.articulation_cache import get_articulation_cache
+from wandelbots.omni.manipulators.articulation_cache import (
+    get_articulation_cache,
+)
 from wandelbots.omni.utils.auth import validate_request
 from wandelbots_api_client.v2.models import (
     MotionGroupDescription,
@@ -22,82 +24,6 @@ from wandelbots_api_client.v2.api import (
 )
 
 from wandelbots.omni.utils.api import get_api_client_from_config
-
-
-def get_root_articulation_path(prim: Usd.Prim) -> str:
-    current_prim = prim
-    visited_prims = set()
-
-    while current_prim is not None:
-        prim_path = current_prim.GetPath()
-
-        if prim_path in visited_prims:
-            carb.log_warn(
-                f"Circular reference detected in motion group chain at {prim_path}. "
-                f"Returning current prim as root."
-            )
-            return current_prim.GetPath().pathString
-        visited_prims.add(prim_path)
-
-        root_joint_prim = current_prim.GetChild("root_joint")
-        if not root_joint_prim.IsValid():
-            carb.log_warn(
-                f"No valid root_joint found for prim {current_prim.GetPath()}. "
-                f"Returning current prim as root."
-            )
-            return current_prim.GetPath().pathString
-
-        joint = UsdPhysics.Joint(root_joint_prim)
-
-        body0_rel = joint.GetBody0Rel()
-        if not body0_rel:
-            return current_prim.GetPath().pathString
-
-        body0_targets = body0_rel.GetTargets()
-        if not body0_targets:
-            return current_prim.GetPath().pathString
-
-        body0_prim = current_prim.GetStage().GetPrimAtPath(body0_targets[0])
-        if not body0_prim.IsValid():
-            return current_prim.GetPath().pathString
-
-        parent_prim = body0_prim.GetParent()
-        if not parent_prim or not UsdPhysics.ArticulationRootAPI(parent_prim):
-            return current_prim.GetPath().pathString
-
-        # Continue traversal with parent
-        current_prim = parent_prim
-
-    return current_prim.GetPath().pathString
-
-
-def find_physx_articulation_path(prim: Usd.Prim) -> str:
-    """Return the path PhysX actually registers the articulation under.
-
-    ``ArticulationRootAPI`` is conventionally applied to a parent Xform that
-    has no ``RigidBodyAPI`` itself.  PhysX registers (and pattern-matches)
-    articulations against rigid-body prims, so passing the Xform path to
-    ``SingleArticulation`` fails with "did not match any rigid bodies".
-    This function descends breadth-first to the first ``RigidBodyAPI``
-    descendant — which is the prim PhysX actually uses as the anchor — and
-    returns its path.  If the prim itself already has ``RigidBodyAPI`` the
-    path is returned unchanged.
-    """
-    if UsdPhysics.RigidBodyAPI(prim):
-        return prim.GetPath().pathString
-
-    queue = list(prim.GetChildren())
-    while queue:
-        child = queue.pop(0)
-        if UsdPhysics.RigidBodyAPI(child):
-            return child.GetPath().pathString
-        queue.extend(child.GetChildren())
-
-    carb.log_warn(
-        f"No RigidBodyAPI descendant found under {prim.GetPath()}. "
-        f"Using prim path directly."
-    )
-    return prim.GetPath().pathString
 
 
 class MotionGroupConfiguration(pydantic.BaseModel):
@@ -196,10 +122,10 @@ class MotionGroup:
         self._validate(stage)
 
         motion_group_prim = stage.GetPrimAtPath(Sdf.Path(configuration.prim_path))
-        usd_root_path = get_root_articulation_path(motion_group_prim)
-        usd_root_prim = stage.GetPrimAtPath(Sdf.Path(usd_root_path))
-        self._articulation_cache_handle = get_articulation_cache().get_articulation(
-            find_physx_articulation_path(usd_root_prim)
+        self._articulation_cache_handle = (
+            get_articulation_cache().get_articulation_for_motion_group(
+                motion_group_prim
+            )
         )
 
     @property
@@ -267,6 +193,15 @@ async def get_motion_group_dhparameters_from_prim(
 def get_motion_group_configuration_from_prim(
     prim: Usd.Prim,
 ) -> MotionGroupConfiguration | None:
+    # A stale prim path resolves to a null prim, and HasAPI below raises
+    # "Accessed invalid null prim" for those instead of returning False. Callers
+    # feed this from the cached path list of get_scene_motion_group_prim_paths,
+    # which can outlive the prims it names (a prim deleted since the last resync,
+    # or a path resolved against a different stage), so treat that as "no
+    # configuration" - the same guard MotionGroupBoolModel already applies.
+    if prim is None or not prim.IsValid():
+        return None
+
     if not prim.HasAPI(wb_schema.MotionGroupAPI):
         return None
 

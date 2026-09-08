@@ -7,6 +7,7 @@ import weakref
 from typing import TYPE_CHECKING, Optional
 
 import carb
+import omni.kit.menu.utils
 import omni.kit.notification_manager as nm
 import omni.ui as ui
 import omni.usd
@@ -51,6 +52,9 @@ if TYPE_CHECKING:
     )
 
 _BUTTON_HEIGHT = 32
+
+# Root of the menu holding this window's entry (see the package __init__).
+_WINDOW_MENU_ROOT = "Tools"
 
 CARB_MOUNTING_OVERLAY_COLOR = (
     "/persistent/exts/wandelbots.omni/mounting_assistant/overlay_color"
@@ -184,6 +188,9 @@ class MountingAssistantWindow:
                 self._refresh_robot_preview()
             elif self._motion_group_prim is None:
                 self._auto_select_motion_group()
+        # The menu tick (ticked_fn) is only re-evaluated on a menu refresh, so
+        # closing the window via its title-bar X would leave the tick stale.
+        omni.kit.menu.utils.refresh_menu_items(_WINDOW_MENU_ROOT)
 
     def _on_stage_event(self, event) -> None:
         if event.type == int(omni.usd.StageEventType.OPENED):

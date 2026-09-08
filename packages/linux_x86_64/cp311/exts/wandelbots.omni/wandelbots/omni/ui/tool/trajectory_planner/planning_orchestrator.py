@@ -7,6 +7,7 @@ import json
 from typing import TYPE_CHECKING, Callable
 
 import carb
+import numpy as np
 
 if TYPE_CHECKING:
     from wandelbots.omni.ui.tool.trajectory_planner.events import (
@@ -28,9 +29,13 @@ from wandelbots.omni.ui.tool.trajectory_planner.service import (
     get_trajectory_planner_service,
 )
 from wandelbots.omni.datatypes import WSPose
+from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
+from wandelbots.omni.utils.math import euler_to_rotvec, rotvec_to_matrix
+from wandelbots.omni.utils.prims import PrimUtils
 from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
     get_trajectory_planner_store,
+    migrate_blending_dict,
 )
 from wandelbots.omni.ui.tool.planner_utils import (
     PlanSuccess,
@@ -57,16 +62,21 @@ def _resolve_blending(
     settings: dict,
 ) -> wb_v2_models.MotionCommandBlending | None:
     if pose_bl is not None:
-        return wb_v2_models.MotionCommandBlending.from_dict(pose_bl)
+        return wb_v2_models.MotionCommandBlending.from_dict(
+            migrate_blending_dict(pose_bl)
+        )
     global_bl = settings.get("global_blending")
     if global_bl is not None:
-        return wb_v2_models.MotionCommandBlending.from_dict(global_bl)
+        return wb_v2_models.MotionCommandBlending.from_dict(
+            migrate_blending_dict(global_bl)
+        )
     if settings.get("auto_blending", False):
         return wb_v2_models.MotionCommandBlending(
             wb_v2_models.BlendingAuto(
                 min_velocity_in_percent=settings.get(
                     "blending_min_velocity_percent", 50
-                )
+                ),
+                blending_name="BlendingAuto",
             )
         )
     return None
@@ -105,7 +115,10 @@ def _build_motion_commands(
             )
             if joint_pos:
                 path = wb_v2_models.MotionCommandPath(
-                    wb_v2_models.PathJointPTP(target_joint_position=joint_pos)
+                    wb_v2_models.PathJointPTP(
+                        target_joint_position=joint_pos,
+                        path_definition_name="PathJointPTP",
+                    )
                 )
             else:
                 carb.log_warn(
@@ -113,16 +126,23 @@ def _build_motion_commands(
                     f"config available, falling back to PathCartesianPTP"
                 )
                 path = wb_v2_models.MotionCommandPath(
-                    wb_v2_models.PathCartesianPTP(target_pose=nova_pose)
+                    wb_v2_models.PathCartesianPTP(
+                        target_pose=nova_pose,
+                        path_definition_name="PathCartesianPTP",
+                    )
                 )
                 mt = "PathCartesianPTP (fallback)"
         elif mt == "PathLine":
             path = wb_v2_models.MotionCommandPath(
-                wb_v2_models.PathLine(target_pose=nova_pose)
+                wb_v2_models.PathLine(
+                    target_pose=nova_pose, path_definition_name="PathLine"
+                )
             )
         else:
             path = wb_v2_models.MotionCommandPath(
-                wb_v2_models.PathCartesianPTP(target_pose=nova_pose)
+                wb_v2_models.PathCartesianPTP(
+                    target_pose=nova_pose, path_definition_name="PathCartesianPTP"
+                )
             )
 
         bl = pose_blending[i] if i < len(pose_blending) else None
@@ -256,6 +276,11 @@ class PlanningOrchestrator:
         get_settings: Callable[[], dict],
         events: "TrajectoryPlannerEvents",
         get_tcp_for_item: Callable | None = None,
+        get_mounting_offset: Callable[[], tuple[float, float, float] | None]
+        | None = None,
+        get_mounting_rotation: Callable[[], tuple[float, float, float] | None]
+        | None = None,
+        get_reference_frame_path: Callable[[], str | None] | None = None,
     ) -> None:
         self._pose_model = pose_model
         self._get_api_config = get_api_config
@@ -266,8 +291,12 @@ class PlanningOrchestrator:
         self._get_settings = get_settings
         self._events = events
         self._get_tcp_for_item = get_tcp_for_item
+        self._get_mounting_offset = get_mounting_offset
+        self._get_mounting_rotation = get_mounting_rotation
+        self._get_reference_frame_path = get_reference_frame_path
 
         self._plan_task: asyncio.Task | None = None
+        self._visualize_task: asyncio.Task | None = None
         self._trajectory_planned: bool = False
         self._planned_joint_trajectory: wb_v2_models.JointTrajectory | None = None
         self._planned_tcp: str | None = None
@@ -312,8 +341,21 @@ class PlanningOrchestrator:
         if self._plan_task is not None:
             self._plan_task.cancel()
             self._plan_task = None
+        self._cancel_visualize_task()
         self._remove_trajectory_visualization()
         self._remove_segment_trajectories()
+
+    def _cancel_visualize_task(self) -> None:
+        """Stop any in-flight visualize_trajectory() build.
+
+        Called whenever something else is about to authoritatively clear or
+        replace the visualization (a fresh plan, an explicit invalidate, or
+        teardown) so a stale build can't keep authoring USD after the caller
+        has moved on to newer data.
+        """
+        if self._visualize_task is not None:
+            self._visualize_task.cancel()
+            self._visualize_task = None
 
     def plan(self) -> None:
         if self._plan_task is not None and not self._plan_task.done():
@@ -362,6 +404,7 @@ class PlanningOrchestrator:
                 self._trajectory_planned = False
                 self._planned_joint_trajectory = None
             self._trajectory_stale = False
+            self._cancel_visualize_task()
             self._remove_trajectory_visualization()
         elif self._trajectory_planned:
             self._trajectory_stale = True
@@ -451,6 +494,42 @@ class PlanningOrchestrator:
         start_joint_position = first_pose.selected_joint_config
         target_poses = poses[1:]
 
+        # A pose edited just before Plan/Replan may not yet have had its IK
+        # refetched by the debounced watcher (see TrajectoryPlannerController.
+        # _refresh_pose / _recalculate_all_poses): fetch live for any target
+        # pose still missing joint configs, so collision-free planning and
+        # PathJointPTP never silently run without a valid seed for it. The
+        # unreachable-poses check further below aborts cleanly if a pose
+        # truly has no IK solution.
+        poses_missing_ik = [item for item in target_poses if not item.joint_configs]
+        if poses_missing_ik:
+            service = get_trajectory_planner_service()
+            for item in poses_missing_ik:
+                tcp = (
+                    self._get_tcp_for_item(item)
+                    if self._get_tcp_for_item
+                    else planning_tcp
+                )
+                try:
+                    ik_result = await service.fetch_ik(
+                        api_configuration=api_config,
+                        cell=cell,
+                        controller=controller,
+                        motion_group=motion_group,
+                        pose=item.pose,
+                        tcp_name=tcp,
+                        collision_setup_name=self._get_collision_setup(),
+                    )
+                    item.joint_configs = ik_result.joint_configs
+                    item.selected_config_idx = 0
+                    item.reachable = bool(ik_result.joint_configs)
+                except Exception as exc:
+                    carb.log_warn(
+                        f"IK for '{item.name_model.get_value_as_string()}' "
+                        f"failed during plan: {exc}"
+                    )
+                    item.reachable = False
+
         # Each pose is interpreted in its own TCP frame. Mixed TCPs are planned as
         # per-TCP segments and merged (see the non-collision branch below), so no
         # reprojection into a single planning TCP is needed.
@@ -517,6 +596,10 @@ class PlanningOrchestrator:
             item.planned = True
 
         self._remove_segment_trajectories()
+        # Re-planning always supersedes the current visualization: cancel any
+        # build still in flight from a prior plan before clearing the curve,
+        # so a stale task can't keep authoring USD after this newer plan wins.
+        self._cancel_visualize_task()
         self._remove_trajectory_visualization()
         self._total_plan_segments = len(ws_poses)
 
@@ -798,6 +881,77 @@ class PlanningOrchestrator:
             )
         return f"v{n + 1}"
 
+    def _mounting_offset(self) -> tuple[float, float, float] | None:
+        """Visualization-only XYZ translation (mm) from the widget, or None
+        when not wired."""
+        if self._get_mounting_offset is None:
+            return None
+        return self._get_mounting_offset()
+
+    def _mounting_rotation(self) -> tuple[float, float, float] | None:
+        """Visualization-only XYZ rotation (degrees, extrinsic) from the
+        widget, or None when not wired."""
+        if self._get_mounting_rotation is None:
+            return None
+        return self._get_mounting_rotation()
+
+    def _visualization_parent_path(self) -> str | None:
+        """Prim the trajectory visualization is anchored to: the user-picked
+        reference frame when set and valid, otherwise the motion group prim.
+        Visualization only — never changes the planning request."""
+        mg_prim_path = self._get_mg_prim_path()
+        if self._get_reference_frame_path is None:
+            return mg_prim_path
+        ref_path = self._get_reference_frame_path()
+        if not ref_path:
+            return mg_prim_path
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(ref_path) if stage else None
+        if prim and prim.IsValid():
+            return ref_path
+        return mg_prim_path
+
+    def _container_pose(self) -> list[float] | None:
+        """Visualization-only local transform for the trajectory container.
+
+        The curve waypoints are in the robot link_0 frame; the container is parented
+        at ``_visualization_parent_path()`` (reference frame or motion group prim), so
+        it must carry the pose of link_0 *relative to* that parent for the curve to
+        land correctly. The mounting offset (translation, mm; rotation, degrees) is
+        composed in the link_0 frame — rotation is applied first, then translation.
+        Returns ``None`` only when the motion group / stage is unavailable.
+        """
+        mg_prim_path = self._get_mg_prim_path()
+        stage = omni.usd.get_context().get_stage()
+        if not mg_prim_path or stage is None:
+            return None
+        parent_path = self._visualization_parent_path()
+        mg_prim = stage.GetPrimAtPath(mg_prim_path)
+        link0 = (
+            get_link_0_from_motion_group_prim(mg_prim)
+            if mg_prim and mg_prim.IsValid()
+            else None
+        )
+        link0_path = link0.GetPath().pathString if link0 else mg_prim_path
+
+        # inv(parent_world) @ link0_world — the parent-relative pose of link_0.
+        base = PrimUtils.get_relative_prim_pose(parent_path, link0_path)
+
+        offset = self._mounting_offset()
+        rotation = self._mounting_rotation()
+        if not offset and not rotation:
+            return list(base.pose)
+        # Compose the mounting offset in the link_0 frame: rotate first, then
+        # translate (mounting_matrix = T @ R).
+        matrix = PrimUtils.pose_to_matrix(base.pose)
+        mounting_matrix = np.eye(4)
+        if rotation:
+            rx, ry, rz = euler_to_rotvec(list(rotation), order="xyz", degrees=True)
+            mounting_matrix[:3, :3] = rotvec_to_matrix(rx, ry, rz)
+        if offset:
+            mounting_matrix[0, 3], mounting_matrix[1, 3], mounting_matrix[2, 3] = offset
+        return PrimUtils.matrix_to_pose(matrix @ mounting_matrix).tolist()
+
     def visualize_segment(
         self,
         segment_idx: int,
@@ -839,9 +993,10 @@ class PlanningOrchestrator:
             trajectory_builder.create_trajectory(
                 TrajectoryData(
                     name=name,
-                    parent_prim_path=mg_prim_path,
+                    parent_prim_path=self._visualization_parent_path(),
                     poses=tcp_poses,
                     options=TrajectoryOptions(color=(128, 128, 128), width=4.0),
+                    container_pose=self._container_pose(),
                 )
             )
             self._segment_trajectory_names.append(name)
@@ -849,7 +1004,37 @@ class PlanningOrchestrator:
             carb.log_warn(f"Failed to visualize segment {segment_idx}: {exc}")
 
     async def visualize_trajectory(self, trajectory_color: list[float]) -> bool:
-        """Render the trajectory curve. Returns True when the curve was drawn."""
+        """Render the trajectory curve. Returns True when the curve was drawn.
+
+        Re-entrancy guard: auto-visualize after planning, the window's Refresh
+        action, and the velocity-coloring toggle can all call this concurrently
+        for the same deterministic trajectory name. Cancel any in-flight call,
+        wait for it to unwind, then start and await a fresh one — unlike plan()
+        (cancel-and-return), none of the callers here retry, so a superseded
+        call must not silently drop the visualization.
+        """
+        if self._visualize_task is not None and not self._visualize_task.done():
+            carb.log_info(
+                "visualize_trajectory() called while already visualizing - "
+                "cancelling current task."
+            )
+            self._visualize_task.cancel()
+            try:
+                await self._visualize_task
+            except asyncio.CancelledError:
+                pass
+
+        task = run_coroutine(self._do_visualize_trajectory(trajectory_color))
+        self._visualize_task = task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            return False
+        finally:
+            if self._visualize_task is task:
+                self._visualize_task = None
+
+    async def _do_visualize_trajectory(self, trajectory_color: list[float]) -> bool:
         api_config = self._get_api_config()
         params = self._get_stream_params()
         mg_prim_path = self._get_mg_prim_path()
@@ -918,15 +1103,22 @@ class PlanningOrchestrator:
             await trajectory_builder.create_trajectory_async(
                 TrajectoryData(
                     name=self._trajectory_name,
-                    parent_prim_path=mg_prim_path,
+                    parent_prim_path=self._visualization_parent_path(),
                     poses=tcp_poses,
                     options=TrajectoryOptions(
                         color=color,
                         width=10.0,
                     ),
+                    container_pose=self._container_pose(),
                 )
             )
             return True
+        except asyncio.CancelledError:
+            carb.log_info(
+                f"visualize_trajectory('{self._trajectory_name}') cancelled - "
+                "superseded by a newer call."
+            )
+            raise
         except Exception as exc:
             import traceback
 

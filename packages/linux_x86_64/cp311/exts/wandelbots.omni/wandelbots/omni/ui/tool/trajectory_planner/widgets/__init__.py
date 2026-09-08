@@ -1,4 +1,4 @@
-from wandelbots.omni.ui.tool.trajectory_planner.widgets.progress_status_bar import (
+from wandelbots.omni.ui.widgets.progress_status_bar import (
     ProgressStatusBar,
 )
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.settings_section import (

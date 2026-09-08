@@ -32,7 +32,7 @@ API_DESCRIPTION = (
     "Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, "
     "allowing users to easily configure various robot models and teach them through an intuitive interface "
     "or by leveraging their preferred programming languages via APIs. "
-    "Start programming your favorite robot brands like ABB, FANUC, KUKA, Universal Robots and Yaskawa "
+    "Start programming your favorite robot brands like ABB, FANUC, KUKA, Staeubli, Techman, Universal Robots and Yaskawa "
     "in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\n"
     "The API provides comprehensive capabilities including:\n"
     "- **Stage Management**: Load, save, and manipulate USD stages\n"
@@ -48,7 +48,7 @@ API_DESCRIPTION = (
 omniservice_app = FastAPI(
     title=API_TITLE,
     description=API_DESCRIPTION,
-    version="2.50.0",
+    version="2.63.1",
     docs_url=None,
     redoc_url=None,
 )

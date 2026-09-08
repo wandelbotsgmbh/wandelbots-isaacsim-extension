@@ -102,9 +102,9 @@ class PrimPickersSection:
 
     def set_stage(self, stage: "Usd.Stage | None") -> None:
         """Update the USD stage on all pickers (e.g. after stage open/close)."""
-        self.motion_group_picker._stage = stage
-        self.center_picker._stage = stage
-        self.target_picker._stage = stage
+        self.motion_group_picker.set_stage(stage)
+        self.center_picker.set_stage(stage)
+        self.target_picker.set_stage(stage)
 
     def clear(self) -> None:
         """Clear displayed picker values without emitting picker callbacks."""
@@ -125,7 +125,7 @@ class PrimPickersSection:
 
     def clear_targets(self) -> None:
         """Clear the selected target prims."""
-        self.target_picker._clear()
+        self.target_picker.clear()
 
     def rebuild_target_list(self, paths: list[str]) -> None:
         """Rebuild the collapsable target prim path list."""

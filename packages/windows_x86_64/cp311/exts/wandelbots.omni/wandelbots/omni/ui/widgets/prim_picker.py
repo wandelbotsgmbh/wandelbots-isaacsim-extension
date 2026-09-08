@@ -7,6 +7,7 @@ import weakref
 import omni.ui as ui
 from wandelbots.omni.ui.dialogs import PrimSelectDialog
 from wandelbots.omni.ui.utils import get_icon
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 import omni.usd
 from omni.kit.async_engine import run_coroutine
 import omni.kit.app
@@ -41,6 +42,9 @@ class PrimPicker:
         self._dialog_properties = dialog_properties
         self._build_ui()
 
+    def set_stage(self, stage: Usd.Stage) -> None:
+        self._stage = stage
+
     def _pick_prim(self):
         if self._stage is None:
             return
@@ -70,7 +74,7 @@ class PrimPicker:
             [self._prim.GetPath().pathString], False
         )
 
-    def _clear(self):
+    def clear(self):
         self._prim = None
         self._deferred_build_ui()
         self._prim_picked_fn(None)
@@ -93,6 +97,12 @@ class PrimPicker:
                 clicked_fn=lambda a=weakref.proxy(self): a._pick_prim(),
                 height=20,
                 alignment=ui.Alignment.CENTER,
+                tooltip_fn=lambda t=self._dialog_properties.title: build_tooltip(
+                    f"Pick a prim from the stage ({t})."
+                ),
+                # The default Button margin insets the drawn face from the
+                # layout bounds, breaking the shared right edge of form rows.
+                style={"margin": 0, **TOOLTIP_RESET},
             )
 
     def _build_prim_selected_ui(self):
@@ -107,22 +117,26 @@ class PrimPicker:
                     mouse_released_fn=lambda a1, a2, a3, a4, a=weakref.proxy(self): (
                         a._highlight_prim()
                     ),
+                    tooltip_fn=lambda p=self._prim.GetPath().pathString: build_tooltip(
+                        f"{p}\nClick to select this prim in the stage."
+                    ),
+                    style=TOOLTIP_RESET,
                 )
                 ui.Button(
-                    clicked_fn=lambda a=weakref.proxy(self): a._clear(),
+                    clicked_fn=lambda a=weakref.proxy(self): a.clear(),
                     image_url=get_icon("close.svg"),
                     width=ui.Pixel(24),
                     height=ui.Pixel(24),
-                    tooltip="Clear selection",
-                    style={"margin": 0, "padding": 2},
+                    tooltip_fn=lambda: build_tooltip("Clear selection"),
+                    style={"margin": 0, "padding": 2, **TOOLTIP_RESET},
                 )
             ui.Button(
                 clicked_fn=lambda a=weakref.proxy(self): a._pick_prim(),
                 image_url=get_icon("colorize.svg"),
                 width=ui.Pixel(24),
                 height=ui.Pixel(24),
-                tooltip="Select a new prim",
-                style={"margin": 0, "padding": 2},
+                tooltip_fn=lambda: build_tooltip("Select a new prim"),
+                style={"margin": 0, "padding": 2, **TOOLTIP_RESET},
             )
 
     @property
@@ -137,13 +151,20 @@ class MultiPrimPicker:
         prims_picked_fn: Callable[[list[Usd.Prim]], None],
         prims: list[Usd.Prim] = None,
         dialog_properties: PrimPickerDialogProperties = PrimPickerDialogProperties(),
+        show_selection_summary: bool = True,
     ):
+        # Callers that render the selected paths themselves keep the pick
+        # button instead of the redundant "N prim(s) selected" row.
         self._stage = stage
         self._prims: list[Usd.Prim] = prims or []
         self._prims_picked_fn = prims_picked_fn
         self._root_widget = ui.HStack(spacing=5)
         self._dialog_properties = dialog_properties
+        self._show_selection_summary = show_selection_summary
         self._build_ui()
+
+    def set_stage(self, stage: Usd.Stage) -> None:
+        self._stage = stage
 
     def _pick_prims(self):
         def _on_prims_selected(future: asyncio.Future[list[Usd.Prim] | None]):
@@ -164,7 +185,7 @@ class MultiPrimPicker:
             dialog.show(sys.maxsize, self._dialog_properties.filter_fn)
         ).add_done_callback(_on_prims_selected)
 
-    def _clear(self):
+    def clear(self):
         self._prims = []
         self._deferred_build_ui()
         self._prims_picked_fn([])
@@ -172,7 +193,7 @@ class MultiPrimPicker:
     def _build_ui(self):
         self._root_widget.clear()
         with self._root_widget:
-            if not self._prims:
+            if not self._prims or not self._show_selection_summary:
                 self._build_prims_none_ui()
             else:
                 self._build_prims_selected_ui()
@@ -187,6 +208,12 @@ class MultiPrimPicker:
                 clicked_fn=lambda a=weakref.proxy(self): a._pick_prims(),
                 height=20,
                 alignment=ui.Alignment.CENTER,
+                tooltip_fn=lambda t=self._dialog_properties.title: build_tooltip(
+                    f"Pick one or more prims from the stage ({t})."
+                ),
+                # The default Button margin insets the drawn face from the
+                # layout bounds, breaking the shared right edge of form rows.
+                style={"margin": 0, **TOOLTIP_RESET},
             )
 
     def _build_prims_selected_ui(self):
@@ -197,22 +224,26 @@ class MultiPrimPicker:
                     height=20,
                     alignment=ui.Alignment.LEFT_CENTER,
                     width=ui.Fraction(1),
+                    tooltip_fn=lambda paths="\n".join(prim.GetPath().pathString for prim in self._prims): (
+                        build_tooltip(paths)
+                    ),
+                    style=TOOLTIP_RESET,
                 )
                 ui.Button(
-                    clicked_fn=lambda a=weakref.proxy(self): a._clear(),
+                    clicked_fn=lambda a=weakref.proxy(self): a.clear(),
                     image_url=get_icon("close.svg"),
                     width=ui.Pixel(24),
                     height=ui.Pixel(24),
-                    tooltip="Clear selection",
-                    style={"margin": 0, "padding": 2},
+                    tooltip_fn=lambda: build_tooltip("Clear selection"),
+                    style={"margin": 0, "padding": 2, **TOOLTIP_RESET},
                 )
             ui.Button(
                 clicked_fn=lambda a=weakref.proxy(self): a._pick_prims(),
                 image_url=get_icon("colorize.svg"),
                 width=ui.Pixel(24),
                 height=ui.Pixel(24),
-                tooltip="Select prims",
-                style={"margin": 0, "padding": 2},
+                tooltip_fn=lambda: build_tooltip("Select prims"),
+                style={"margin": 0, "padding": 2, **TOOLTIP_RESET},
             )
 
     @property

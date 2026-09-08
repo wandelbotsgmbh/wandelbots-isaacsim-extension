@@ -9,7 +9,13 @@ from collections.abc import Generator
 from typing import Callable
 
 from .datastructures import Headers
-from .exceptions import SecurityError
+from .exceptions import (
+    HeaderLineTooLong,
+    RequestLineTooLong,
+    SecurityError,
+    StatusLineTooLong,
+    TooManyHeaders,
+)
 from .version import version as websockets_version
 
 
@@ -80,13 +86,23 @@ class Request:
     """
     WebSocket handshake request.
 
+    ``method`` and ``path`` must contain only ASCII characters. ``headers``
+    should contain only ASCII characters; however, non-ASCII header values are
+    tolerated and encoded as ISO-8859-1.
+
     Attributes:
         path: Request path, including optional query.
         headers: Request headers.
+        method: Request method; WebSocket handshake requests use GET.
+        protocol: Request protocol; WebSocket handshake requests use HTTP/1.1.
     """
 
     path: str
     headers: Headers
+    # method and protocol have a default value, so they're declared after path
+    # and headers which don't.
+    method: str = "GET"
+    protocol: str = "HTTP/1.1"
     # body isn't useful is the context of this library.
 
     _exception: Exception | None = None
@@ -102,21 +118,23 @@ class Request:
     @classmethod
     def parse(
         cls,
-        read_line: Callable[[int], Generator[None, None, bytes | bytearray]],
+        read_line: Callable[
+            [int, type[Exception]], Generator[None, None, bytes | bytearray]
+        ],
     ) -> Generator[None, None, Request]:
         """
         Parse a WebSocket handshake request.
 
         This is a generator-based coroutine.
 
-        The request path isn't URL-decoded or validated in any way.
+        The request method and path must contain only ASCII characters. The
+        request path isn't URL-decoded or validated in any way. Request headers
+        should contain only ASCII characters; however, non-ASCII header values
+        are tolerated and decoded with ISO-8859-1.
 
-        The request path and headers are expected to contain only ASCII
-        characters. Other characters are represented with surrogate escapes.
-
-        :meth:`parse` doesn't attempt to read the request body because
-        WebSocket handshake requests don't have one. If the request contains a
-        body, it may be read from the data stream after :meth:`parse` returns.
+        :meth:`parse` doesn't read the request body because WebSocket handshake
+        requests don't have one. If the request contains a body, it may be read
+        from the data stream after :meth:`parse` returns.
 
         Args:
             read_line: Generator-based coroutine that reads a LF-terminated
@@ -124,32 +142,39 @@ class Request:
 
         Raises:
             EOFError: If the connection is closed without a full HTTP request.
-            SecurityError: If the request exceeds a security limit.
+            RequestLineTooLong: If the request line is too long.
+            HeaderLineTooLong: If a header line is too long.
+            TooManyHeaders: If there are too many headers.
+            UnicodeDecodeError: If the request method or path isn't ASCII.
             ValueError: If the request isn't well formatted.
 
         """
         # https://datatracker.ietf.org/doc/html/rfc7230#section-3.1.1
 
-        # Parsing is simple because fixed values are expected for method and
-        # version and because path isn't checked. Since WebSocket software tends
-        # to implement HTTP/1.1 strictly, there's little need for lenient parsing.
+        # Parsing is simple because a fixed value is expected for the version
+        # and because path isn't checked. Since WebSocket libraries generally
+        # implement HTTP/1.1 strictly, there's little need for lenient parsing.
 
         try:
-            request_line = yield from parse_line(read_line)
+            request_line = yield from parse_line(read_line, RequestLineTooLong)
         except EOFError as exc:
             raise EOFError("connection closed while reading HTTP request line") from exc
 
         try:
-            method, raw_path, protocol = request_line.split(b" ", 2)
+            raw_method, raw_path, raw_protocol = request_line.split(b" ", 2)
         except ValueError:  # not enough values to unpack (expected 3, got 1-2)
             raise ValueError(f"invalid HTTP request line: {d(request_line)}") from None
-        if protocol != b"HTTP/1.1":
+        if raw_protocol not in [b"HTTP/1.1", b"HTTP/1.0"]:
             raise ValueError(
-                f"unsupported protocol; expected HTTP/1.1: {d(request_line)}"
+                f"unsupported protocol; expected HTTP/1.1 or HTTP/1.0: "
+                f"{d(request_line)}"
             )
-        if method != b"GET":
-            raise ValueError(f"unsupported HTTP method; expected GET; got {d(method)}")
-        path = raw_path.decode("ascii", "surrogateescape")
+        method = raw_method.decode("ascii")
+        protocol = raw_protocol.decode("ascii")
+
+        # RFC 9110 defers the definition of URIs to RFC 3986, which allows only
+        # a subset of ASCII. Non-ASCII IRIs must be UTF-8 then percent-encoded.
+        path = raw_path.decode("ascii")
 
         headers = yield from parse_headers(read_line)
 
@@ -164,16 +189,17 @@ class Request:
             if int(headers["Content-Length"]) != 0:
                 raise ValueError("unsupported request body")
 
-        return cls(path, headers)
+        return cls(path, headers, method, protocol)
 
     def serialize(self) -> bytes:
         """
         Serialize a WebSocket handshake request.
 
         """
-        # Since the request line and headers only contain ASCII characters,
-        # we can keep this simple.
-        request = f"GET {self.path} HTTP/1.1\r\n".encode()
+        # Methods are hardcoded and always ASCII. Non-ASCII paths are converted
+        # from URI to IRI and percent-encoded. Enforce ASCII as a safety net.
+        request_line = f"{self.method} {self.path} {self.protocol}\r\n"
+        request = request_line.encode("ascii")
         request += self.headers.serialize()
         return request
 
@@ -182,6 +208,10 @@ class Request:
 class Response:
     """
     WebSocket handshake response.
+
+    ``reason_phrase`` and ``headers`` should contain only ASCII characters;
+    however, non-ASCII reason phrases and header values are tolerated and
+    encoded as ISO-8859-1.
 
     Attributes:
         status_code: Response code.
@@ -210,9 +240,13 @@ class Response:
     @classmethod
     def parse(
         cls,
-        read_line: Callable[[int], Generator[None, None, bytes | bytearray]],
+        read_line: Callable[
+            [int, type[Exception]], Generator[None, None, bytes | bytearray]
+        ],
         read_exact: Callable[[int], Generator[None, None, bytes | bytearray]],
-        read_to_eof: Callable[[int], Generator[None, None, bytes | bytearray]],
+        read_to_eof: Callable[
+            [int, type[Exception]], Generator[None, None, bytes | bytearray]
+        ],
         proxy: bool = False,
     ) -> Generator[None, None, Response]:
         """
@@ -220,8 +254,9 @@ class Response:
 
         This is a generator-based coroutine.
 
-        The reason phrase and headers are expected to contain only ASCII
-        characters. Other characters are represented with surrogate escapes.
+        The reason phrase and headers should contain only ASCII characters;
+        however, non-ASCII reason phrases and header values are tolerated and
+        decoded as ISO-8859-1.
 
         Args:
             read_line: Generator-based coroutine that reads a LF-terminated
@@ -233,7 +268,10 @@ class Response:
 
         Raises:
             EOFError: If the connection is closed without a full HTTP response.
-            SecurityError: If the response exceeds a security limit.
+            StatusLineTooLong: If the status line is too long.
+            HeaderLineTooLong: If a header line is too long.
+            TooManyHeaders: If there are too many headers.
+            SecurityError: If the response body exceeds a security limit.
             LookupError: If the response isn't well formatted.
             ValueError: If the response isn't well formatted.
 
@@ -241,7 +279,7 @@ class Response:
         # https://datatracker.ietf.org/doc/html/rfc7230#section-3.1.2
 
         try:
-            status_line = yield from parse_line(read_line)
+            status_line = yield from parse_line(read_line, StatusLineTooLong)
         except EOFError as exc:
             raise EOFError("connection closed while reading HTTP status line") from exc
 
@@ -272,7 +310,10 @@ class Response:
             )
         if not _value_re.fullmatch(raw_reason):
             raise ValueError(f"invalid HTTP reason phrase: {d(raw_reason)}")
-        reason = raw_reason.decode("ascii", "surrogateescape")
+
+        # RFC 2616 implies ISO-8859-1. It's easy to reverse and cannot crash.
+        # Non-ASCII never worked reliably and the reason isn't useful anyway.
+        reason = raw_reason.decode("iso-8859-1")
 
         headers = yield from parse_headers(read_line)
 
@@ -291,16 +332,19 @@ class Response:
         Serialize a WebSocket handshake response.
 
         """
-        # Since the status line and headers only contain ASCII characters,
-        # we can keep this simple.
-        response = f"HTTP/1.1 {self.status_code} {self.reason_phrase}\r\n".encode()
+        # Encode the reason phrase as ISO-8859-1 to round-trip cleanly.
+        status_line = f"HTTP/1.1 {self.status_code} {self.reason_phrase}\r\n"
+        response = status_line.encode("iso-8859-1")
         response += self.headers.serialize()
         response += self.body
         return response
 
 
 def parse_line(
-    read_line: Callable[[int], Generator[None, None, bytes | bytearray]],
+    read_line: Callable[
+        [int, type[Exception]], Generator[None, None, bytes | bytearray]
+    ],
+    too_long_exc_type: type[Exception] = SecurityError,
 ) -> Generator[None, None, bytes | bytearray]:
     """
     Parse a single line.
@@ -310,16 +354,15 @@ def parse_line(
     Args:
         read_line: Generator-based coroutine that reads a LF-terminated line
             or raises an exception if there isn't enough data.
+        too_long_exc_type: exception to raise if the line is too long;
+            defaults to :exc:`SecurityError`.
 
     Raises:
         EOFError: If the connection is closed without a CRLF.
         SecurityError: If the response exceeds a security limit.
 
     """
-    try:
-        line = yield from read_line(MAX_LINE_LENGTH)
-    except RuntimeError:
-        raise SecurityError("line too long")
+    line = yield from read_line(MAX_LINE_LENGTH, too_long_exc_type)
     # Not mandatory but safe - https://datatracker.ietf.org/doc/html/rfc7230#section-3.5
     if not line.endswith(b"\r\n"):
         raise EOFError("line without CRLF")
@@ -327,12 +370,15 @@ def parse_line(
 
 
 def parse_headers(
-    read_line: Callable[[int], Generator[None, None, bytes | bytearray]],
+    read_line: Callable[
+        [int, type[Exception]], Generator[None, None, bytes | bytearray]
+    ],
 ) -> Generator[None, None, Headers]:
     """
     Parse HTTP headers.
 
-    Non-ASCII characters are represented with surrogate escapes.
+    Headers should contain only ASCII characters; however, non-ASCII values are
+    tolerated and decoded as ISO-8859-1.
 
     Args:
         read_line: Generator-based coroutine that reads a LF-terminated line
@@ -340,7 +386,8 @@ def parse_headers(
 
     Raises:
         EOFError: If the connection is closed without complete headers.
-        SecurityError: If the request exceeds a security limit.
+        HeaderLineTooLong: If a header line is too long.
+        TooManyHeaders: If there are too many headers.
         ValueError: If the request isn't well formatted.
 
     """
@@ -351,7 +398,7 @@ def parse_headers(
     headers = Headers()
     for _ in range(MAX_NUM_HEADERS + 1):
         try:
-            line = yield from parse_line(read_line)
+            line = yield from parse_line(read_line, HeaderLineTooLong)
         except EOFError as exc:
             raise EOFError("connection closed while reading HTTP headers") from exc
         if line == b"":
@@ -368,11 +415,18 @@ def parse_headers(
             raise ValueError(f"invalid HTTP header value: {d(raw_value)}")
 
         name = raw_name.decode("ascii")  # guaranteed to be ASCII at this point
-        value = raw_value.decode("ascii", "surrogateescape")
-        headers[name] = value
+        # Headers should be ASCII. Section 5.5 of RFC 9110 says: "Historically,
+        # HTTP allowed field content with text in the ISO-8859-1 charset." and
+        # "A recipient SHOULD treat other allowed octets in field content (i.e.,
+        # obs-text) as opaque data." ISO-8859-1 is an opaque representation of
+        # arbitrary binary data in a str object and it is easy to reverse.
+        value = raw_value.decode("iso-8859-1")
+
+        # Since we just validated raw_value, we don't need to revalidate it.
+        headers.set_insecure(name, value)
 
     else:
-        raise SecurityError("too many HTTP headers")
+        raise TooManyHeaders(f"expected no more than {MAX_NUM_HEADERS} headers")
 
     return headers
 
@@ -380,9 +434,13 @@ def parse_headers(
 def read_body(
     status_code: int,
     headers: Headers,
-    read_line: Callable[[int], Generator[None, None, bytes | bytearray]],
+    read_line: Callable[
+        [int, type[Exception]], Generator[None, None, bytes | bytearray]
+    ],
     read_exact: Callable[[int], Generator[None, None, bytes | bytearray]],
-    read_to_eof: Callable[[int], Generator[None, None, bytes | bytearray]],
+    read_to_eof: Callable[
+        [int, type[Exception]], Generator[None, None, bytes | bytearray]
+    ],
 ) -> Generator[None, None, bytes | bytearray]:
     # https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.3
 
@@ -402,7 +460,7 @@ def read_body(
 
         body = b""
         while True:
-            chunk_size_line = yield from parse_line(read_line)
+            chunk_size_line = yield from parse_line(read_line, SecurityError)
             raw_chunk_size = chunk_size_line.split(b";", 1)[0]
             # Set a lower limit than default_max_str_digits; 1 EB is plenty.
             if len(raw_chunk_size) > 15:
@@ -432,7 +490,4 @@ def read_body(
         return (yield from read_exact(content_length))
 
     else:
-        try:
-            return (yield from read_to_eof(MAX_BODY_SIZE))
-        except RuntimeError:
-            raise SecurityError(f"body too large: over {MAX_BODY_SIZE} bytes")
+        return (yield from read_to_eof(MAX_BODY_SIZE, SecurityError))

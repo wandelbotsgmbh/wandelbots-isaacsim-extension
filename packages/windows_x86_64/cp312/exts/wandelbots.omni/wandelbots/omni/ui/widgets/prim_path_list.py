@@ -10,6 +10,8 @@ from omni.kit.property.usd.relationship import RelationshipTargetPicker
 from omni.kit.property.usd.widgets import ICON_PATH as _KIT_ICON_PATH
 from omni.kit.window.property.templates import HORIZONTAL_SPACING, LABEL_HEIGHT
 from pxr import Usd
+from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 
 _REMOVE_ICON = str(_KIT_ICON_PATH / "remove.svg")
 _FOLDER_ICON = str(_KIT_ICON_PATH / "small_folder.png")
@@ -70,7 +72,12 @@ class _PrimPathDelegate(ui.AbstractItemDelegate):
         _ROW_HEIGHT = LABEL_HEIGHT + 4
         path = item.path
         with ui.ZStack(height=_ROW_HEIGHT):
-            ui.Rectangle(style={"background_color": 0x20FFFFFF, "border_radius": 2})
+            ui.Rectangle(
+                style={
+                    "background_color": NOVAColor.OVERLAY_LIGHT.color,
+                    "border_radius": 2,
+                }
+            )
             with ui.HStack(spacing=HORIZONTAL_SPACING, height=_ROW_HEIGHT):
                 field = ui.StringField(
                     name="models", read_only=True, height=LABEL_HEIGHT
@@ -83,13 +90,14 @@ class _PrimPathDelegate(ui.AbstractItemDelegate):
                     height=_ROW_HEIGHT,
                     style={
                         "image_url": _FOLDER_ICON,
-                        "background_color": 0x40000000,
+                        "background_color": NOVAColor.OVERLAY_DARK.color,
                         "border_radius": 2,
                         "margin": 0,
                         "padding": 4,
+                        **TOOLTIP_RESET,
                     },
                     clicked_fn=lambda p=path: self._on_replace(p),
-                    tooltip="Replace target",
+                    tooltip_fn=lambda: build_tooltip("Replace target"),
                 )
                 ui.Button(
                     "",
@@ -100,12 +108,13 @@ class _PrimPathDelegate(ui.AbstractItemDelegate):
                     name="remove",
                     style={
                         "image_url": _REMOVE_ICON,
-                        "background_color": 0x40000000,
+                        "background_color": NOVAColor.OVERLAY_DARK.color,
                         "border_radius": 2,
                         "margin": 0,
                         "padding": 0,
+                        **TOOLTIP_RESET,
                     },
-                    tooltip="Remove target",
+                    tooltip_fn=lambda: build_tooltip("Remove target"),
                 )
 
 
@@ -187,10 +196,13 @@ class PrimPathList:
                 ui.Button(
                     f"{ui.get_custom_glyph_code('${glyphs}/menu_context.svg')} Add {self._target_name}...",
                     height=LABEL_HEIGHT,
-                    tooltip=f"Open picker to add a new {self._target_name.lower()}",
+                    tooltip_fn=lambda t=self._target_name.lower(): build_tooltip(
+                        f"Open picker to add a new {t}"
+                    ),
                     clicked_fn=lambda ws=weakref.ref(self): (
                         ws()._open_picker() if ws() else None
                     ),
+                    style=TOOLTIP_RESET,
                 )
 
     def _open_picker(self):

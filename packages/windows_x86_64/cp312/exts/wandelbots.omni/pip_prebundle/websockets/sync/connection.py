@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import logging
 import random
@@ -7,10 +8,12 @@ import socket
 import struct
 import threading
 import time
+import traceback
 import uuid
+import weakref
 from collections.abc import Iterable, Iterator, Mapping
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import Any, Literal, Self, overload
 
 from ..exceptions import (
     ConcurrencyError,
@@ -18,9 +21,9 @@ from ..exceptions import (
     ConnectionClosedOK,
     ProtocolError,
 )
-from ..frames import DATA_OPCODES, CloseCode, Frame, Opcode
+from ..frames import DATA_OPCODES, PONG, CloseCode, Frame
 from ..http11 import Request, Response
-from ..protocol import CLOSED, OPEN, Event, Protocol, State
+from ..protocol import CLOSED, CONNECTING, OPEN, Event, Protocol, State
 from ..typing import BytesLike, Data, DataLike, LoggerLike, Subprotocol
 from .messages import Assembler
 from .utils import Deadline
@@ -46,7 +49,7 @@ class Connection:
 
     def __init__(
         self,
-        socket: socket.socket,
+        sock: socket.socket,
         protocol: Protocol,
         *,
         ping_interval: float | None = 20,
@@ -54,7 +57,7 @@ class Connection:
         close_timeout: float | None = 10,
         max_queue: int | None | tuple[int | None, int | None] = 16,
     ) -> None:
-        self.socket = socket
+        self.socket = sock
         self.protocol = protocol
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
@@ -67,7 +70,7 @@ class Connection:
         # Inject reference to this instance in the protocol's logger.
         self.protocol.logger = logging.LoggerAdapter(
             self.protocol.logger,
-            {"websocket": self},
+            {"websocket": weakref.proxy(self)},
         )
 
         # Copy attributes from the protocol for convenience.
@@ -214,7 +217,7 @@ class Connection:
 
     # Public methods
 
-    def __enter__(self) -> Connection:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(
@@ -315,6 +318,7 @@ class Connection:
                 :meth:`recv_streaming` concurrently.
 
         """
+        self.maybe_raise_legacy_warning()
         try:
             return self.recv_messages.get(timeout, decode)
         except EOFError:
@@ -385,6 +389,7 @@ class Connection:
                 :meth:`recv_streaming` concurrently.
 
         """
+        self.maybe_raise_legacy_warning()
         try:
             yield from self.recv_messages.get_iter(decode)
             return
@@ -411,6 +416,7 @@ class Connection:
     def send(
         self,
         message: DataLike | Iterable[DataLike],
+        *,
         text: bool | None = None,
     ) -> None:
         """
@@ -455,6 +461,7 @@ class Connection:
 
         Args:
             message: Message to send.
+            text: Force sending in a Text_ or Binary_ frame.
 
         Raises:
             ConnectionClosed: When the connection is closed.
@@ -462,7 +469,8 @@ class Connection:
             TypeError: If ``message`` doesn't have a supported type.
 
         """
-        # Unfragmented message -- this case must be handled first because
+        self.maybe_raise_legacy_warning()
+        # Unfragmented message — this case must be handled first because
         # strings and bytes-like objects are iterable.
 
         if isinstance(message, str):
@@ -487,12 +495,12 @@ class Connection:
                 else:
                     self.protocol.send_binary(message)
 
-        # Catch a common mistake -- passing a dict to send().
+        # Catch a common mistake — passing a dict to send().
 
         elif isinstance(message, Mapping):
             raise TypeError("data is a dict-like object")
 
-        # Fragmented message -- regular iterator.
+        # Fragmented message — regular iterator.
 
         elif isinstance(message, Iterable):
             chunks = iter(message)
@@ -587,6 +595,7 @@ class Connection:
             reason: WebSocket close reason.
 
         """
+        self.maybe_raise_legacy_warning()
         try:
             # The context manager takes care of waiting for the TCP connection
             # to terminate after calling a method that sends a close frame.
@@ -606,6 +615,7 @@ class Connection:
     def ping(
         self,
         data: DataLike | None = None,
+        *,
         ack_on_close: bool = False,
     ) -> threading.Event:
         """
@@ -642,6 +652,7 @@ class Connection:
                 the corresponding pong wasn't received yet.
 
         """
+        self.maybe_raise_legacy_warning()
         if isinstance(data, BytesLike):
             data = bytes(data)
         elif isinstance(data, str):
@@ -679,6 +690,7 @@ class Connection:
             ConnectionClosed: When the connection is closed.
 
         """
+        self.maybe_raise_legacy_warning()
         if isinstance(data, BytesLike):
             data = bytes(data)
         elif isinstance(data, str):
@@ -691,6 +703,9 @@ class Connection:
 
     # Private methods
 
+    def maybe_raise_legacy_warning(self) -> None:
+        pass  # see override in ClientConnection
+
     def process_event(self, event: Event) -> None:
         """
         Process one incoming event.
@@ -702,7 +717,7 @@ class Connection:
         if event.opcode in DATA_OPCODES:
             self.recv_messages.put(event)
 
-        if event.opcode is Opcode.PONG:
+        if event.opcode is PONG:
             self.acknowledge_pings(bytes(event.data))
 
     def acknowledge_pings(self, data: bytes) -> None:
@@ -812,8 +827,19 @@ class Connection:
         ``recv_events()`` exits immediately when ``self.socket`` is closed.
 
         """
+        # When the opening handshake fails, we cannot trust rules in RFC 6455
+        # for closing TCP connections will be followed. The HTTP server could
+        # keep the connection alive after sending the response. We attempt to
+        # close the connection immediately. Unfortunately, this is unreliable
+        # on macOS; recv() may block until close_timeout elapses:
+        # https://github.com/python-websockets/websockets/issues/1596
+        # https://github.com/python/cpython/issues/154224
+        # In that case, break out of the loop to prevent recv() from blocking
+        # until close_timeout elapses.
+        close_expected_while_connecting = False
+
         try:
-            while True:
+            while not close_expected_while_connecting:
                 try:
                     # If the assembler buffer is full, block until it drains.
                     with self.recv_flow_control:
@@ -866,6 +892,8 @@ class Connection:
                     if self.protocol.close_expected():
                         if self.close_deadline is None:
                             self.close_deadline = Deadline(self.close_timeout)
+                        if self.protocol.state is CONNECTING:
+                            close_expected_while_connecting = True
 
                 # Unlock conn_mutex before processing events. Else, the
                 # application can't send messages in response to events.
@@ -878,8 +906,8 @@ class Connection:
                     # This isn't expected to raise an exception.
                     self.process_event(event)
 
-            # Breaking out of the while True: ... loop means that we believe
-            # that the socket doesn't work anymore.
+            # Breaking out of the while not close_expected_while_connecting: ...
+            # loop means that we believe that the socket doesn't work anymore.
 
             with self.protocol_mutex:
                 # Feed the end of the data stream to the protocol.
@@ -1063,7 +1091,12 @@ class Connection:
             self.socket.shutdown(socket.SHUT_RDWR)
         except OSError:  # socket already closed
             pass
-        self.socket.close()
+        try:
+            self.socket.close()
+        except OSError:  # socket already closed  # pragma: no cover
+            # OSError: [Errno 9] Bad file descriptor
+            # (only observed on free-threaded Python)
+            pass
 
         # Calling protocol.receive_eof() is safe because it's idempotent.
         # This guarantees that the protocol state becomes CLOSED.
@@ -1076,3 +1109,128 @@ class Connection:
 
             # Acknowledge pings sent with the ack_on_close option.
             self.terminate_pending_pings()
+
+
+# broadcast() is defined in the connection module even though it's primarily
+# used by servers and documented in the server module because it works with
+# client connections too and because it's easier to test together with the
+# Connection class.
+
+
+def broadcast(
+    connections: Iterable[Connection],
+    message: DataLike,
+    *,
+    raise_exceptions: bool = False,
+    text: bool | None = None,
+    **kwargs: Any,
+) -> None:
+    """
+    Broadcast a message to several WebSocket connections.
+
+    A string (:class:`str`) is sent as a Text_ frame. A bytestring or bytes-like
+    object (:class:`bytes`, :class:`bytearray`, or :class:`memoryview`) is sent
+    as a Binary_ frame.
+
+    .. _Text: https://datatracker.ietf.org/doc/html/rfc6455#section-5.6
+    .. _Binary: https://datatracker.ietf.org/doc/html/rfc6455#section-5.6
+
+    You may override this behavior with the ``text`` argument:
+
+    * Set ``text=True`` to send an UTF-8 bytestring or bytes-like object
+      (:class:`bytes`, :class:`bytearray`, or :class:`memoryview`) in a
+      Text_ frame. This improves performance when the message is already
+      UTF-8 encoded, for example if the message contains JSON and you're
+      using a JSON library that produces a bytestring.
+    * Set ``text=False`` to send a string (:class:`str`) in a Binary_
+      frame. This may be useful for servers that expect binary frames
+      instead of text frames.
+
+    :func:`broadcast` relies on :class:`concurrent.futures.ThreadPoolExecutor`
+    to send the messages. Make sure the thread pool is large enough relative to
+    the number of clients, so that slow or stuck connections don't clog it. If
+    that's an issue, then you should be using an asynchronous implementation.
+    You can configure the thread pool by passing additional keyword arguments to
+    :func:`broadcast`, such as ``max_workers``.
+
+    Unlike :meth:`~websockets.asyncio.connection.Connection.send`,
+    :func:`broadcast` doesn't support sending fragmented messages. Indeed,
+    fragmentation is useful for sending large messages without buffering them in
+    memory, while :func:`broadcast` buffers one copy per connection as fast as
+    possible.
+
+    :func:`broadcast` skips connections that aren't open in order to avoid
+    errors on connections where the closing handshake is in progress.
+
+    :func:`broadcast` ignores failures to write the message on some connections.
+    It continues writing to other connections. You may set ``raise_exceptions``
+    to :obj:`True` to record failures and raise all exceptions in a :pep:`654`
+    :exc:`ExceptionGroup`.
+
+    While :func:`broadcast` makes more sense for servers, it works identically
+    with clients, if you have a use case for opening connections to many servers
+    and broadcasting a message to them.
+
+    Args:
+        websockets: WebSocket connections to which the message will be sent.
+        message: Message to send.
+        raise_exceptions: Whether to raise an exception in case of failures.
+        text: Force sending in Text_ or Binary_ frames.
+
+    Raises:
+        TypeError: If ``message`` doesn't have a supported type.
+
+    """
+    if isinstance(message, str):
+        send_method = "send_binary" if text is False else "send_text"
+        message = message.encode()
+    elif isinstance(message, BytesLike):
+        send_method = "send_text" if text is True else "send_binary"
+    else:
+        raise TypeError("data must be str or bytes")
+
+    if raise_exceptions:
+        exceptions: list[Exception] = []
+
+    def send_message(connection: Connection) -> None:
+        exception: Exception
+
+        with connection.protocol_mutex:
+            if connection.protocol.state is not OPEN:
+                return
+
+            if connection.send_in_progress:
+                if raise_exceptions:
+                    exception = ConcurrencyError("sending a fragmented message")
+                    exceptions.append(exception)
+                else:
+                    connection.logger.warning(
+                        "skipped broadcast: sending a fragmented message",
+                    )
+                return
+
+            try:
+                # Call connection.protocol.send_text or send_binary.
+                # Either way, message is already converted to bytes.
+                getattr(connection.protocol, send_method)(message)
+                connection.send_data()
+            except Exception as write_exception:
+                if raise_exceptions:
+                    exception = RuntimeError("failed to write message")
+                    exception.__cause__ = write_exception
+                    exceptions.append(exception)
+                else:
+                    connection.logger.warning(
+                        "skipped broadcast: failed to write message: %s",
+                        traceback.format_exception_only(write_exception)[0].strip(),
+                    )
+
+    with concurrent.futures.ThreadPoolExecutor(**kwargs) as executor:
+        executor.map(send_message, connections)
+
+    if raise_exceptions and exceptions:
+        raise ExceptionGroup("skipped broadcast", exceptions)
+
+
+# Pretend that broadcast is actually defined in the server module.
+broadcast.__module__ = "websockets.sync.server"

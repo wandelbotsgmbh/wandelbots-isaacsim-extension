@@ -220,7 +220,6 @@ def get_auth_configs() -> dict[str, Auth0Model | EntraIDModel]:
     environments: list[dict] = wandelbots_configs.get("environments", [])
 
     auth_configs = {}
-    auth_configs.setdefault(DEFAULT_AUTH0_IDENTIFIER, Auth0Model.default())
 
     for env in environments:
         provider = env.get("provider", AuthProvider.AUTH0)
@@ -254,6 +253,11 @@ def get_auth_configs() -> dict[str, Auth0Model | EntraIDModel]:
                 carb.log_warn(f"Unknown provider '{provider}' for environment: {name}")
         except Exception as e:
             carb.log_error(f"Failed to parse config for {name}: {e}")
+
+    # The built-in "NOVA (Default)" config duplicates the production tenant, so
+    # only offer it as a fallback when the TOML provided no usable environments.
+    if not auth_configs:
+        auth_configs[DEFAULT_AUTH0_IDENTIFIER] = Auth0Model.default()
 
     return auth_configs
 

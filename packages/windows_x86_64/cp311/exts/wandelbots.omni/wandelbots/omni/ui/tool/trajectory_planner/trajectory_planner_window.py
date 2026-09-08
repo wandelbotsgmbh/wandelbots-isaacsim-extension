@@ -15,7 +15,7 @@ import omni.usd
 
 from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE, _TOOLTIP_SUB
+from wandelbots.omni.ui.wb_theme import TOOLTIP_STYLE, TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.utils import defer_call, get_icon
 from wandelbots.omni.ui.tool.trajectory_planner.import_skill_dialog import (
     ImportSkillDialog,
@@ -50,6 +50,11 @@ class TrajectoryPlannerWindow:
         TrajectoryPlannerWindow._singleton = self
 
         self._widgets: list[TrajectoryPlannerWidget] = []
+        # Guard against a double "Create Skill": clicking the button blurs the name
+        # field, which fires the field's end-edit callback in addition to the
+        # button's click — both call _add_widget(). With the sim running the faster
+        # event loop lets both run before the deferred rebuild, creating two skills.
+        self._adding_widget = False
         self._widgets_frame: ui.Frame | None = None
         self._name_field_model: ui.SimpleStringModel | None = None
         self._name_placeholder: ui.Label | None = None
@@ -109,6 +114,26 @@ class TrajectoryPlannerWindow:
                 w._preview.hide()
         for w in self._widgets:
             w.set_visible(visible)
+        # The menu tick (ticked_fn) is only re-evaluated on a menu refresh, so
+        # closing the window via its title-bar X would leave the tick stale.
+        omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
+        # While the planner is open it shows its own preview overlay; suppress the
+        # ghost-teaching overlay so the two don't render simultaneously.
+        self._set_ghost_overlay_suppressed(visible)
+
+    @staticmethod
+    def _set_ghost_overlay_suppressed(suppressed: bool) -> None:
+        try:
+            from wandelbots.omni.ui.overlay import (
+                GHOST_TEACHING_OVERLAY_NAME,
+                get_overlay_registry,
+            )
+
+            overlay = get_overlay_registry().get_overlay(GHOST_TEACHING_OVERLAY_NAME)
+            if overlay is not None:
+                overlay.set_suppressed(suppressed)
+        except Exception as exc:
+            carb.log_warn(f"Failed to toggle ghost overlay suppression: {exc}")
 
     def _on_stage_event(self, event) -> None:
         if event.type == int(omni.usd.StageEventType.OPENED):
@@ -229,7 +254,9 @@ class TrajectoryPlannerWindow:
                             ui.Button(
                                 "Create Skill",
                                 height=24,
-                                tooltip="Add a new trajectory planner skill.",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "Add a new trajectory planner skill."
+                                ),
                                 clicked_fn=lambda ws=weakref.ref(self): (
                                     ws()._add_widget() if ws() else None
                                 ),
@@ -242,7 +269,7 @@ class TrajectoryPlannerWindow:
                                     "Button:hovered": {
                                         "background_color": NOVAColor.PRIMARY_DARK.color,
                                     },
-                                    **_TOOLTIP_SUB,
+                                    **TOOLTIP_RESET,
                                 },
                             )
                             ui.Spacer(width=12)
@@ -251,7 +278,9 @@ class TrajectoryPlannerWindow:
                             ui.Button(
                                 "Load from Nova",
                                 height=24,
-                                tooltip="Load a skill stored on the Nova backend by name.",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "Load a skill stored on the Nova backend by name."
+                                ),
                                 clicked_fn=lambda ws=weakref.ref(self): (
                                     ws()._on_load_clicked() if ws() else None
                                 ),
@@ -264,7 +293,7 @@ class TrajectoryPlannerWindow:
                                     "Button:hovered": {
                                         "background_color": NOVAColor.BUTTON_HOVER.color,
                                     },
-                                    **_TOOLTIP_SUB,
+                                    **TOOLTIP_RESET,
                                 },
                             )
                             ui.Spacer(width=12)
@@ -288,7 +317,9 @@ class TrajectoryPlannerWindow:
                         "Create Skill",
                         width=140,
                         height=24,
-                        tooltip="Add a new trajectory planner skill.",
+                        tooltip_fn=lambda: build_tooltip(
+                            "Add a new trajectory planner skill."
+                        ),
                         clicked_fn=lambda ws=weakref.ref(self): (
                             ws()._add_widget() if ws() else None
                         ),
@@ -301,14 +332,16 @@ class TrajectoryPlannerWindow:
                             "Button:hovered": {
                                 "background_color": NOVAColor.PRIMARY_LIGHT.color,
                             },
-                            **_TOOLTIP_SUB,
+                            **TOOLTIP_RESET,
                         },
                     )
                     ui.Button(
                         "Load",
                         width=80,
                         height=24,
-                        tooltip="Load a skill stored on the Nova backend by name.",
+                        tooltip_fn=lambda: build_tooltip(
+                            "Load a skill stored on the Nova backend by name."
+                        ),
                         clicked_fn=lambda ws=weakref.ref(self): (
                             ws()._on_load_clicked() if ws() else None
                         ),
@@ -321,7 +354,7 @@ class TrajectoryPlannerWindow:
                             "Button:hovered": {
                                 "background_color": NOVAColor.BUTTON_HOVER.color
                             },
-                            **_TOOLTIP_SUB,
+                            **TOOLTIP_RESET,
                         },
                     )
                     ui.Button(
@@ -331,8 +364,9 @@ class TrajectoryPlannerWindow:
                         image_url=get_icon("refresh.svg"),
                         image_width=16,
                         image_height=16,
-                        tooltip="Redraw the stored trajectory curves for the open "
-                        "skills.",
+                        tooltip_fn=lambda: build_tooltip(
+                            "Redraw the stored trajectory curves for the open skills."
+                        ),
                         clicked_fn=lambda ws=weakref.ref(self): (
                             ws()._on_refresh_clicked() if ws() else None
                         ),
@@ -344,7 +378,7 @@ class TrajectoryPlannerWindow:
                             "Button:hovered": {
                                 "background_color": NOVAColor.BUTTON_HOVER.color
                             },
-                            **_TOOLTIP_SUB,
+                            **TOOLTIP_RESET,
                         },
                     )
                     ui.Spacer(width=8)
@@ -353,6 +387,11 @@ class TrajectoryPlannerWindow:
     # -- Widget management -------------------------------------------------
 
     def _add_widget(self) -> None:
+        # Re-entrancy guard: collapse the blur+click double-call into one skill.
+        # Cleared in _rebuild_widgets once the deferred rebuild runs.
+        if self._adding_widget:
+            return
+        self._adding_widget = True
         name = ""
         if self._name_field_model:
             name = self._name_field_model.get_value_as_string().strip()
@@ -372,6 +411,9 @@ class TrajectoryPlannerWindow:
         defer_call(self._rebuild_widgets)
 
     def _rebuild_widgets(self) -> None:
+        # Release the create guard now that the (deferred) rebuild has run, so the
+        # next genuine "Create Skill" works.
+        self._adding_widget = False
         self._rebuild_content()
 
     def _rebuild_widgets_only(self) -> None:

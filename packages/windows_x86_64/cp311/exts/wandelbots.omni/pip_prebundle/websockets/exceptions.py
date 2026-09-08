@@ -9,10 +9,16 @@
     * :exc:`InvalidProxy`
     * :exc:`InvalidHandshake`
         * :exc:`SecurityError`
+            * :exc:`RequestLineTooLong`
+            * :exc:`StatusLineTooLong`
+            * :exc:`HeaderLineTooLong`
+            * :exc:`TooManyHeaders`
         * :exc:`ProxyError`
             * :exc:`InvalidProxyMessage`
             * :exc:`InvalidProxyStatus`
         * :exc:`InvalidMessage`
+        * :exc:`InvalidMethod`
+        * :exc:`InvalidProtocol`
         * :exc:`InvalidStatus`
         * :exc:`InvalidStatusCode` (legacy)
         * :exc:`InvalidHeader`
@@ -49,10 +55,16 @@ __all__ = [
     "InvalidProxy",
     "InvalidHandshake",
     "SecurityError",
+    "RequestLineTooLong",
+    "StatusLineTooLong",
+    "HeaderLineTooLong",
+    "TooManyHeaders",
     "ProxyError",
     "InvalidProxyMessage",
     "InvalidProxyStatus",
     "InvalidMessage",
+    "InvalidMethod",
+    "InvalidProtocol",
     "InvalidStatus",
     "InvalidHeader",
     "InvalidHeaderFormat",
@@ -208,6 +220,34 @@ class SecurityError(InvalidHandshake):
     """
 
 
+class RequestLineTooLong(SecurityError):
+    """
+    Raised when the request line of a handshake request is too long.
+
+    """
+
+
+class StatusLineTooLong(SecurityError):
+    """
+    Raised when the status line of a handshake response is too long.
+
+    """
+
+
+class HeaderLineTooLong(SecurityError):
+    """
+    Raised when a header line of a handshake request or response is too long.
+
+    """
+
+
+class TooManyHeaders(SecurityError):
+    """
+    Raised when a handshake request or response has too many headers.
+
+    """
+
+
 class ProxyError(InvalidHandshake):
     """
     Raised when failing to connect to a proxy.
@@ -240,6 +280,32 @@ class InvalidMessage(InvalidHandshake):
     Raised when a handshake request or response is malformed.
 
     """
+
+
+class InvalidMethod(InvalidHandshake):
+    """
+    Raised when a handshake request doesn't use HTTP GET.
+
+    """
+
+    def __init__(self, method: str) -> None:
+        self.method = method
+
+    def __str__(self) -> str:
+        return f"unsupported HTTP method: {self.method}"
+
+
+class InvalidProtocol(InvalidHandshake):
+    """
+    Raised when a handshake request doesn't use HTTP/1.1.
+
+    """
+
+    def __init__(self, protocol: str) -> None:
+        self.protocol = protocol
+
+    def __str__(self) -> str:
+        return f"unsupported HTTP version: {self.protocol}"
 
 
 class InvalidStatus(InvalidHandshake):

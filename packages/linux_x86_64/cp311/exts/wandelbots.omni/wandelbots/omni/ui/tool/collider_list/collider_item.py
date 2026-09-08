@@ -6,8 +6,9 @@ import omni.ui as ui
 
 ROW_HEIGHT = 28
 
-# Nova-compatible collider types for mesh prims (approximation modes)
-# boundingSphere -> NOVA Sphere, boundingCube -> NOVA Box, convexHull -> NOVA ConvexHull
+# Mesh approximations the NOVA export converts faithfully, and the recommended
+# choices offered by the Type dropdown. Anything else is exported as a
+# conservative convex hull, so a highlighted row means exported lossily.
 NOVA_MESH_COLLIDER_TYPES = [
     "convexHull",
     "convexDecomposition",
@@ -15,9 +16,9 @@ NOVA_MESH_COLLIDER_TYPES = [
     "boundingCube",
 ]
 
-# Mesh-collision approximations selectable in the Isaac Sim physics collider
-# settings. Mirrors omni.physx.scripts.utils.MESH_APPROXIMATIONS (the keys of the
-# "Approximation" dropdown). "none" is the exact triangle mesh.
+# Mesh collision approximations selectable in the Isaac Sim physics collider
+# settings. Mirrors omni.physx.scripts.utils.MESH_APPROXIMATIONS, where "none"
+# is the exact triangle mesh.
 ISAAC_MESH_APPROXIMATION_TYPES = [
     "none",
     "convexHull",
@@ -33,10 +34,10 @@ ISAAC_MESH_APPROXIMATION_TYPES = [
 # Native shape types (fixed, not changeable)
 NATIVE_SHAPE_TYPES = {"sphere", "cube", "cylinder", "capsule", "cone", "plane"}
 
-# Native shapes Wandelbots NOVA can actually export — see
-# collision_export_service.CollisionExportService.get_prim_collider (Cone is not
-# handled there, so it is intentionally excluded).
-NOVA_NATIVE_SHAPE_TYPES = {"sphere", "cube", "cylinder", "capsule", "plane"}
+# Native shapes Wandelbots NOVA can export, see
+# collision_export_service.CollisionExportService.get_prim_collider (a cone has
+# no NOVA primitive and is exported as a circumscribed convex hull).
+NOVA_NATIVE_SHAPE_TYPES = {"sphere", "cube", "cylinder", "capsule", "cone", "plane"}
 
 # Every collider type compatible with Wandelbots NOVA export: the exportable
 # native shapes plus the NOVA-compatible mesh approximations.

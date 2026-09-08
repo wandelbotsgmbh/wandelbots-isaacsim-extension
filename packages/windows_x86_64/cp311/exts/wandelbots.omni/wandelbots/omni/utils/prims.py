@@ -3,6 +3,7 @@ import weakref
 import carb.events
 import numpy as np
 import isaacsim.core.utils.prims as prims_utils
+import isaacsim.core.utils.stage as stage_utils
 from wandelbots.omni.datatypes import (
     COORDINATE_SYSTEM,
     ROTATION_TYPES,
@@ -21,7 +22,6 @@ from wandelbots.omni.utils.scene import SceneUtils
 from wandelbots.omni.utils.math import (
     quat_to_rotvec,
     rotvec_to_quat,
-    compose_rotvecs,
     pose_to_matrix as math_pose_to_matrix,
     matrix_to_pose as math_matrix_to_pose,
 )
@@ -31,6 +31,33 @@ from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 
 
 class PrimUtils:
+    # Constructing a RigidPrim view is expensive: its init classifies the
+    # prim via a full-subtree scan (is_prim_non_root_articulation_link),
+    # ~17ms for a robot link. The views are designed to be long-lived (they
+    # track prim deletion via is_valid and re-attach to the physics sim
+    # view through SimulationManager callbacks), so reuse one per prim path
+    # instead of rebuilding per pose access.
+    _rigid_prim_cache: dict[str, RigidPrim] = {}
+
+    @staticmethod
+    def _get_rigid_prim(prim_path: str) -> RigidPrim:
+        view = PrimUtils._rigid_prim_cache.get(prim_path)
+        # A cached view is only reusable while its prim is alive and belongs
+        # to the stage a fresh RigidPrim would bind to: isaacsim's current
+        # stage, which stage changes and the use_stage context swap without
+        # touching the omni.usd context. A same-named prim on another stage
+        # must never reuse it.
+        if (
+            view is None
+            or not view.is_valid()
+            or not view.prims
+            or not view.prims[0].IsValid()
+            or view.prims[0].GetStage() != stage_utils.get_current_stage()
+        ):
+            view = RigidPrim(prim_path)
+            PrimUtils._rigid_prim_cache[prim_path] = view
+        return view
+
     @staticmethod
     def get_prim(prim_path: str, stage: Usd.Stage = None) -> Usd.Prim:
         if stage is None:
@@ -105,14 +132,35 @@ class PrimUtils:
         ).Get(Usd.TimeCode.Default()):
             # RigidPrim throws when "physics:rigidBodyEnabled" is false
             # since its static then we can just get the pose via the xformable method
-            prim = RigidPrim(prim_path)
-            poses = (
-                prim.get_world_poses()
-                if coordinate_system == "world"
-                else prim.get_local_poses()
-            )
-            position = poses[0][0]
-            quat = poses[1][0]
+            try:
+                rigid_prim = PrimUtils._get_rigid_prim(prim_path)
+                poses = (
+                    rigid_prim.get_world_poses()
+                    if coordinate_system == "world"
+                    else rigid_prim.get_local_poses()
+                )
+                position = poses[0][0]
+                quat = poses[1][0]
+            except Exception as error:
+                # The physics simulation view can be invalidated out from under
+                # us -- e.g. an articulation link prim deleted/recreated during
+                # restructuring, or any stage edit while the timeline plays.
+                # Constructing/querying a RigidPrim then raises "Simulation view
+                # object is invalidated". Several callers run on stage-event and
+                # async paths (ghost tool bar, teaching overlay) and must not
+                # crash, so drop the stale cached view and fall back to the
+                # authored USD xform pose, which is the best available transform
+                # while physics has no valid state.
+                carb.log_verbose(
+                    f"Physics pose for {prim_path} unavailable ({error}); "
+                    "falling back to USD xform pose."
+                )
+                PrimUtils._rigid_prim_cache.pop(prim_path, None)
+                if prim.IsA(UsdGeom.Xformable):
+                    return PrimUtils._get_xformable_prim_pose(
+                        prim, coordinate_system, rotation_type, stage
+                    )
+                raise
 
         elif prim.GetTypeName() == "Camera":
             camera = Camera(prim.GetPrimPath().pathString)
@@ -164,7 +212,7 @@ class PrimUtils:
 
         prim = PrimUtils.get_prim(prim_path, stage)
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            prim = RigidPrim(prim_path)
+            prim = PrimUtils._get_rigid_prim(prim_path)
             # (IsaacSim +5.0)
             if hasattr(prim, "set_local_poses"):
                 prim.set_local_poses(
@@ -208,6 +256,22 @@ class PrimUtils:
     def matrix_to_pose(mat: np.ndarray) -> np.ndarray:
         return np.array(math_matrix_to_pose(mat))
 
+    @staticmethod
+    def get_motion_group_base_world_pose(
+        motion_group_prim: Usd.Prim,
+    ) -> WSPose | None:
+        """World pose of a robot's kinematic base (link_0).
+
+        This is the frame NOVA calls the mounting, and the frame link-relative
+        collider poses are built on.
+        """
+        base_prim = get_link_0_from_motion_group_prim(motion_group_prim)
+        if base_prim is None or not base_prim.IsValid():
+            return None
+        return PrimUtils.get_prim_pose(
+            base_prim.GetPath().pathString, coordinate_system="world"
+        )
+
     def get_relative_prim_pose(
         prim_path_a: str,
         prim_path_b: str,
@@ -250,24 +314,29 @@ class PrimUtils:
             return QuatPose(pose=result_pose[:3].tolist() + quat)
 
     def set_relative_pose(
-        prim_path: str, relative_pose: WSPose, object_first: bool = False
+        prim_path: str,
+        relative_pose: WSPose,
+        object_first: bool = False,
+        stage: Usd.Stage = None,
     ) -> None:
-        current_pose = PrimUtils.get_prim_pose(prim_path, rotation_type="cartesian")
-        current_translation = np.array(current_pose.pose[:3])
-        relative_translation = np.array(relative_pose.pose[:3])
-
-        current_rotvec = current_pose.pose[3:]
-        relative_rotvec = relative_pose.pose[3:]
+        current_pose = PrimUtils.get_prim_pose(
+            prim_path, rotation_type="cartesian", stage=stage
+        )
+        # Compose as SE(3) transforms via homogeneous matrices so the relative
+        # translation is rotated into the correct frame (rather than being added
+        # in raw world coordinates), mirroring get_relative_pose.
+        T_current = PrimUtils.pose_to_matrix(current_pose.pose)
+        T_relative = PrimUtils.pose_to_matrix(relative_pose.pose)
 
         if object_first:
-            new_translation = (current_translation - relative_translation).tolist()
-            new_rotvec = compose_rotvecs(relative_rotvec, current_rotvec)
+            # Relative transform expressed in the object's local frame: T_obj ∘ T_rel.
+            T_new = T_current @ T_relative
         else:
-            new_translation = (current_translation + relative_translation).tolist()
-            new_rotvec = compose_rotvecs(current_rotvec, relative_rotvec)
+            # Relative transform expressed in the world frame, applied first: T_rel ∘ T_obj.
+            T_new = T_relative @ T_current
 
-        new_pose = new_translation + new_rotvec
-        PrimUtils.set_prim_pose(prim_path, WSPose(pose=new_pose))
+        new_pose = PrimUtils.matrix_to_pose(T_new).tolist()
+        PrimUtils.set_prim_pose(prim_path, WSPose(pose=new_pose), stage)
 
     def reset_objects(prim_path: str) -> None:
         children_prims = prims_utils.get_all_matching_child_prims(
@@ -369,18 +438,26 @@ class PrimPoseWatcher:
                 instance._cleanup()
                 return
 
-            current_pose = instance.current_pose
-
-            if (
-                event.type == omni.timeline.TimelineEventType.PLAY.value
-                or event.type == omni.timeline.TimelineEventType.STOP.value
-            ):
-                instance._pose_changed_fn(current_pose)
-                instance._timeline_stop_reset_applied = False
-            elif (
+            is_play_or_stop = event.type in (
+                omni.timeline.TimelineEventType.PLAY.value,
+                omni.timeline.TimelineEventType.STOP.value,
+            )
+            needs_stop_reset = (
                 instance._timeline.is_stopped()
                 and not instance._timeline_stop_reset_applied
-            ):
+            )
+            # The pose read is expensive and timeline ticks arrive every
+            # frame while playing; only compute it for events that fire the
+            # callback (PLAY/STOP, plus one tick after a stop).
+            if not is_play_or_stop and not needs_stop_reset:
+                return
+
+            current_pose = instance.current_pose
+
+            if is_play_or_stop:
+                instance._pose_changed_fn(current_pose)
+                instance._timeline_stop_reset_applied = False
+            else:
                 # The timeline stops, but the position reset happens one frame later so we wait for the next tick.
                 instance._pose_changed_fn(current_pose)
                 instance._timeline_stop_reset_applied = True

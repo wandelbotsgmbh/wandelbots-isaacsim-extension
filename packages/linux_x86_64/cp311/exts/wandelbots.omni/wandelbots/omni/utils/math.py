@@ -3,6 +3,10 @@ import numpy as np
 import omni.ui.scene as sc
 
 
+def m_to_mm(meter: float) -> float:
+    return meter * 1000.0
+
+
 def quat_to_rotvec(x: float, y: float, z: float, w: float) -> list[float]:
     """Convert quaternion (x, y, z, w) to rotation vector (axis-angle representation).
 

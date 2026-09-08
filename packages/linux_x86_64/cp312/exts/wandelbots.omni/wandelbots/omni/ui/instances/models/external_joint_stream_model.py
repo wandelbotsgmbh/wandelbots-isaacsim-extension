@@ -1,86 +1,22 @@
-import carb
-import omni.ui as ui
-from omni.usd import get_watcher
-import isaacsim.core.utils.stage as stage_utils
-from pxr import Sdf
-from wandelbots.omni.manipulators import (
-    MotionGroupConfiguration,
-)
-import weakref
-from wandelbots.omni.manipulators.motion_group import (
-    get_motion_group_configuration_from_prim,
-    MotionStreamConfiguration,
+from typing import Optional
+
+from wandelbots.omni.manipulators import MotionGroupConfiguration
+from wandelbots.omni.manipulators.motion_group import MotionStreamConfiguration
+from wandelbots.omni.ui.instances.models.motion_group_bool_model import (
+    MotionGroupBoolModel,
 )
 
 
-class ExternalJointStreamModel(ui.SimpleBoolModel):
-    def __init__(self, motion_group_prim_path: str, **kwargs):
-        self._stage = stage_utils.get_current_stage()
-        self._motion_group_prim_path = motion_group_prim_path
-
-        def _on_motion_group_changed(path=None, weak_self=weakref.ref(self)):
-            weak_self_instance = weak_self()
-            if weak_self_instance:
-                weak_self_instance._on_motion_group_changed()
-
-        self._change_subscription = get_watcher().subscribe_to_change_info_path(
-            motion_group_prim_path,  # use prim path so we do not have to sync property names in future versions
-            _on_motion_group_changed,
-        )
-        super().__init__(self._get_prim_value(), **kwargs)
-
-        def _value_changed_wrapper(
-            model: ui.AbstractValueModel, weak_self=weakref.ref(self)
-        ):
-            weak_self_instance = weak_self()
-            if weak_self_instance:
-                weak_self_instance._set_prim_value(model.get_value_as_bool())
-
-        self.add_value_changed_fn(_value_changed_wrapper)
-
-    def __del__(self):
-        carb.log_verbose("Unsubscribing from motion group prim changes.")
-        self._change_subscription.unsubscribe()
-
-    def _on_motion_group_changed(self):
-        new_value = self._get_prim_value()
-        if new_value != self.get_value_as_bool():
-            self.set_value(new_value)
+class ExternalJointStreamModel(MotionGroupBoolModel):
+    """Bool model for the use_external_joint_stream flag of a motion group."""
 
     @property
-    def motion_group_configuration(self) -> MotionGroupConfiguration:
-        motion_group_prim = self._stage.GetPrimAtPath(
-            Sdf.Path(self._motion_group_prim_path)
-        )
-        return get_motion_group_configuration_from_prim(motion_group_prim)
+    def motion_stream_configuration(self) -> Optional[MotionStreamConfiguration]:
+        config = self.motion_group_configuration
+        return config.motion_stream_configuration if config else None
 
-    @property
-    def motion_stream_configuration(self) -> MotionStreamConfiguration:
-        return self.motion_group_configuration.motion_stream_configuration
+    def _read_value(self, config: MotionGroupConfiguration) -> bool:
+        return config.motion_stream_configuration.use_external_joint_stream
 
-    def _get_prim_value(self) -> bool:
-        return self.motion_stream_configuration.use_external_joint_stream
-
-    def _set_prim_value(self, value: bool):
-        motion_group_prim = self._stage.GetPrimAtPath(
-            Sdf.Path(self._motion_group_prim_path)
-        )
-        motion_group_config = get_motion_group_configuration_from_prim(
-            motion_group_prim
-        )
-        if not motion_group_prim:
-            carb.log_warn(
-                f"Motion group prim not found at path: {self._motion_group_prim_path}"
-            )
-            return
-
-        if (
-            motion_group_config.motion_stream_configuration.use_external_joint_stream
-            == value
-        ):
-            return
-
-        motion_group_config.motion_stream_configuration.use_external_joint_stream = (
-            value
-        )
-        motion_group_config.apply_to_prim(self._stage)
+    def _write_value(self, config: MotionGroupConfiguration, value: bool) -> None:
+        config.motion_stream_configuration.use_external_joint_stream = value

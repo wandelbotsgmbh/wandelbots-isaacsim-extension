@@ -151,9 +151,7 @@ async def clear_ghost_objects(prim_path: str = None) -> None:
     """
     Remove all ghost objects
     """
-    existing_ghost_paths: set[str] = {
-        g.prim_path for g in GhostObjectUtils.get_ghost_objects()
-    }
+    existing_ghost_paths: set[str] = set(GhostObjectUtils.get_ghost_object_prim_paths())
 
     if prim_path and prim_path not in existing_ghost_paths:
         raise HTTPException(
@@ -295,6 +293,9 @@ def export_ghost_objects() -> ExportedGhostObjects:
 
 class PoseMetadata(BaseModel):
     prim_path: str
+    name: str | None = None
+    tcp_name: str | None = None
+    selected_joint_config: list[float] | None = None
 
 
 class SkillMetadata(BaseModel):
@@ -457,6 +458,9 @@ async def _fetch_motion_group_setups(
             motion_group=stream_config.motion_group,
             tcp_name=config.tcp_name,
             collision_setup_name=config.collision_setup,
+            # Pin the lookup to the skill's robot prim; a registry match
+            # could pick a same-named robot of another instance.
+            motion_group_prim_path=config.robot_prim_path,
         )
         description = ctx.description
         setups: dict[str | None, wb_v2_models.MotionGroupSetup] = {}
@@ -475,6 +479,9 @@ async def _fetch_motion_group_setups(
                 tcp_acceleration_limit=getattr(config, "tcp_acceleration", None),
                 payload_name=getattr(config, "payload_name", None),
                 payload_mass=getattr(config, "payload_mass", None),
+                # Without the stage base pose the exported skill replays an
+                # offset or gantry robot at the world origin.
+                mounting=ctx.mounting,
             )
         return setups
 
@@ -490,7 +497,15 @@ def _build_metadata(config, stage=None) -> SkillMetadata:
     return SkillMetadata(
         motion_group_prim_path=config.robot_prim_path,
         scene_path=scene_path,
-        poses=[PoseMetadata(prim_path=pose.prim_path) for pose in config.poses],
+        poses=[
+            PoseMetadata(
+                prim_path=pose.prim_path,
+                name=pose.prim_path.rsplit("/", 1)[-1],
+                tcp_name=pose.tcp_name,
+                selected_joint_config=pose.selected_joint_config,
+            )
+            for pose in config.poses
+        ],
     )
 
 
@@ -534,19 +549,29 @@ def _build_motion_command(pose_cfg, stage, config, global_blending, global_limit
         joint_pos = _get_joint_config(pose_cfg)
         if joint_pos:
             path = wb_v2_models.MotionCommandPath(
-                wb_v2_models.PathJointPTP(target_joint_position=joint_pos)
+                wb_v2_models.PathJointPTP(
+                    target_joint_position=joint_pos,
+                    path_definition_name="PathJointPTP",
+                )
             )
         else:
             path = wb_v2_models.MotionCommandPath(
-                wb_v2_models.PathCartesianPTP(target_pose=nova_pose)
+                wb_v2_models.PathCartesianPTP(
+                    target_pose=nova_pose,
+                    path_definition_name="PathCartesianPTP",
+                )
             )
     elif mt == "PathLine":
         path = wb_v2_models.MotionCommandPath(
-            wb_v2_models.PathLine(target_pose=nova_pose)
+            wb_v2_models.PathLine(
+                target_pose=nova_pose, path_definition_name="PathLine"
+            )
         )
     else:
         path = wb_v2_models.MotionCommandPath(
-            wb_v2_models.PathCartesianPTP(target_pose=nova_pose)
+            wb_v2_models.PathCartesianPTP(
+                target_pose=nova_pose, path_definition_name="PathCartesianPTP"
+            )
         )
 
     # Per-pose overrides take precedence over global
@@ -601,7 +626,8 @@ async def _build_normal_skill(config, stage) -> ExportedSkill:
             wb_v2_models.BlendingAuto(
                 min_velocity_in_percent=getattr(
                     config, "blending_min_velocity_percent", 50
-                )
+                ),
+                blending_name="BlendingAuto",
             )
         )
 
@@ -703,11 +729,17 @@ async def _build_collision_free_skill(config, stage) -> ExportedSkill:
 
     if cf_algorithm == "MidpointInsertionAlgorithm":
         algorithm = wb_v2_models.CollisionFreeAlgorithm(
-            wb_v2_models.MidpointInsertionAlgorithm(max_iterations=cf_max_iterations)
+            wb_v2_models.MidpointInsertionAlgorithm(
+                max_iterations=cf_max_iterations,
+                algorithm_name="MidpointInsertionAlgorithm",
+            )
         )
     else:
         algorithm = wb_v2_models.CollisionFreeAlgorithm(
-            wb_v2_models.RRTConnectAlgorithm(max_iterations=cf_max_iterations)
+            wb_v2_models.RRTConnectAlgorithm(
+                max_iterations=cf_max_iterations,
+                algorithm_name="RRTConnectAlgorithm",
+            )
         )
 
     # Collision-free planning operates in joint space and uses the skill's single
@@ -741,7 +773,12 @@ async def _build_collision_free_skill(config, stage) -> ExportedSkill:
 
 
 async def build_skill(config, stage) -> ExportedSkill:
-    if config.collision_setup:
+    # plan_collision_free is independent of collision_setup: a collision scene
+    # can be selected (e.g. for IK reachability checks) while the skill was
+    # actually planned in normal motion-type mode. Branching on collision_setup
+    # alone would export such a skill as plan_collision_free, silently dropping
+    # its motion types and TCP segmentation for downstream consumers.
+    if config.plan_collision_free:
         return await _build_collision_free_skill(config, stage)
     return await _build_normal_skill(config, stage)
 

@@ -29,8 +29,11 @@ from wandelbots.omni.core.collision.collider_preset import (
 )
 from wandelbots.omni.ui.create_context_menu.pose import (
     ConvertPoseWindow,
+    convert_prims_to_poses,
     is_convertible_prim,
+    is_pose_convertible_prim,
 )
+import omni.kit.notification_manager as nm
 
 
 def _has_convertible_payload(payload: dict) -> bool:
@@ -38,6 +41,35 @@ def _has_convertible_payload(payload: dict) -> bool:
     (any transformable prim that is not already a ghost object)."""
     prim_list: list[Usd.Prim] = payload.get("prim_list", [])
     return any(is_convertible_prim(prim) for prim in prim_list)
+
+
+def _has_pose_convertible_payload(payload: dict) -> bool:
+    """Show "Convert to Pose" when at least one selected prim can be tagged as a
+    POSE (transformable, not a ghost object, not already a POSE)."""
+    prim_list: list[Usd.Prim] = payload.get("prim_list", [])
+    return any(is_pose_convertible_prim(prim) for prim in prim_list)
+
+
+def _convert_payload_to_poses(payload: dict) -> None:
+    prim_list: list[Usd.Prim] = payload.get("prim_list", [])
+    paths = [
+        prim.GetPath().pathString
+        for prim in prim_list
+        if is_pose_convertible_prim(prim)
+    ]
+    count = convert_prims_to_poses(paths)
+    if count:
+        nm.post_notification(
+            f"Converted {count} prim(s) to pose.",
+            duration=3.0,
+            status=nm.NotificationStatus.INFO,
+        )
+    else:
+        nm.post_notification(
+            "No prims could be converted to a pose.",
+            duration=4.0,
+            status=nm.NotificationStatus.WARNING,
+        )
 
 
 class SchemaExtensionUI:
@@ -144,6 +176,15 @@ class SchemaExtensionUI:
                         "show_fn": lambda payload: _has_convertible_payload(payload),
                         "onclick_fn": lambda payload, weak_self=weakref.proxy(self): (
                             weak_self._convert_pose_window.open(payload)
+                        ),
+                    },
+                    {
+                        "name": "Convert to Pose",
+                        "show_fn": lambda payload: _has_pose_convertible_payload(
+                            payload
+                        ),
+                        "onclick_fn": lambda payload: _convert_payload_to_poses(
+                            payload
                         ),
                     },
                 ]

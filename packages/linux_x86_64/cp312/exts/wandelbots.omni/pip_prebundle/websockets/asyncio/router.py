@@ -6,6 +6,7 @@ import urllib.parse
 from typing import Any, Awaitable, Callable, Literal
 
 from ..http11 import Request, Response
+from ..typing import PathLike
 from .server import Server, ServerConnection, serve
 
 
@@ -25,14 +26,14 @@ except ImportError:
         ssl: ssl_module.SSLContext | Literal[True] | None = None,
         create_router: type[Router] | None = None,
         **kwargs: Any,
-    ) -> Awaitable[Server]:
+    ) -> Server:
         raise ImportError("route() requires werkzeug")
 
     def unix_route(
         url_map: Map,
-        path: str | None = None,
+        path: PathLike | None = None,
         **kwargs: Any,
-    ) -> Awaitable[Server]:
+    ) -> Server:
         raise ImportError("unix_route() requires werkzeug")
 
 else:
@@ -44,7 +45,7 @@ else:
         ssl: ssl_module.SSLContext | Literal[True] | None = None,
         create_router: type[Router] | None = None,
         **kwargs: Any,
-    ) -> Awaitable[Server]:
+    ) -> Server:
         """
         Create a WebSocket server dispatching connections to different handlers.
 
@@ -65,7 +66,6 @@ else:
 
         Here's an example::
 
-
             from websockets.asyncio.router import route
             from werkzeug.routing import Map, Rule
 
@@ -77,12 +77,11 @@ else:
                 ...
             ])
 
-            # set this future to exit the server
-            stop = asyncio.get_running_loop().create_future()
+            # set this event to exit the server
+            stop = asyncio.Event()
 
             async with route(url_map, ...) as server:
-                await stop
-
+                await stop.wait()
 
         Refer to the documentation of :mod:`werkzeug.routing` for details.
 
@@ -99,6 +98,10 @@ else:
 
         There is no need to specify ``websocket=True`` in each rule. It is added
         automatically.
+
+        Like :func:`~websockets.sync.server.serve`, :func:`route` returns a
+        :class:`~websockets.sync.server.Server` that you can also run with
+        :meth:`~websockets.sync.server.Server.serve_forever`.
 
         Args:
             url_map: Mapping of URL patterns to connection handlers.
@@ -134,7 +137,8 @@ else:
         else:
 
             async def process_request(
-                connection: ServerConnection, request: Request
+                connection: ServerConnection,
+                request: Request,
             ) -> Response | None:
                 response = _process_request(connection, request)
                 if isinstance(response, Awaitable):
@@ -143,13 +147,18 @@ else:
                     return response
                 return router.route_request(connection, request)
 
-        return serve(router.handler, *args, process_request=process_request, **kwargs)
+        return serve(
+            router.handler,
+            *args,
+            process_request=process_request,
+            **kwargs,
+        )
 
     def unix_route(
         url_map: Map,
-        path: str | None = None,
+        path: PathLike | None = None,
         **kwargs: Any,
-    ) -> Awaitable[Server]:
+    ) -> Server:
         """
         Create a WebSocket Unix server dispatching connections to different handlers.
 

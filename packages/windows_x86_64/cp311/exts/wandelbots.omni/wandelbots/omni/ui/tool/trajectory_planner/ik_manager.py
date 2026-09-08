@@ -28,9 +28,7 @@ import omni.usd
 
 
 def _read_preferred_from_prim(item: PoseItem) -> list[float] | None:
-    """Read preferred joint values from the USD prim if the item is a ghost object."""
-    if not item.is_ghost_object:
-        return None
+    """Read preferred joint values persisted on the pose's USD prim, if any."""
     stage = omni.usd.get_context().get_stage()
     if not stage:
         return None
@@ -94,7 +92,9 @@ class IKManager:
             self._reachability_task.cancel()
             self._reachability_task = None
 
-    def fetch_ik_for_pose(self, item: PoseItem, *, silent: bool = False) -> None:
+    def fetch_ik_for_pose(
+        self, item: PoseItem, *, silent: bool = False, apply_preferred: bool = True
+    ) -> None:
         params = self._get_stream_params()
         if not params:
             if not silent:
@@ -111,7 +111,7 @@ class IKManager:
         carb.log_verbose(f"IK pose={item.pose}, params={params}")
         self._ik_pending_count += 1
         self._notify_progress()
-        run_coroutine(self._do_fetch_ik(item))
+        run_coroutine(self._do_fetch_ik(item, apply_preferred=apply_preferred))
 
     def refresh_ik_for_pose(self, item: PoseItem) -> None:
         item.joint_configs = []
@@ -161,7 +161,9 @@ class IKManager:
             self._reachability_task.cancel()
         self._reachability_task = run_coroutine(self._do_check_reachability())
 
-    async def _do_fetch_ik(self, item: PoseItem) -> None:
+    async def _do_fetch_ik(
+        self, item: PoseItem, *, apply_preferred: bool = True
+    ) -> None:
         api_config = self._get_api_config()
         params = self._get_stream_params()
         if not api_config or not params:
@@ -196,7 +198,7 @@ class IKManager:
                 collision_setup_name=self._get_collision_setup(),
             )
             item.joint_configs = result.joint_configs
-            preferred = _read_preferred_from_prim(item)
+            preferred = _read_preferred_from_prim(item) if apply_preferred else None
             if result.joint_configs and preferred:
                 idx = GhostObjectUtils.find_preferred_config_index(
                     result.joint_configs, preferred

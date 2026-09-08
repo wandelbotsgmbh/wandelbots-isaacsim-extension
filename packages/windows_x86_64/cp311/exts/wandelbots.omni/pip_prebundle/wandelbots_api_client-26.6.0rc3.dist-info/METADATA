@@ -1,0 +1,52 @@
+Metadata-Version: 2.4
+Name: wandelbots_api_client
+Version: 26.6.0rc3
+Summary: Wandelbots Python Client: Interact with robots in an easy and intuitive way. 
+Author: Copyright (c) 2025 Wandelbots GmbH
+Author-email: Copyright (c) 2025 Wandelbots GmbH <contact@wandelbots.com>
+License-Expression: Apache-2.0
+Classifier: Typing :: Typed
+Classifier: Topic :: Software Development
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Unix
+Classifier: Operating System :: MacOS
+Requires-Dist: urllib3>=1.25.3
+Requires-Dist: python-dateutil>=2.8.2
+Requires-Dist: aiohttp>=3.8.4
+Requires-Dist: aiohttp-retry>=2.8.3
+Requires-Dist: pydantic>=2
+Requires-Dist: websockets
+Requires-Dist: typing-extensions>=4.7.1
+Requires-Dist: furl
+Requires-Dist: pyhumps
+Requires-Dist: pydantic-core
+Requires-Dist: annotated-types
+Requires-Dist: pydantic[email]
+Requires-Python: >=3.9
+Project-URL: homepage, https://wandelbots.com/
+Description-Content-Type: text/markdown
+
+# wandelbots-api-client.v2
+Interact with robots in an easy and intuitive way.
+
+- Compatible API version: 2.6.0 (can be found at the home screen of your instance -> API)
+- Package version: 26.6.0rc3
+
+## Requirements.
+Python >=3.9, Python < 4.0
+
+## Installation
+```
+pip install wandelbots-api-client
+```
+
+OR
+
+pyproject.toml:
+```
+[tool.poetry.dependencies]
+wandelbots-api-client = "*"
+```
+
+

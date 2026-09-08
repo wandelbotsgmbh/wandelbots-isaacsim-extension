@@ -6,36 +6,28 @@ import re
 import weakref
 
 import carb
-import omni.client
 import omni.kit.notification_manager as nm
 import omni.ui as ui
 import omni.usd
 from omni.kit.async_engine import run_coroutine
 from omni.kit.window.filepicker import FilePickerDialog
 from omni.usd import get_watcher
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Usd
 import wandelbots_api_client.v2 as wb_v2
 
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import (
-    NOVACloudInstance,
     NOVAInstance,
     NOVAMotionGroupData,
 )
 from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.manufacturers import (
+    MANUFACTURER_PREFIXES,
+    manufacturers_from_model_names,
+)
 from wandelbots.omni.ui.widgets import PrimPicker, PrimPickerDialogProperties
-from .model_base_offsets import MODEL_BASE_OFFSETS
+from .robot_download import download_and_add_robot, make_robot_api_client
 from .robot_preview import RobotPreview, _DEFAULT_PREVIEW_COLOR
-
-MANUFACTURER_PREFIXES: dict[str, str] = {
-    "ABB": "abb",
-    "FANUC": "fanuc",
-    "KUKA": "kuka",
-    "Universal Robots": "universalrobots",
-    "Yaskawa": "yaskawa",
-}
-
-MANUFACTURERS: list[str] = list(MANUFACTURER_PREFIXES)
 
 _LABEL_WIDTH = 140
 _WARNING_LABEL_STYLE = {"color": NOVAColor.WARNING_DARK.color}
@@ -49,6 +41,14 @@ class RobotSpawnWindow:
     def __init__(self) -> None:
         self._instances: list[NOVAInstance] = []
         self._models: list[str] = []
+        # Display label -> model-name prefix. The static fallback until the
+        # instance's model catalog is known, so a manufacturer NOVA adds later
+        # shows up without a code change.
+        self._manufacturers: dict[str, str] = dict(MANUFACTURER_PREFIXES)
+        # Model catalog cache: one getMotionGroupModels call per instance,
+        # not one per manufacturer switch.
+        self._all_models: list[str] = []
+        self._all_models_host: str | None = None
 
         self._selected_instance_idx: int = 0
         self._selected_manufacturer_idx: int = 0
@@ -64,6 +64,7 @@ class RobotSpawnWindow:
         self._motion_groups: list[NOVAMotionGroupData] = []
         self._selected_motion_group_idx: int = 0
         self._locked_manufacturer: str | None = None
+        self._locked_prefix: str | None = None
         self._pending_model_name: str | None = None
         self._fetch_error: str | None = None
 
@@ -102,6 +103,7 @@ class RobotSpawnWindow:
         self._motion_groups = []
         self._models = []
         self._locked_manufacturer = None
+        self._locked_prefix = None
         self._pending_model_name = None
         self._fetch_error = None
         if self._motion_groups_task is not None:
@@ -356,7 +358,11 @@ class RobotSpawnWindow:
                 ws._selected_model_idx = 0
                 ws._motion_groups = []
                 ws._models = []
+                # Back to the static fallback until the new instance's model
+                # catalog has been fetched (its manufacturers may differ).
+                ws._manufacturers = dict(MANUFACTURER_PREFIXES)
                 ws._locked_manufacturer = None
+                ws._locked_prefix = None
                 ws._pending_model_name = None
                 ws._fetch_error = None
                 if ws._motion_groups_task is not None:
@@ -395,35 +401,50 @@ class RobotSpawnWindow:
                 ws._selected_motion_group_idx = new_idx
 
                 if new_idx == 0:
-                    # "None" — restore full manufacturer/model browsing
+                    # "None" restores full manufacturer and model browsing.
                     ws._locked_manufacturer = None
+                    ws._locked_prefix = None
                     ws._pending_model_name = None
                     ws._selected_manufacturer_idx = 0
                     ws._rebuild_manufacturer_row()
                     return
 
-                mg = ws._motion_groups[new_idx - 1]  # offset by 1 for "None"
-
-                # Resolve the matching manufacturer name
-                norm = _normalize_model_name(mg.motion_group_model_name)
-                matched = next(
+                motion_group = ws._motion_groups[new_idx - 1]  # 0 is "None"
+                normalized_model_name = _normalize_model_name(
+                    motion_group.motion_group_model_name
+                )
+                match = next(
                     (
-                        manufacturer
-                        for manufacturer, prefix in MANUFACTURER_PREFIXES.items()
-                        if norm.startswith(prefix)
+                        (manufacturer, prefix)
+                        for manufacturer, prefix in ws._manufacturers.items()
+                        if normalized_model_name.startswith(prefix)
                     ),
                     None,
                 )
-                ws._locked_manufacturer = matched
-                ws._pending_model_name = mg.motion_group_model_name
-                # Rebuild triggers _fetch_models which will consume _pending_model_name
+                ws._locked_manufacturer = match[0] if match else None
+                ws._locked_prefix = match[1] if match else None
+                ws._pending_model_name = motion_group.motion_group_model_name
+                # The rebuild starts the model fetch, which consumes the
+                # pending model name.
                 ws._rebuild_manufacturer_row()
 
             self._motion_group_combo_sub = combo.model.subscribe_item_changed_fn(
                 _on_motion_group_changed
             )
 
-    def _rebuild_manufacturer_row(self) -> None:
+    def _start_model_fetch(self) -> None:
+        """Show the model row as loading and (re)start the model fetch."""
+        self._selected_model_idx = 0
+        self._models = []
+        if self._models_task is not None:
+            self._models_task.cancel()
+        self._rebuild_model_row(loading=True)
+        self._models_task = run_coroutine(self._fetch_models())
+
+    def _rebuild_manufacturer_row(self, start_model_fetch: bool = True) -> None:
+        """Build the manufacturer combo. ``start_model_fetch`` is False when
+        _fetch_models rebuilds the row itself, so the row cannot re-enter it.
+        """
         if self._manufacturer_frame is None:
             return
 
@@ -434,42 +455,31 @@ class RobotSpawnWindow:
 
         with self._manufacturer_frame:
             if self._locked_manufacturer is not None:
-                # Motion group active — show only its manufacturer and kick off model fetch
                 ui.ComboBox(
                     0,
                     self._locked_manufacturer,
                     tooltip="The robot manufacturer (locked by selected motion group)",
                 )
-                if has_instance:
-                    self._selected_model_idx = 0
-                    self._models = []
-                    if self._models_task is not None:
-                        self._models_task.cancel()
-                    self._rebuild_model_row(loading=True)
-                    self._models_task = run_coroutine(self._fetch_models())
-                return
+            else:
+                labels = list(self._manufacturers)
+                selected_index = min(self._selected_manufacturer_idx, len(labels) - 1)
+                combo = ui.ComboBox(
+                    selected_index, *labels, tooltip="The robot manufacturer"
+                )
+                combo.enabled = has_instance
 
-            idx = min(self._selected_manufacturer_idx, len(MANUFACTURERS) - 1)
-            combo = ui.ComboBox(idx, *MANUFACTURERS, tooltip="The robot manufacturer")
-            combo.enabled = has_instance
+                def _on_manufacturer_changed(
+                    model: ui.AbstractItemModel, _, ws=weakref.proxy(self)
+                ) -> None:
+                    ws._selected_manufacturer_idx = model.get_item_value_model().as_int
+                    ws._start_model_fetch()
 
-            def _on_manufacturer_changed(
-                model: ui.AbstractItemModel, _, ws=weakref.proxy(self)
-            ) -> None:
-                ws._selected_manufacturer_idx = model.get_item_value_model().as_int
-                ws._selected_model_idx = 0
-                ws._models = []
-                if ws._models_task is not None:
-                    ws._models_task.cancel()
-                ws._rebuild_model_row(loading=True)
-                ws._models_task = run_coroutine(ws._fetch_models())
+                self._manufacturer_combo_sub = combo.model.subscribe_item_changed_fn(
+                    _on_manufacturer_changed
+                )
 
-            self._manufacturer_combo_sub = combo.model.subscribe_item_changed_fn(
-                _on_manufacturer_changed
-            )
-            # Manually fire to ensure models are fetched for the initially selected manufacturer.
-            if has_instance:
-                _on_manufacturer_changed(combo.model, None)  # fire initial fetch
+        if has_instance and start_model_fetch:
+            self._start_model_fetch()
 
     def _rebuild_model_row(self, loading: bool = False) -> None:
         if self._model_frame is None:
@@ -533,10 +543,84 @@ class RobotSpawnWindow:
         self._rebuild_motion_group_row()
 
     def _make_api_client(self, instance: NOVAInstance) -> wb_v2.ApiClient | None:
-        if isinstance(instance, NOVACloudInstance):
-            token = get_instances_api().get_auth_token_from_host(instance.host)
-            return instance.create_api_client(token=token)
-        return instance.create_api_client()
+        return make_robot_api_client(instance)
+
+    async def _get_all_models(self, instance: NOVAInstance) -> list[str] | None:
+        """The instance's full model catalog, cached per host. Returns None
+        (with _fetch_error set) when the instance can't be reached."""
+        if self._all_models_host == instance.host and self._all_models:
+            return self._all_models
+
+        api_client = self._make_api_client(instance)
+        if api_client is None:
+            self._fetch_error = f"Cannot connect to '{instance.display_name}'"
+            carb.log_warn(
+                f"Could not create API client for instance '{instance.display_name}'"
+            )
+            return None
+
+        self._fetch_error = None
+        try:
+            models: list[str] = await wb_v2.MotionGroupModelsApi(
+                api_client
+            ).get_motion_group_models()
+        except Exception as exc:
+            carb.log_warn(f"Failed to fetch motion group models: {exc}")
+            self._fetch_error = f"Instance not reachable: {instance.display_name}"
+            return None
+        finally:
+            try:
+                await api_client.close()
+            except Exception:
+                pass
+
+        self._all_models = models
+        self._all_models_host = instance.host
+        return models
+
+    def _adopt_catalog_manufacturers(self, all_models: list[str]) -> bool:
+        """Replace the manufacturer list with the ones the catalog offers,
+        keeping the selection on the same label. True when it changed."""
+        manufacturers = manufacturers_from_model_names(all_models)
+        if not manufacturers or manufacturers == self._manufacturers:
+            return False
+
+        previous_labels = list(self._manufacturers)
+        selected_label = (
+            previous_labels[
+                min(self._selected_manufacturer_idx, len(previous_labels) - 1)
+            ]
+            if previous_labels
+            else None
+        )
+        self._manufacturers = manufacturers
+        labels = list(manufacturers)
+        self._selected_manufacturer_idx = (
+            labels.index(selected_label) if selected_label in labels else 0
+        )
+        return True
+
+    def _selected_manufacturer(self) -> tuple[str, str]:
+        """Label and model-name prefix of the manufacturer to show models for."""
+        if self._locked_manufacturer is not None:
+            prefix = self._locked_prefix or self._locked_manufacturer.lower()
+            return self._locked_manufacturer, prefix
+        labels = list(self._manufacturers)
+        label = labels[min(self._selected_manufacturer_idx, len(labels) - 1)]
+        return label, self._manufacturers.get(label, label.lower())
+
+    def _resolve_pending_model_name(self) -> str:
+        """The catalog entry matching the pending model name, or the raw name
+        when the catalog has none."""
+        normalized = _normalize_model_name(self._pending_model_name)
+        return next(
+            (
+                model_name
+                for model_name in self._models
+                if _normalize_model_name(model_name) == normalized
+            ),
+            self._pending_model_name,
+        )
 
     async def _fetch_models(self) -> None:
         if not self._instances:
@@ -546,60 +630,33 @@ class RobotSpawnWindow:
         instance = self._instances[
             min(self._selected_instance_idx, len(self._instances) - 1)
         ]
-        manufacturer = (
-            self._locked_manufacturer
-            if self._locked_manufacturer is not None
-            else MANUFACTURERS[
-                min(self._selected_manufacturer_idx, len(MANUFACTURERS) - 1)
-            ]
-        )
-        prefix = MANUFACTURER_PREFIXES.get(manufacturer, manufacturer.lower())
 
-        api_client = self._make_api_client(instance)
-
-        if api_client is None:
-            self._fetch_error = f"Cannot connect to '{instance.display_name}'"
-            carb.log_warn(
-                f"Could not create API client for instance '{instance.display_name}'"
-            )
+        all_models = await self._get_all_models(instance)
+        if all_models is None:
             self._models = []
             self._rebuild_model_row()
             return
 
-        self._fetch_error = None
-        try:
-            all_models: list[str] = await wb_v2.MotionGroupModelsApi(
-                api_client
-            ).get_motion_group_models()
-            filtered = [m for m in all_models if m.lower().startswith(prefix)]
-            self._models = sorted(filtered)
-            if self._pending_model_name:
-                norm_pending = _normalize_model_name(self._pending_model_name)
-                match = next(
-                    (
-                        m
-                        for m in self._models
-                        if _normalize_model_name(m) == norm_pending
-                    ),
-                    self._pending_model_name,  # fall back to the raw name if not found
-                )
-                self._models = [match]
-                self._selected_model_idx = 0
-                self._pending_model_name = None
-            else:
-                self._selected_model_idx = 0
-            carb.log_verbose(
-                f"Found {len(self._models)} model(s) for manufacturer '{manufacturer}' (prefix '{prefix}')"
-            )
-        except Exception as exc:
-            carb.log_warn(f"Failed to fetch motion group models: {exc}")
-            self._fetch_error = f"Instance not reachable: {instance.display_name}"
-            self._models = []
-        finally:
-            try:
-                await api_client.close()
-            except Exception:
-                pass
+        # The combo must offer what this instance can actually deliver, so it
+        # is rebuilt from the catalog. The rebuild must not start another
+        # fetch, which would re-enter this method through the UI.
+        if self._adopt_catalog_manufacturers(all_models):
+            self._rebuild_manufacturer_row(start_model_fetch=False)
+
+        manufacturer, prefix = self._selected_manufacturer()
+        self._models = sorted(
+            model_name
+            for model_name in all_models
+            if model_name.lower().startswith(prefix)
+        )
+        self._selected_model_idx = 0
+        if self._pending_model_name:
+            self._models = [self._resolve_pending_model_name()]
+            self._pending_model_name = None
+        carb.log_verbose(
+            f"Found {len(self._models)} model(s) for manufacturer "
+            f"'{manufacturer}' (prefix '{prefix}')"
+        )
 
         self._rebuild_model_row()
 
@@ -678,98 +735,9 @@ class RobotSpawnWindow:
         ]
         model = self._models[min(self._selected_model_idx, len(self._models) - 1)]
 
-        api_client = self._make_api_client(instance)
-
-        if api_client is None:
-            carb.log_error("Could not create API client for spawning robot")
-            return
-
-        try:
-            usd_bytes: bytearray = await wb_v2.MotionGroupModelsApi(
-                api_client
-            ).get_motion_group_usd_model(motion_group_model=model)
-
-            is_nucleus = "://" in download_path
-
-            if is_nucleus:
-                usd_file_path = (
-                    download_path
-                    if download_path.lower().endswith(".usd")
-                    else download_path.rstrip("/") + "/" + model + ".usd"
-                )
-            elif os.path.isdir(download_path):
-                usd_file_path = os.path.join(download_path, f"{model}.usd")
-            elif not download_path.lower().endswith(".usd"):
-                usd_file_path = download_path + ".usd"
-            else:
-                usd_file_path = download_path
-
-            if is_nucleus:
-                write_result = await omni.client.write_file_async(
-                    usd_file_path, bytes(usd_bytes)
-                )
-                if write_result != omni.client.Result.OK:
-                    raise RuntimeError(
-                        f"omni.client.write_file_async failed with: {write_result}"
-                    )
-            else:
-                parent_dir = os.path.dirname(usd_file_path)
-                if parent_dir:
-                    os.makedirs(parent_dir, exist_ok=True)
-                with open(usd_file_path, "wb") as f:
-                    f.write(usd_bytes)
-
-            carb.log_info(f"Saved USD to '{usd_file_path}'")
-
-            stage = omni.usd.get_context().get_stage()
-            if stage is None:
-                carb.log_error("No active stage found")
-                return
-
-            parent_path = (
-                self._location_prim.GetPath().pathString
-                if self._location_prim
-                else "/World"
-            )
-
-            safe_name = (
-                model
-                if Sdf.Path.IsValidIdentifier(model)
-                else model.replace("-", "_").replace(" ", "_")
-            )
-            robot_prim_path = Sdf.Path(parent_path).AppendChild(safe_name)
-
-            xform = UsdGeom.Xform.Define(stage, robot_prim_path)
-            xform.GetPrim().GetPayloads().AddPayload(usd_file_path)
-
-            stage_units = UsdGeom.GetStageMetersPerUnit(stage)
-            base_offset_m = MODEL_BASE_OFFSETS.get(model, 0.0)
-            z_offset = base_offset_m / stage_units if base_offset_m != 0.0 else 0.0
-            if z_offset != 0.0:
-                ordered_ops = xform.GetOrderedXformOps()
-                translate_op = next(
-                    (
-                        op
-                        for op in ordered_ops
-                        if op.GetOpType() == UsdGeom.XformOp.TypeTranslate
-                    ),
-                    None,
-                )
-                if translate_op is None:
-                    translate_op = xform.AddTranslateOp(
-                        precision=UsdGeom.XformOp.PrecisionDouble
-                    )
-                translate_op.Set(Gf.Vec3d(0.0, 0.0, z_offset))
-
-            carb.log_info(f"Added payload at '{robot_prim_path}' -> '{usd_file_path}'")
-
-        except Exception as exc:
-            carb.log_error(f"Failed to download / import model '{model}': {exc}")
-        finally:
-            try:
-                await api_client.close()
-            except Exception:
-                pass
+        await download_and_add_robot(
+            instance, model, download_path, location_prim=self._location_prim
+        )
 
     def _get_selected_instance(self) -> NOVAInstance | None:
         if not self._instances:

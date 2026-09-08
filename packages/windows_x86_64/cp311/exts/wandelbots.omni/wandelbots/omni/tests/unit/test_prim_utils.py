@@ -1,6 +1,8 @@
+import math
 import omni.kit.test
+import numpy as np
 from wandelbots.omni.utils.prims import PrimUtils
-from wandelbots.omni.utils.math import euler_to_rotvec
+from wandelbots.omni.utils.math import euler_to_rotvec, pose_to_matrix, matrix_to_pose
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.tests.stage_utils import use_stage
 from pxr import UsdGeom, Usd, UsdPhysics, Gf
@@ -237,3 +239,180 @@ class TestPrimUtils(omni.kit.test.AsyncTestCase):
                     actual_world_pose.pose[position_idx],
                     places=1,
                 )
+
+    # --- set_relative_pose (SE(3) composition) ---------------------------------
+
+    def _define_posed_xform(self, stage, path, initial_pose):
+        """Create a top-level Xform with translate+orient ops at initial_pose.
+
+        translate/orient ops must exist for set_prim_pose to write to them.
+        """
+        prim: UsdGeom.Xform = UsdGeom.Xform.Define(stage, path)
+        prim.AddTranslateOp()
+        prim.AddOrientOp()
+        PrimUtils.set_prim_pose(path, WSPose(pose=initial_pose), stage)
+        return path
+
+    def _se3_reference(self, current_pose, relative_pose, object_first):
+        """Independent SE(3) composition reference (not via set_relative_pose)."""
+        t_current = pose_to_matrix(current_pose)
+        t_relative = pose_to_matrix(relative_pose)
+        t_new = t_current @ t_relative if object_first else t_relative @ t_current
+        return matrix_to_pose(t_new)
+
+    def _assert_pose_matrices_close(self, expected_pose, actual_pose, places=3):
+        """Compare poses via their 4x4 matrices to avoid rotvec representation ambiguity."""
+        expected_matrix = pose_to_matrix(expected_pose)
+        actual_matrix = pose_to_matrix(actual_pose)
+        for row in range(4):
+            for col in range(4):
+                self.assertAlmostEqual(
+                    expected_matrix[row, col],
+                    actual_matrix[row, col],
+                    places=places,
+                )
+
+    async def test_set_relative_pose_object_first_rotates_translation_into_local_frame(
+        self,
+    ):
+        # Regression test for the reported bug: with object_first=True the relative
+        # translation must be rotated into the object's local frame (R_obj * t_rel),
+        # not added/subtracted in raw world coordinates.
+        with self.use_test_stage() as stage:
+            # Object rotated 90 deg about Z, at the origin.
+            path = self._define_posed_xform(
+                stage, "/Target", [0, 0, 0, 0, 0, math.pi / 2]
+            )
+            # Relative pose: 100 mm along the object's local +X, no rotation.
+            relative = [100, 0, 0, 0, 0, 0]
+
+            PrimUtils.set_relative_pose(
+                path, WSPose(pose=relative), object_first=True, stage=stage
+            )
+
+            actual = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+
+            # Local +X of a 90 deg-about-Z object points along world +Y.
+            self.assertAlmostEqual(actual[0], 0.0, places=2)
+            self.assertAlmostEqual(actual[1], 100.0, places=2)
+            self.assertAlmostEqual(actual[2], 0.0, places=2)
+            # The old (buggy) behavior produced t_obj - t_rel = [-100, 0, 0]; assert we
+            # are nowhere near that.
+            self.assertGreater(actual[1], 50.0)
+
+    async def test_set_relative_pose_world_first_keeps_world_translation(self):
+        # object_first=False applies the relative pose in the world frame (T_rel ∘ T_obj).
+        with self.use_test_stage() as stage:
+            path = self._define_posed_xform(
+                stage, "/Target", [0, 0, 0, 0, 0, math.pi / 2]
+            )
+            relative = [100, 0, 0, 0, 0, 0]
+
+            PrimUtils.set_relative_pose(
+                path, WSPose(pose=relative), object_first=False, stage=stage
+            )
+
+            actual = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+
+            # Relative rotation is identity, so the translation stays in world +X.
+            self.assertAlmostEqual(actual[0], 100.0, places=2)
+            self.assertAlmostEqual(actual[1], 0.0, places=2)
+            self.assertAlmostEqual(actual[2], 0.0, places=2)
+
+    async def test_set_relative_pose_matches_se3_reference(self):
+        # General case with non-trivial translation and rotation on both operands,
+        # checked against an independent matrix-composition reference, both orders.
+        for object_first in (True, False):
+            with self.use_test_stage() as stage:
+                initial = [100, 200, 300] + euler_to_rotvec([10, 20, 30], "xyz")
+                relative = [40, -50, 60] + euler_to_rotvec([15, -25, 35], "xyz")
+                path = self._define_posed_xform(stage, "/Target", initial)
+
+                current = PrimUtils.get_prim_pose(
+                    path,
+                    coordinate_system="local",
+                    rotation_type="cartesian",
+                    stage=stage,
+                ).pose
+                expected = self._se3_reference(current, relative, object_first)
+
+                PrimUtils.set_relative_pose(
+                    path, WSPose(pose=relative), object_first=object_first, stage=stage
+                )
+                actual = PrimUtils.get_prim_pose(
+                    path,
+                    coordinate_system="local",
+                    rotation_type="cartesian",
+                    stage=stage,
+                ).pose
+
+                self._assert_pose_matrices_close(expected, actual)
+
+    async def test_set_relative_pose_rotation_order_depends_on_object_first(self):
+        # Non-commuting rotations: the resulting orientation must differ between the
+        # two orders, proving composition order is honored.
+        relative = [0, 0, 0] + [0, math.pi / 2, 0]  # 90 deg about Y
+        initial = [0, 0, 0] + [math.pi / 2, 0, 0]  # 90 deg about X
+        results = {}
+        for object_first in (True, False):
+            with self.use_test_stage() as stage:
+                path = self._define_posed_xform(stage, "/Target", initial)
+                PrimUtils.set_relative_pose(
+                    path, WSPose(pose=relative), object_first=object_first, stage=stage
+                )
+                results[object_first] = PrimUtils.get_prim_pose(
+                    path,
+                    coordinate_system="local",
+                    rotation_type="cartesian",
+                    stage=stage,
+                ).pose
+
+        rot_true = pose_to_matrix(results[True])[:3, :3]
+        rot_false = pose_to_matrix(results[False])[:3, :3]
+        self.assertFalse(np.allclose(rot_true, rot_false, atol=1e-3))
+
+    async def test_set_relative_pose_identity_is_noop(self):
+        with self.use_test_stage() as stage:
+            initial = [100, 200, 300] + euler_to_rotvec([10, 20, 30], "xyz")
+            path = self._define_posed_xform(stage, "/Target", initial)
+            before = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+
+            PrimUtils.set_relative_pose(
+                path, WSPose(pose=[0, 0, 0, 0, 0, 0]), object_first=True, stage=stage
+            )
+
+            after = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+            self._assert_pose_matrices_close(before, after)
+
+    async def test_set_relative_pose_inverse_returns_to_origin(self):
+        # Applying a relative transform then its inverse (same order) returns the
+        # original pose.
+        with self.use_test_stage() as stage:
+            initial = [100, 200, 300] + euler_to_rotvec([10, 20, 30], "xyz")
+            relative = [40, -50, 60] + euler_to_rotvec([15, -25, 35], "xyz")
+            path = self._define_posed_xform(stage, "/Target", initial)
+            before = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+
+            relative_inverse = matrix_to_pose(np.linalg.inv(pose_to_matrix(relative)))
+
+            PrimUtils.set_relative_pose(
+                path, WSPose(pose=relative), object_first=True, stage=stage
+            )
+            PrimUtils.set_relative_pose(
+                path, WSPose(pose=relative_inverse), object_first=True, stage=stage
+            )
+
+            after = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", rotation_type="cartesian", stage=stage
+            ).pose
+            self._assert_pose_matrices_close(before, after)

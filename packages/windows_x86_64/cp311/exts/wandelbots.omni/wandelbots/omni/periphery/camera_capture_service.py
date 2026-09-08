@@ -3,8 +3,6 @@ from typing import Literal, Union, Optional
 import carb
 import numpy as np
 
-from pxr import UsdGeom
-import omni.usd
 import omni.replicator.core as rep
 from PIL import Image
 
@@ -33,6 +31,10 @@ from omni.replicator.core.scripts.writers_default.tools import (
 from omni.replicator.core.scripts.utils.viewport_manager import HydraTexture
 
 
+class NoLabeledObjectsError(Exception):
+    """Raised when a capture requires semantic labels but none are in view."""
+
+
 class CameraCaptureService:
     async def _capture_synthetic_data(
         self,
@@ -41,23 +43,38 @@ class CameraCaptureService:
         resolution: tuple[int, int] = (512, 512),
     ):
         _, was_playing = SceneUtils.check_simulation()
+        carb.log_info(f"Capturing {capture_type} data from camera {camera_path}")
+
+        render_product: HydraTexture = rep.create.render_product(
+            camera_path, resolution=resolution
+        )
+        annotator = rep.AnnotatorRegistry.get_annotator(capture_type)
+        annotator.attach(render_product)
         try:
-            carb.log_info(f"Capturing {capture_type} data from camera /World/TestCam")
-
-            render_product: HydraTexture = rep.create.render_product(
-                camera_path, resolution=resolution
-            )
-            annotator = rep.AnnotatorRegistry.get_annotator(capture_type)
-            annotator.attach(render_product)
-
-            await rep.orchestrator.step_async(
-                pause_timeline=not was_playing, delta_time=0.0
-            )
-            data = annotator.get_data()
-            annotator.detach(render_product)
+            # A fresh render pipeline can need up to 3 frames until the
+            # annotator has data, so retry while the capture is pending.
+            for _ in range(3):
+                await rep.orchestrator.step_async(
+                    pause_timeline=not was_playing, delta_time=0.0
+                )
+                data = annotator.get_data()
+                if not self._is_capture_pending(data):
+                    return data
             return data
         except Exception as e:
             raise RuntimeError(f"Unable to capture synthetic data: {e}")
+        finally:
+            annotator.detach(render_product)
+            render_product.destroy()
+
+    @staticmethod
+    def _is_capture_pending(data) -> bool:
+        """Detect the not-rendered-yet result shapes of annotator.get_data()."""
+        if isinstance(data, np.ndarray):
+            return data.size == 0
+        if isinstance(data, dict):
+            return "data" not in data
+        return data is None
 
     def list_camera_prims(self) -> list[str]:
         """
@@ -80,11 +97,12 @@ class CameraCaptureService:
 
     async def get_distance(
         self, camera_path: str, resolution: tuple[int, int]
-    ) -> list[float]:
+    ) -> list[list[float]]:
         distance = await self._capture_synthetic_data(
             camera_path, capture_type="distance_to_camera", resolution=resolution
         )
-        return distance.tolist()
+        # inf marks pixels without geometry and is not JSON serializable
+        return np.where(np.isfinite(distance), distance, 0.0).tolist()
 
     async def get_distance_image(
         self,
@@ -93,23 +111,26 @@ class CameraCaptureService:
         near: float = 1e-5,
         far: float = 100.0,
     ) -> Image:
-        distance_data = colorize_distance(
-            await self.get_distance(camera_path, resolution), near=near, far=far
+        distance = await self._capture_synthetic_data(
+            camera_path, capture_type="distance_to_camera", resolution=resolution
         )
+        distance_data = colorize_distance(distance, near=near, far=far)
         return Image.fromarray(distance_data).convert("RGB")
 
     async def get_normals(
         self, camera_path: str, resolution: tuple[int, int]
-    ) -> list[list[float]]:
-        return await self._capture_synthetic_data(
+    ) -> list[list[list[float]]]:
+        normals = await self._capture_synthetic_data(
             camera_path, capture_type="normals", resolution=resolution
         )
+        return normals.tolist()
 
     async def get_normals_image(
         self, camera_path: str, resolution: tuple[int, int]
     ) -> Image:
-        normals = await self.get_normals(camera_path, resolution)
-
+        normals = await self._capture_synthetic_data(
+            camera_path, capture_type="normals", resolution=resolution
+        )
         normals_data = colorize_normals(normals)
         return Image.fromarray(normals_data)
 
@@ -119,18 +140,23 @@ class CameraCaptureService:
         resolution: tuple[int, int],
         downscale_factor: confloat(ge=0.001, le=1) = 1,  # type: ignore
     ) -> PointCloud:
-        pc_data = await self._capture_synthetic_data(
+        pointcloud_data = await self._capture_synthetic_data(
             camera_path=camera_path, capture_type="pointcloud", resolution=resolution
         )
-        if "data" not in pc_data or "info" not in pc_data:
-            raise ValueError(
+        if (
+            "data" not in pointcloud_data
+            or "info" not in pointcloud_data
+            or pointcloud_data["data"].size == 0
+        ):
+            raise NoLabeledObjectsError(
                 "No objects have semantic labels set in the camera field of view. "
                 "Set semantic label for atleast one object of interest to capture point cloud data"
             )
 
-        points = pc_data["data"] * 1000
-        colors = pc_data["info"]["pointRgb"].reshape(-1, 4)[:, :3]
-        normals = pc_data["info"]["pointNormals"].reshape(-1, 4)[:, :3]
+        # Annotator data is in stage units, NOVA expects millimeters.
+        points = SceneUtils.value_to_millimeters(pointcloud_data["data"])
+        colors = pointcloud_data["info"]["pointRgb"].reshape(-1, 4)[:, :3]
+        normals = pointcloud_data["info"]["pointNormals"].reshape(-1, 4)[:, :3]
 
         if downscale_factor != 1:
             points, colors, normals = SyntheticDataUtils.downscale_point_cloud(
@@ -191,10 +217,9 @@ class CameraCaptureService:
                 )
             else:
                 # convert translation from stage unit to mm (unit used in NOVA)
-                translation_conversion_factor = 1000.0 / UsdGeom.GetStageMetersPerUnit(
-                    omni.usd.get_context().get_stage()
+                bbox["transform"][3, :3] = SceneUtils.value_to_millimeters(
+                    bbox["transform"][3, :3]
                 )
-                bbox["transform"][3, :3] *= translation_conversion_factor
 
                 bounding_boxes.append(
                     BoundingBox3D(

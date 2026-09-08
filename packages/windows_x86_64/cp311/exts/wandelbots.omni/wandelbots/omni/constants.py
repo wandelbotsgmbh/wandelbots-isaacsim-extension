@@ -1,2 +1,3 @@
 EXTENSION_ID = "wandelbots.omni"
 EXTENSION_WINDOW_MENU_ROOT = "Wandelbots NOVA"
+CONNECTED_INSTANCES_MENU_LABEL = "Connect to NOVA"

@@ -185,6 +185,78 @@ class TestPoseModel(omni.kit.test.AsyncTestCase):
 
         self.assertEqual(self.model.items[1].prim_path, "/World/p1")
 
+    async def test_drop_reorders_when_editing(self):
+        items = [
+            self.model.add_pose(
+                f"/World/p{i}", f"P{i}", WSPose(pose=[0, 0, 0, 0, 0, 0])
+            )
+            for i in range(3)
+        ]
+        self.model.edit_mode = True
+        moved = []
+        self.model.on_reordered = moved.append
+
+        # Drag first pose to the gap after the last (drop_location == len).
+        self.model.drop(None, items[0], drop_location=3)
+
+        self.assertEqual(
+            self.model.get_ordered_paths(),
+            ["/World/p1", "/World/p2", "/World/p0"],
+        )
+        self.assertEqual(moved, [items[0]])
+
+    async def test_drop_moves_item_up(self):
+        items = [
+            self.model.add_pose(
+                f"/World/p{i}", f"P{i}", WSPose(pose=[0, 0, 0, 0, 0, 0])
+            )
+            for i in range(3)
+        ]
+        self.model.edit_mode = True
+
+        # Drag last pose to the very top (gap before index 0).
+        self.model.drop(None, items[2], drop_location=0)
+
+        self.assertEqual(
+            self.model.get_ordered_paths(),
+            ["/World/p2", "/World/p0", "/World/p1"],
+        )
+
+    async def test_drop_ignored_when_not_editing(self):
+        items = [
+            self.model.add_pose(
+                f"/World/p{i}", f"P{i}", WSPose(pose=[0, 0, 0, 0, 0, 0])
+            )
+            for i in range(2)
+        ]
+        moved = []
+        self.model.on_reordered = moved.append
+
+        self.model.drop(None, items[0], drop_location=2)
+
+        self.assertEqual(self.model.get_ordered_paths(), ["/World/p0", "/World/p1"])
+        self.assertEqual(moved, [])
+
+    async def test_drop_onto_item_rejected(self):
+        items = [
+            self.model.add_pose(
+                f"/World/p{i}", f"P{i}", WSPose(pose=[0, 0, 0, 0, 0, 0])
+            )
+            for i in range(2)
+        ]
+        self.model.edit_mode = True
+
+        # target_item set => dropping onto a pose, not between: must be rejected.
+        self.assertFalse(self.model.drop_accepted(items[1], items[0], 1))
+        self.model.drop(items[1], items[0], drop_location=1)
+        self.assertEqual(self.model.get_ordered_paths(), ["/World/p0", "/World/p1"])
+
+    async def test_drag_mime_data_empty_outside_edit_mode(self):
+        item = self.model.add_pose("/World/p0", "P0", WSPose(pose=[0, 0, 0, 0, 0, 0]))
+        self.assertEqual(self.model.get_drag_mime_data(item), "")
+        self.model.edit_mode = True
+        self.assertEqual(self.model.get_drag_mime_data(item), "0")
+
     async def test_clear(self):
         for i in range(5):
             self.model.add_pose(

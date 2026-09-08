@@ -21,7 +21,7 @@ from wandelbots.omni.utils.api import (
     get_base_headers,
 )
 
-from .helpers import _REQUEST_TIMEOUT, fetch_motion_group_context
+from .helpers import REQUEST_TIMEOUT, fetch_motion_group_context
 
 _INIT_MAX_RETRIES = 3
 _INIT_RETRY_DELAY = 0.5  # seconds, doubled on each retry
@@ -88,9 +88,11 @@ class ExecutionService:
                     motion_group_model=context.model_name,
                     joint_positions=joint_positions,
                     tcp_offset=context.tcp_offset,
-                    mounting=context.description.mounting,
+                    # No mounting on purpose: FK output stays in the link_0
+                    # base frame, which is where the trajectory curve is
+                    # anchored. IK and planning requests do send the mounting.
                 ),
-                _request_timeout=_REQUEST_TIMEOUT,
+                _request_timeout=REQUEST_TIMEOUT,
             )
             poses = []
             for tcp_pose in response.tcp_poses:
@@ -177,7 +179,8 @@ class ExecutionService:
             motion_command = wb_v2_models.MotionCommand(
                 path=wb_v2_models.MotionCommandPath(
                     wb_v2_models.PathJointPTP(
-                        target_joint_position=target_joint_position
+                        target_joint_position=target_joint_position,
+                        path_definition_name="PathJointPTP",
                     )
                 )
             )
@@ -279,8 +282,12 @@ class ExecutionService:
             ),
         ).to_json()
 
-        start_message = wb_v2_models.StartMovementRequest().to_json()
-        pause_message = wb_v2_models.PauseMovementRequest().to_json()
+        start_message = wb_v2_models.StartMovementRequest(
+            message_type="StartMovementRequest"
+        ).to_json()
+        pause_message = wb_v2_models.PauseMovementRequest(
+            message_type="PauseMovementRequest"
+        ).to_json()
 
         websocket_kwargs = _to_header_params(
             get_base_headers(api_configuration.access_token)
@@ -315,7 +322,7 @@ class ExecutionService:
                 lifecycle.stop_event,
             )
         except Exception:
-            carb.log_verbose("Init failed — closing state-stream WS.")
+            carb.log_verbose("Init failed, closing the state-stream WS.")
             await state_stream_ws.close()
             raise
         carb.log_verbose("Execution WS connected and initialised.")
@@ -458,7 +465,7 @@ class ExecutionService:
                     )
                     if lifecycle.on_paused:
                         lifecycle.on_paused()
-                    carb.log_info("Execution paused — waiting for resume or stop.")
+                    carb.log_info("Execution paused, waiting for resume or stop.")
 
                 if completion.paused:
                     if lifecycle.stop_event and lifecycle.stop_event.is_set():
@@ -493,7 +500,7 @@ class ExecutionService:
                     try:
                         raw = completion.execution_recv_task.result()
                     except websockets.exceptions.ConnectionClosed:
-                        carb.log_info("Execution WS closed by server — completed.")
+                        carb.log_info("Execution WS closed by server, completed.")
                         return
                     except Exception as exc:
                         carb.log_warn(f"Execution WS recv error: {exc}")

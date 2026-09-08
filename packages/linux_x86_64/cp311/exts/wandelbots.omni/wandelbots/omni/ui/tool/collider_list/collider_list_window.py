@@ -19,7 +19,7 @@ from pxr import Tf, Usd, UsdPhysics
 
 from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import ICON_BTN_STYLE
 from wandelbots.omni.ui.utils import defer_call, get_icon
 
 from wandelbots.omni.ui.tool.collider_list.collider_item import (

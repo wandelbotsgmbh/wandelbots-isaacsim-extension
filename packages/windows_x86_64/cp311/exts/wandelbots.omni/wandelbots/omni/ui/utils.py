@@ -2,6 +2,7 @@ import carb
 from typing import Callable, Any
 import asyncio
 import os
+import weakref
 import omni.ext
 from omni.kit.menu.utils import MenuItemDescription
 
@@ -9,6 +10,43 @@ from omni.kit.menu.utils import MenuItemDescription
 def get_icon(icon_name: str) -> str:
     path = f"{os.path.dirname(__file__)}/../assets/icons/{icon_name}"
     return path
+
+
+# Global "UI busy" gate. Custom-handler widgets (the IconButton click, the
+# CollapsibleSection toggle) consult this to ignore input while a blocking
+# operation runs, because omni.ui's ``enabled`` does not reliably gate widgets
+# that drive clicks via their own ``set_mouse_*_fn`` handlers or that sit deep
+# inside a ScrollingFrame.
+_ui_busy = False
+
+
+def set_ui_busy(busy: bool) -> None:
+    global _ui_busy
+    _ui_busy = bool(busy)
+
+
+def is_ui_busy() -> bool:
+    return _ui_busy
+
+
+def weak_cb(owner: object, method_name: str, *bound_args) -> Callable:
+    """Build a widget callback that holds only a weak reference to ``owner``.
+
+    Callbacks stored on widgets inside a window frame must not strongly
+    reference the window's builder, or the window can never be GC'd across
+    extension reloads. Returns a callable that resolves the weakref, no-ops if
+    the owner is gone, and forwards both ``bound_args`` and any args omni.ui
+    passes at call time to ``owner.method_name``.
+    """
+    ref = weakref.ref(owner)
+
+    def _invoke(*call_args):
+        target = ref()
+        if target is None:
+            return None
+        return getattr(target, method_name)(*bound_args, *call_args)
+
+    return _invoke
 
 
 def defer_call(callback: Callable[[], Any]) -> None:

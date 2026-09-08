@@ -9,14 +9,14 @@ from wandelbots.omni.constants import EXTENSION_ID, EXTENSION_WINDOW_MENU_ROOT
 from .widgets.collision_export_form import CollisionExportForm
 from .widgets.collision_load_setup_form import CollisionLoadSetupForm
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.utils import get_icon
+from wandelbots.omni.ui.wb_theme import SECTION_GAP, SPACING_MD, SPACING_SM
+from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
+from wandelbots.omni.ui.widgets.segmented_tab_bar import SegmentedTabBar
 
 WINDOW_MENU_ROOT = "Tools"
 
-
-class SphereRadiusModel(ui.SimpleFloatModel):
-    def min(self):
-        return 0
+_EXPORT_TAB = 0
+_LOAD_TAB = 1
 
 
 class CollisionSetupWindow:
@@ -25,80 +25,85 @@ class CollisionSetupWindow:
 
         self.window = ui.Window("Collision Setup", width=400, height=300)
         self.window.set_visibility_changed_fn(
-            lambda _: omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
+            lambda visible, weak_self=weakref.proxy(self): (
+                weak_self._on_visibility_changed(visible)
+            )
         )
         self.window.visible = False
         self.window.deferred_dock_in("Property", ui.DockPolicy.CURRENT_WINDOW_IS_ACTIVE)
 
         self._collision_export_form: CollisionExportForm | None = None
         self._load_collision_setup_form: CollisionLoadSetupForm | None = None
+        self._tab_bar: SegmentedTabBar | None = None
+        self._export_page: ui.VStack | None = None
+        self._load_page: ui.VStack | None = None
 
         self._build_ui()
 
     def _build_ui(self):
         self.window.frame.clear()
+        # The ground is styled through a type name override, because a flat
+        # background_color cascades into every descendant and overrides the
+        # scoped Button styles the tab bar depends on.
+        self.window.frame.style_type_name_override = "RootFrame"
+        self.window.frame.style = {
+            "RootFrame": {"background_color": NOVAColor.LAYER_BASE.color}
+        }
         with self.window.frame:
             with ui.ScrollingFrame(
                 vertical_scroll_bar_policy=ui.ScrollBarPolicy.SCROLLBAR_AS_NEEDED,
                 width=ui.Percent(100),
                 height=ui.Percent(100),
             ):
+                # The tab bar sits inside the scroll container so it shares the
+                # right edge of the section cards below; outside it would
+                # misalign by the scrollbar gutter.
                 with ui.HStack():
-                    ui.Spacer(width=8)
-                    with ui.VStack(spacing=4):
-                        with ui.HStack(height=30, spacing=12):
-                            ui.Label(
-                                "Load from NOVA",
-                                height=30,
-                                width=0,
-                                style={
-                                    "font_size": 18,
-                                },
+                    ui.Spacer(width=SPACING_MD)
+                    with ui.VStack(spacing=0):
+                        ui.Spacer(height=SPACING_SM)
+                        with ui.HStack(height=0):
+                            self._tab_bar = SegmentedTabBar(
+                                labels=["Export to NOVA", "Load from NOVA"],
+                                on_changed_fn=lambda index, weak_self=weakref.proxy(self): (
+                                    weak_self._on_tab_changed(index)
+                                ),
+                                selected=_EXPORT_TAB,
                             )
-                            with ui.HStack():
-                                ui.Line(
-                                    style={"color": 0x338A8777}, width=ui.Fraction(1)
+                        ui.Spacer(height=SPACING_MD)
+                        # Both pages are built once and switched by visibility.
+                        # Rebuilding on a tab switch would re-issue the forms'
+                        # instance fetches and drop the entered values.
+                        with ui.VStack():
+                            self._export_page = ui.VStack(spacing=SECTION_GAP, height=0)
+                            with self._export_page:
+                                self._collision_export_form = CollisionExportForm()
+                            self._load_page = ui.VStack(spacing=SECTION_GAP, height=0)
+                            with self._load_page:
+                                load_section = CollapsibleSection(
+                                    "Load Setup", collapsed=False
                                 )
+                                with load_section.body:
+                                    self._load_collision_setup_form = (
+                                        CollisionLoadSetupForm()
+                                    )
+                    ui.Spacer(width=SPACING_MD)
+        self._load_page.visible = False
 
-                                def refresh_callback(weak_self=weakref.ref(self)):
-                                    self = weak_self()
-                                    if (
-                                        self is None
-                                        or self._load_collision_setup_form is None
-                                    ):
-                                        return
-                                    self._load_collision_setup_form.refresh()
+    def _on_visibility_changed(self, visible: bool) -> None:
+        omni.kit.menu.utils.refresh_menu_items(WINDOW_MENU_ROOT)
+        if not visible:
+            return
+        # The forms fetch their instance lists once at construction, so a
+        # re-fetch on every open picks up instances added since then.
+        if self._collision_export_form is not None:
+            self._collision_export_form.refresh_instances()
+        if self._load_collision_setup_form is not None:
+            self._load_collision_setup_form.refresh_instances()
 
-                                ui.Button(
-                                    image_url=get_icon("refresh.svg"),
-                                    width=28,
-                                    height=28,
-                                    style={
-                                        "color": NOVAColor.ACTION_ACTIVE.color,
-                                    },
-                                    tooltip="Click to refresh instance data",
-                                    clicked_fn=refresh_callback,
-                                )
-                        self._load_collision_setup_form = CollisionLoadSetupForm()
-
-                        with ui.HStack(height=30, spacing=12):
-                            ui.Label(
-                                "Export to NOVA",
-                                height=30,
-                                width=0,
-                                style={
-                                    "font_size": 18,
-                                },
-                            )
-                            ui.Line(
-                                style={
-                                    "border_width": 1,
-                                    "color": NOVAColor.DIVIDER.color,
-                                },
-                                width=ui.Fraction(1),
-                            )
-
-                        self._collision_export_form = CollisionExportForm()
+    def _on_tab_changed(self, index: int) -> None:
+        self._export_page.visible = index == _EXPORT_TAB
+        self._load_page.visible = index == _LOAD_TAB
 
 
 @dataclass
@@ -107,11 +112,11 @@ class CollisionSetupWindowSubscription:
     menu_subscriptions: list = None
 
     def __del__(self):
-        # Need to explicitly hide the collision_export_window because the docking causes issues on deletion
+        # Hide the window explicitly, the docking causes issues on deletion.
         if self.collision_export_window:
             self.collision_export_window.window.visible = False
 
-        # Dropping the menu items is not enough we need to explicitly remove them
+        # Dropping the menu items is not enough, they have to be removed.
         omni.kit.menu.utils.remove_menu_items(self.menu_subscriptions, WINDOW_MENU_ROOT)
 
 

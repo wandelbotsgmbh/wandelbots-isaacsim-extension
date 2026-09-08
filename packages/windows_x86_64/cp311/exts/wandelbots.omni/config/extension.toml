@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp311"]
 target.platform = ["windows-x86_64"]
-version = "2.50.0"
+version = "2.63.1"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -75,6 +75,10 @@ writeTarget.python = true
 "omni.kit.window.property" = {}
 
 [settings]
+# External joint stream ("Sync with simulation"): reply with the measured
+# PhysX joint state (positions + velocities) instead of echoing commanded
+# positions. Disable to restore the echo behavior (no physics feedback).
+exts."wandelbots.omni".externalJointStream.physicsFeedback = true
 exts."omni.services.transport.server.http".https.enabled = false
 exts."omni.services.transport.server.http".ssl.ssl_cert_reqs = 1     #CERT_OPTIONAL
 exts."omni.services.transport.server.http".ssl.ssl_ciphers = "TLSv1"

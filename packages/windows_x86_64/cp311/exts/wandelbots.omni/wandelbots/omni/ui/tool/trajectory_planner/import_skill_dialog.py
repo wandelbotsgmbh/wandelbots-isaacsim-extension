@@ -33,6 +33,7 @@ from wandelbots.omni.manipulators import (
     get_scene_motion_group_prim_paths,
 )
 from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.utils import defer_call
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
 from wandelbots.omni.utils.api import get_api_client_from_config
@@ -279,7 +280,10 @@ class ImportSkillDialog:
                             ui.Label(
                                 "Model Name",
                                 width=_LABEL_WIDTH,
-                                tooltip="Model the plan was created with",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "Model the plan was created with"
+                                ),
+                                style=TOOLTIP_RESET,
                             )
                             self._stored_model_label = ui.Label(
                                 "-", style={"color": NOVAColor.TEXT_SECONDARY.color}
@@ -288,7 +292,10 @@ class ImportSkillDialog:
                             ui.Label(
                                 "Scene",
                                 width=_LABEL_WIDTH,
-                                tooltip="USD stage the plan was exported from",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "USD stage the plan was exported from"
+                                ),
+                                style=TOOLTIP_RESET,
                             )
                             self._stored_scene_label = ui.Label(
                                 "-",
@@ -306,16 +313,21 @@ class ImportSkillDialog:
                             ui.Button(
                                 "Cancel",
                                 width=100,
-                                tooltip="Close without importing",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "Close without importing"
+                                ),
                                 clicked_fn=lambda ws=weakref.ref(self): (
                                     ws()._close() if ws() else None
                                 ),
+                                style=TOOLTIP_RESET,
                             )
                             self._import_button = ui.Button(
                                 "Import",
                                 width=100,
-                                tooltip="Import the selected plan onto the chosen "
-                                "motion group",
+                                tooltip_fn=lambda: build_tooltip(
+                                    "Import the selected plan onto the chosen "
+                                    "motion group"
+                                ),
                                 clicked_fn=lambda ws=weakref.ref(self): (
                                     ws()._do_import() if ws() else None
                                 ),
@@ -326,6 +338,7 @@ class ImportSkillDialog:
                                     "Button:hovered": {
                                         "background_color": NOVAColor.PRIMARY_LIGHT.color,
                                     },
+                                    **TOOLTIP_RESET,
                                 },
                             )
                             ui.Spacer(width=4)
@@ -351,8 +364,16 @@ class ImportSkillDialog:
 
     def _labeled_row(self, label: str, tooltip: str) -> ui.Frame:
         with ui.HStack(height=24):
-            ui.Label(label, width=_LABEL_WIDTH, tooltip=tooltip)
-            frame = ui.Frame(tooltip=tooltip)
+            ui.Label(
+                label,
+                width=_LABEL_WIDTH,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
+            )
+            frame = ui.Frame(
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
+            )
         return frame
 
     # -- instance ----------------------------------------------------------
@@ -645,22 +666,25 @@ class ImportSkillDialog:
                     prim_path,
                     width=ui.Fraction(2),
                     elided_text=True,
-                    tooltip=prim_path,
-                    style={"color": NOVAColor.TEXT_PRIMARY.color},
+                    tooltip_fn=lambda t=prim_path: build_tooltip(t),
+                    style={
+                        "color": NOVAColor.TEXT_PRIMARY.color,
+                        **TOOLTIP_RESET,
+                    },
                 )
                 ui.Label(
                     tcp,
                     width=ui.Fraction(3),
                     elided_text=True,
-                    tooltip=tcp,
-                    style=sec,
+                    tooltip_fn=lambda t=tcp: build_tooltip(t),
+                    style={**sec, **TOOLTIP_RESET},
                 )
                 ui.Label(
                     joints,
                     width=ui.Fraction(3),
                     elided_text=True,
-                    tooltip=joints,
-                    style=sec,
+                    tooltip_fn=lambda t=joints: build_tooltip(t),
+                    style={**sec, **TOOLTIP_RESET},
                 )
                 ui.Spacer(width=4)
 
@@ -675,8 +699,11 @@ class ImportSkillDialog:
                 ui.Label(
                     path,
                     elided_text=True,
-                    tooltip=path,
-                    style={"color": NOVAColor.TEXT_SECONDARY.color},
+                    tooltip_fn=lambda t=path: build_tooltip(t),
+                    style={
+                        "color": NOVAColor.TEXT_SECONDARY.color,
+                        **TOOLTIP_RESET,
+                    },
                 )
             else:
                 ui.Label(

@@ -16,7 +16,10 @@ import wandelbots.usd as wb_schema  # type: ignore
 
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.ui.dialogs import PrimSelectDialog
-from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import create_pose_prim
+from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import (
+    create_pose_prim,
+    get_pose_motion_metadata,
+)
 from wandelbots.omni.ui.tool.trajectory_planner.pose_tree_widget import (
     PoseItem,
     PoseModel,
@@ -35,12 +38,12 @@ class PoseListManager:
     def __init__(
         self,
         pose_model: PoseModel,
-        get_pose_relative_to_mg: Callable[[str], WSPose],
+        get_planning_pose: Callable[[str], WSPose],
         events: "TrajectoryPlannerEvents",
         get_nova_tcps: Callable[[], dict] | None = None,
     ) -> None:
         self._pose_model = pose_model
-        self._get_pose_relative_to_mg = get_pose_relative_to_mg
+        self._get_planning_pose = get_planning_pose
         self._events = events
         self._get_nova_tcps = get_nova_tcps
         self._pose_dialog: PrimSelectDialog | None = None
@@ -78,7 +81,7 @@ class PoseListManager:
                 continue
             is_ghost = self._is_ghost_object_prim(prim)
             try:
-                pose = self._get_pose_relative_to_mg(prim_path)
+                pose = self._get_planning_pose(prim_path)
             except Exception:
                 pose = WSPose(pose=[0, 0, 0, 0, 0, 0])
             tcp_name = self._resolve_ghost_tcp(prim) if is_ghost else None
@@ -89,6 +92,7 @@ class PoseListManager:
                 is_ghost_object=is_ghost,
                 tcp_name=tcp_name,
             )
+            self._restore_pose_motion_metadata(prim, item)
             added_items.append(item)
         if not added_items and selected:
             nm.post_notification(
@@ -146,7 +150,7 @@ class PoseListManager:
             prim_path = prim.GetPath().pathString
             is_ghost = self._is_ghost_object_prim(prim)
             try:
-                pose = self._get_pose_relative_to_mg(prim_path)
+                pose = self._get_planning_pose(prim_path)
             except Exception:
                 pose = WSPose(pose=[0, 0, 0, 0, 0, 0])
             tcp_name = self._resolve_ghost_tcp(prim) if is_ghost else None
@@ -157,7 +161,19 @@ class PoseListManager:
                 is_ghost_object=is_ghost,
                 tcp_name=tcp_name,
             )
+            self._restore_pose_motion_metadata(prim, item)
             self._events.pose_added.emit(item)
+
+    @staticmethod
+    def _restore_pose_motion_metadata(prim, item: PoseItem) -> None:
+        """Restore a POSE prim's persisted TCP name. The joint-config selection is
+        restored once IK is fetched, via the prim's preferredJointValues attribute
+        (see ik_manager._read_preferred_from_prim). Ghost objects use their own schema."""
+        if item.is_ghost_object:
+            return
+        tcp_name = get_pose_motion_metadata(prim)
+        if tcp_name is not None:
+            item.tcp_name = tcp_name
 
     def _resolve_ghost_tcp(self, prim) -> str | None:
         nova_tcps = self._get_nova_tcps() if self._get_nova_tcps else {}

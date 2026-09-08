@@ -6,7 +6,7 @@ import threading
 from typing import Any, Callable, Iterable, Iterator, Literal, overload
 
 from ..exceptions import ConcurrencyError
-from ..frames import OP_BINARY, OP_CONT, OP_TEXT, Frame
+from ..frames import BINARY, CONT, TEXT, Frame
 from ..typing import Data
 from .utils import Deadline
 
@@ -38,7 +38,7 @@ class Assembler:
         pause: Callable[[], Any] = lambda: None,
         resume: Callable[[], Any] = lambda: None,
     ) -> None:
-        # Serialize reads and writes -- except for reads via synchronization
+        # Serialize reads and writes — except for reads via synchronization
         # primitives provided by the threading and queue modules.
         self.mutex = threading.Lock()
 
@@ -169,9 +169,9 @@ class Assembler:
             frame = self.get_next_frame(deadline.timeout(raise_if_elapsed=False))
             with self.mutex:
                 self.maybe_resume()
-            assert frame.opcode is OP_TEXT or frame.opcode is OP_BINARY
+            assert frame.opcode is TEXT or frame.opcode is BINARY
             if decode is None:
-                decode = frame.opcode is OP_TEXT
+                decode = frame.opcode is TEXT
             frames = [frame]
 
             # Fetch subsequent frames for fragmented messages.
@@ -187,7 +187,7 @@ class Assembler:
                     raise
                 with self.mutex:
                     self.maybe_resume()
-                assert frame.opcode is OP_CONT
+                assert frame.opcode is CONT
                 frames.append(frame)
 
         finally:
@@ -249,9 +249,9 @@ class Assembler:
         frame = self.get_next_frame()
         with self.mutex:
             self.maybe_resume()
-        assert frame.opcode is OP_TEXT or frame.opcode is OP_BINARY
+        assert frame.opcode is TEXT or frame.opcode is BINARY
         if decode is None:
-            decode = frame.opcode is OP_TEXT
+            decode = frame.opcode is TEXT
         if decode:
             decoder = UTF8Decoder()
             yield decoder.decode(frame.data, frame.fin)
@@ -264,7 +264,7 @@ class Assembler:
             frame = self.get_next_frame()
             with self.mutex:
                 self.maybe_resume()
-            assert frame.opcode is OP_CONT
+            assert frame.opcode is CONT
             if decode:
                 yield decoder.decode(frame.data, frame.fin)
             else:

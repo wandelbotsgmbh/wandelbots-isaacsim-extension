@@ -127,6 +127,16 @@ class TrajectoryData(BaseModel):
             "width": [10.0, 30.0, 10.0],
         },
     )
+    container_pose: Optional[list[float]] = Field(
+        default=None,
+        description=(
+            "Visualization-only local transform ([x, y, z, rx, ry, rz], mm + rotation "
+            "vector) authored on the trajectory container xform, so the curve (whose "
+            "waypoints are in the robot link_0 frame) lands correctly under its parent "
+            "prim. Encodes link_0-relative-to-parent plus any external-axis offset. "
+            "Does not affect the planned motion."
+        ),
+    )
 
 
 class PatchTrajectoryData(BaseModel):

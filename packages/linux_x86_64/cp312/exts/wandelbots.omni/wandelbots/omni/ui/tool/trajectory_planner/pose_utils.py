@@ -71,6 +71,46 @@ def create_pose_prim(stage, parent_path: str | None = None) -> str | None:
         xform.AddTranslateOp()
     if not prim.HasAttribute("xformOp:orient"):
         xform.AddOrientOp()
+    # An explicit scale op gives a reparent operation a place to write the
+    # compensating local scale; without it, moving the pose into a scaled parent
+    # cannot preserve its transform and the gizmo jumps/loses its appearance.
+    if not prim.HasAttribute("xformOp:scale"):
+        xform.AddScaleOp()
 
     prim.SetCustomDataByKey("wandelbots", {"type": "POSE"})
+    prim.SetMetadata("kind", "assembly")
     return prim_path
+
+
+def set_pose_motion_metadata(
+    stage,
+    prim_path: str,
+    *,
+    tcp_name: str | None = None,
+) -> None:
+    """Persist the user-selected TCP name onto the pose prim.
+
+    Stored in the same ``wandelbots`` customData dict that holds ``type: POSE``
+    (kept intact). The selected joint config is persisted separately as the
+    ``preferredJointValues`` attribute, mirroring how a ghost object persists
+    its choice (see ``GhostObjectUtils.set_preferred_joint_values``).
+    """
+    if not stage:
+        return
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return
+    custom_data = dict(prim.GetCustomDataByKey("wandelbots") or {})
+    if tcp_name is None:
+        custom_data.pop("tcp_name", None)
+    else:
+        custom_data["tcp_name"] = tcp_name
+    prim.SetCustomDataByKey("wandelbots", custom_data)
+
+
+def get_pose_motion_metadata(prim) -> str | None:
+    """Read the stored TCP name from a pose prim, or ``None`` when not stored."""
+    if not prim or not prim.IsValid():
+        return None
+    custom_data = prim.GetCustomDataByKey("wandelbots") or {}
+    return custom_data.get("tcp_name")

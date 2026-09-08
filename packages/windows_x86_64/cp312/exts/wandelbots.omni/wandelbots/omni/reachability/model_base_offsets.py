@@ -1,4 +1,4 @@
-"""Auto-generated model base offsets (mm).
+"""Auto-generated model base offsets (meters).
 
 Each value is the negated ``link_0/base.xformOp:translate`` Z
 from the robot's USD model.  It represents the vertical distance

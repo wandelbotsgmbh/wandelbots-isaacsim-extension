@@ -7,15 +7,14 @@ import logging
 import random
 import ssl
 import struct
-import sys
 import time
 import traceback
 import uuid
 import warnings
+import weakref
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Iterable, Mapping
 from typing import Any, Callable, Deque, cast
 
-from ..asyncio.compatibility import asyncio_timeout
 from ..datastructures import Headers
 from ..exceptions import (
     ConnectionClosed,
@@ -27,13 +26,13 @@ from ..exceptions import (
 )
 from ..extensions import Extension
 from ..frames import (
+    BINARY as OP_BINARY,
+    CLOSE as OP_CLOSE,
+    CONT as OP_CONT,
     OK_CLOSE_CODES,
-    OP_BINARY,
-    OP_CLOSE,
-    OP_CONT,
-    OP_PING,
-    OP_PONG,
-    OP_TEXT,
+    PING as OP_PING,
+    PONG as OP_PONG,
+    TEXT as OP_TEXT,
     Close,
     CloseCode,
     Opcode,
@@ -207,7 +206,10 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         # Logger or LoggerAdapter for this connection.
         if logger is None:
             logger = logging.getLogger("websockets.protocol")
-        self.logger: LoggerLike = logging.LoggerAdapter(logger, {"websocket": self})
+        self.logger: LoggerLike = logging.LoggerAdapter(
+            logger,
+            {"websocket": weakref.proxy(self)},
+        )
         """Logger for this connection."""
 
         # Track if DEBUG is enabled. Shortcut logging calls if it isn't.
@@ -622,19 +624,19 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         while self._fragmented_message_waiter is not None:
             await asyncio.shield(self._fragmented_message_waiter)
 
-        # Unfragmented message -- this case must be handled first because
+        # Unfragmented message — this case must be handled first because
         # strings and bytes-like objects are iterable.
 
         if isinstance(message, (str, bytes, bytearray, memoryview)):
             opcode, data = prepare_data(message)
             await self.write_frame(True, opcode, data)
 
-        # Catch a common mistake -- passing a dict to send().
+        # Catch a common mistake — passing a dict to send().
 
         elif isinstance(message, Mapping):
             raise TypeError("data is a dict-like object")
 
-        # Fragmented message -- regular iterator.
+        # Fragmented message — regular iterator.
 
         elif isinstance(message, Iterable):
             iter_message = iter(message)
@@ -669,7 +671,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
                 self._fragmented_message_waiter.set_result(None)
                 self._fragmented_message_waiter = None
 
-        # Fragmented message -- asynchronous iterator
+        # Fragmented message — asynchronous iterator
 
         elif isinstance(message, AsyncIterable):
             # Implement aiter_message = aiter(message) without aiter
@@ -746,7 +748,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
 
         """
         try:
-            async with asyncio_timeout(self.close_timeout):
+            async with asyncio.timeout(self.close_timeout):
                 await self.write_close_frame(Close(code, reason))
         except asyncio.TimeoutError:
             # If the close frame cannot be sent because the send buffers
@@ -754,7 +756,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             # Fail the connection to shut down faster.
             self.fail_connection()
 
-        # If no close frame is received within the timeout, asyncio_timeout()
+        # If no close frame is received within the timeout, asyncio.timeout()
         # cancels the data transfer task and raises TimeoutError.
 
         # If close() is called multiple times concurrently and one of these
@@ -764,7 +766,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         try:
             # If close() is canceled during the wait, self.transfer_data_task
             # is canceled before the timeout elapses.
-            async with asyncio_timeout(self.close_timeout):
+            async with asyncio.timeout(self.close_timeout):
                 await self.transfer_data_task
         except (asyncio.TimeoutError, asyncio.CancelledError):
             pass
@@ -1234,7 +1236,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
 
                 if self.ping_timeout is not None:
                     try:
-                        async with asyncio_timeout(self.ping_timeout):
+                        async with asyncio.timeout(self.ping_timeout):
                             # Raises CancelledError if the connection is closed,
                             # when close_connection() cancels keepalive_ping().
                             # Raises ConnectionClosed if the connection is lost,
@@ -1280,6 +1282,8 @@ class WebSocketCommonProtocol(asyncio.Protocol):
             # Cancel the keepalive ping task.
             if hasattr(self, "keepalive_ping_task"):
                 self.keepalive_ping_task.cancel()
+                # Break reference cycle to allow immediate garbage collection.
+                del self.keepalive_ping_task
 
             # A client should wait for a TCP close from the server.
             if self.is_client and hasattr(self, "transfer_data_task"):
@@ -1350,7 +1354,7 @@ class WebSocketCommonProtocol(asyncio.Protocol):
         """
         if not self.connection_lost_waiter.done():
             try:
-                async with asyncio_timeout(self.close_timeout):
+                async with asyncio.timeout(self.close_timeout):
                     await asyncio.shield(self.connection_lost_waiter)
             except asyncio.TimeoutError:
                 pass
@@ -1573,9 +1577,9 @@ def broadcast(
     errors on connections where the closing handshake is in progress.
 
     :func:`broadcast` ignores failures to write the message on some connections.
-    It continues writing to other connections. On Python 3.11 and above, you may
-    set ``raise_exceptions`` to :obj:`True` to record failures and raise all
-    exceptions in a :pep:`654` :exc:`ExceptionGroup`.
+    It continues writing to other connections. You may set ``raise_exceptions``
+    to :obj:`True` to record failures and raise all exceptions in a :pep:`654`
+    :exc:`ExceptionGroup`.
 
     While :func:`broadcast` makes more sense for servers, it works identically
     with clients, if you have a use case for opening connections to many servers
@@ -1594,8 +1598,6 @@ def broadcast(
         raise TypeError("data must be str or bytes-like")
 
     if raise_exceptions:
-        if sys.version_info[:2] < (3, 11):  # pragma: no cover
-            raise ValueError("raise_exceptions requires at least Python 3.11")
         exceptions = []
 
     opcode, data = prepare_data(message)

@@ -2,13 +2,27 @@ import pydantic
 from typing import Literal, cast
 
 import carb
-from pxr import Usd
+from pxr import Usd, UsdGeom
 import wandelbots_api_client.v2.models as nova_models
 from pxr import Sdf, Gf
 import omni.physx.bindings._physx as physx_bindings
+from wandelbots.omni.core.collision.authored_geometry import (
+    collider_points_local,
+    convex_hull_points_and_faces,
+)
 from wandelbots.omni.utils.prims import PrimUtils
 from wandelbots.omni.utils.scene import SceneUtils
 from wandelbots.omni.datatypes import WSPose
+
+
+# Scales come out of a matrix decomposition, so they are never exactly equal.
+_SCALE_TOLERANCE = 1e-6
+
+
+def _is_uniform_scale(scale) -> bool:
+    return Gf.IsClose(scale[0], scale[1], _SCALE_TOLERANCE) and Gf.IsClose(
+        scale[0], scale[2], _SCALE_TOLERANCE
+    )
 
 
 class ConvexHull(pydantic.BaseModel):
@@ -76,12 +90,23 @@ def plane_to_collider(prim: Usd.Prim) -> Collider | None:
     )
 
 
-def sphere_to_collider(prim: Usd.Prim) -> Collider:
+def sphere_to_collider(prim: Usd.Prim) -> Collider | None:
     prim_path: str = cast(Sdf.Path, prim.GetPath()).pathString
     radius = prim.GetAttributeAtPath(f"{prim_path}.radius").Get(Usd.TimeCode.Default())
+
+    _, _, scale = PrimUtils.get_world_transform_xform(prim)
+    if not _is_uniform_scale(scale):
+        # A non-uniformly scaled sphere is an ellipsoid, which NOVA has no
+        # primitive for. The caller falls back to points_hull_collider.
+        carb.log_warn(
+            f"Non-uniform scale {scale} for prim {prim.GetPath()}. Expected uniform scale."
+        )
+        return None
+
     return Collider(
         shape=Sphere(
-            shape_type="sphere", radius=SceneUtils.value_to_millimeters(radius)
+            shape_type="sphere",
+            radius=SceneUtils.value_to_millimeters(radius * scale[0]),
         ),
         pose=cast(
             WSPose,
@@ -129,7 +154,7 @@ def cylinder_to_collider(prim: Usd.Prim) -> Collider | None:
         return None
 
     _, _, scale = PrimUtils.get_world_transform_xform(prim)
-    if scale[0] != scale[1] or scale[0] != scale[2]:
+    if not _is_uniform_scale(scale):
         carb.log_warn(
             f"Unsupported scale {scale} for prim {prim.GetPath()}. Expected uniform scale."
         )
@@ -166,7 +191,7 @@ def capsule_to_collider(prim: Usd.Prim) -> Collider | None:
         return None
 
     _, _, scale = PrimUtils.get_world_transform_xform(prim)
-    if scale[0] != scale[1] or scale[0] != scale[2]:
+    if not _is_uniform_scale(scale):
         carb.log_warn(
             f"Unsupported scale {scale} for prim {prim.GetPath()}. Expected uniform scale."
         )
@@ -186,6 +211,68 @@ def capsule_to_collider(prim: Usd.Prim) -> Collider | None:
         ).to_nova_pose(),
         prim_path=prim_path,
     )
+
+
+def _hull_collider_from_local_points(
+    prim: Usd.Prim, points_local: list[tuple[float, float, float]]
+) -> Collider | None:
+    """ConvexHull collider from prim-local points.
+
+    Follows the convention of get_convex_hull_colliders: the world scale is
+    baked into the vertices in millimeters and the pose carries rotation and
+    translation, so any axis and any scale work.
+    """
+    if len(points_local) < 4:
+        return None
+    _, _, scale = PrimUtils.get_world_transform_xform(prim)
+    scale_transform = Gf.Matrix4d()
+    scale_transform.SetScale(
+        Gf.Vec3d(
+            SceneUtils.value_to_millimeters(scale[0]),
+            SceneUtils.value_to_millimeters(scale[1]),
+            SceneUtils.value_to_millimeters(scale[2]),
+        )
+    )
+    vertices = []
+    for point in points_local:
+        scaled = scale_transform.Transform(Gf.Vec3d(*point))
+        vertices.append([scaled[0], scaled[1], scaled[2]])
+    return Collider(
+        shape=ConvexHull(shape_type="convex_hull", vertices=vertices),
+        pose=cast(
+            WSPose,
+            PrimUtils.get_prim_pose(
+                prim.GetPath().pathString,
+                rotation_type="cartesian",
+                coordinate_system="world",
+            ),
+        ).to_nova_pose(),
+        prim_path=prim.GetPath().pathString,
+    )
+
+
+def points_hull_collider(
+    prim: Usd.Prim, approximation: str | None = None
+) -> Collider | None:
+    """Convex-hull collider for a prim NOVA has no primitive for: a shape with
+    a non-Z axis or a non-uniform scale, a cone, or a mesh approximation
+    outside the convex family. The points enclose the authored geometry, so the
+    collider never under-reports it.
+
+    A mesh point cloud is reduced to its hull vertices first; a shape shell and
+    a bounding box are already minimal.
+    """
+    points = collider_points_local(prim, Usd.TimeCode.Default(), approximation)
+    if not points:
+        return None
+    if prim.IsA(UsdGeom.Mesh) and approximation not in (
+        "boundingCube",
+        "boundingSphere",
+    ):
+        points, _ = convex_hull_points_and_faces(points)
+        if not points:
+            return None
+    return _hull_collider_from_local_points(prim, points)
 
 
 def triangulate_polygon(

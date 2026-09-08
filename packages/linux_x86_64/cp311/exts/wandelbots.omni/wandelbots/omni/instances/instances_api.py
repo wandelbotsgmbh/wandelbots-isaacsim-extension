@@ -19,17 +19,51 @@ from wandelbots.omni.utils.auth import (
     invalidate_auth_token,
     EntraIDModel,
 )
+from wandelbots.omni.utils.api import ApiConfiguration
 from wandelbots_api_client.v2.api.cell_api import CellApi
 from wandelbots_api_client.v2.api.controller_api import ControllerApi
 from wandelbots_api_client.v2.api.motion_group_api import MotionGroupApi
 import wandelbots_api_client.v2 as wb_v2
+import wandelbots_api_client.v2.models as wb_v2_models
 from wandelbots.omni.environment import instance_store
-from packaging.version import Version
+from packaging.version import Version, InvalidVersion
+from wandelbots.omni.utils.hosts import normalize_host
+
+# Reachability is decided by a single version request. Without an app-level cap it
+# waits on the OS TCP-connect timeout (~5-10s on Windows for an unresponsive host),
+# which keeps the instance dot yellow far too long before it turns red. Bound the
+# probe so an unreachable host is reported quickly.
+_VERSION_PROBE_TIMEOUT_S = 3.0
+
+# Cell-data fetches fan out per controller and per motion group. Each SDK call is
+# bounded so one slow/half-dead controller cannot stall an instance's whole cell
+# load (the client otherwise defaults to a 300 s per-request timeout).
+_CELL_CALL_TIMEOUT_S = 10.0
+
+
+def _concise_api_error(e: Exception) -> str:
+    """Short message from an SDK error, avoiding a full HTTP-header dump."""
+    msg = str(e)
+    body = getattr(e, "body", None)
+    if body:
+        try:
+            import json
+
+            parsed = json.loads(body)
+            msg = parsed.get("message", msg)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return msg
 
 
 class NOVAInstancesAPI:
     def __init__(self):
         self._instance_host_auth_mapping: dict[str, str] = {}
+        # True once a refresh published a complete mapping; a missing host is
+        # then final (see get_auth_config_id_from_host).
+        self._auth_mapping_loaded = False
+        # Partial mapping of the in-flight refresh, None otherwise.
+        self._auth_mapping_pending: dict[str, str] | None = None
 
     def get_auth_token_from_host(self, host: str) -> str | None:
         auth_config_id = self.get_auth_config_id_from_host(host)
@@ -38,20 +72,89 @@ class NOVAInstancesAPI:
             return None
         return get_auth_token(auth_config_id)
 
+    def create_api_client_for_instance(
+        self, instance: NOVAInstance
+    ) -> Optional[wb_v2.ApiClient]:
+        if isinstance(instance, NOVACloudInstance):
+            token = self.get_auth_token_from_host(instance.host)
+            return instance.create_api_client(token=token)
+        return instance.create_api_client()
+
+    def get_api_configuration_for_instance(
+        self, instance: NOVAInstance
+    ) -> ApiConfiguration:
+        return ApiConfiguration(
+            host=instance.host,
+            secure_connection=instance.is_secure_connection,
+            access_token=self.get_auth_token_from_host(instance.host),
+        )
+
+    async def fetch_reachable_running_instances(self) -> list[NOVAInstance]:
+        """Cloud and custom instances that are reachable and running.
+
+        The cloud lookup is a blocking portal request, so it runs in a worker
+        thread and callers can await this from the UI thread.
+        """
+        cloud, custom = await asyncio.to_thread(
+            lambda: (self.get_cloud_instances(), self.get_custom_instances())
+        )
+        reachable = [
+            instance
+            for instances in cloud.values()
+            for instance in instances
+            if instance.is_reachable and instance.is_running
+        ]
+        reachable.extend(
+            instance
+            for instance in custom
+            if instance.is_reachable and instance.is_running
+        )
+        return reachable
+
     def get_auth_config_id_from_host(self, host: str) -> str | None:
-        if host not in self._instance_host_auth_mapping:
-            # Refresh once and then just return whatever we have
-            self._reload_instance_auth_mappings()
-            return self._instance_host_auth_mapping.get(host)
-        return self._instance_host_auth_mapping.get(host)
+        # Keyed on the normalized host: callers pass either NOVAInstance.host or
+        # a MotionStreamConfiguration host, and only the latter is guaranteed
+        # scheme-less (_sanitize_host strips it). Without this a stage-sourced
+        # cloud config would miss its auth mapping and stream without a token.
+        key = normalize_host(host)
+        mapping = self._instance_host_auth_mapping
+        if key in mapping:
+            return mapping[key]
+
+        # A load in flight publishes only when every provider is in, so also read
+        # what it has collected so far - otherwise a lookup racing the first load
+        # would report "no auth" for a host that is already known.
+        pending = self._auth_mapping_pending
+        if pending is not None and key in pending:
+            return pending[key]
+
+        # Refresh only while the mapping has never been populated. The refresh
+        # issues a *blocking* portal request per configured auth provider, and
+        # callers reach this from inside coroutines (see
+        # virtual_controller_service), so it stalls the event loop for as long as
+        # every provider takes to answer. Once the mapping is loaded, a host that
+        # is still missing is simply not an instance - e.g. one that only exists
+        # in the stage - and refreshing again cannot resolve it. Without this the
+        # refresh re-ran on every lookup, once per motion-group row, and froze the
+        # panel on open.
+        if self._auth_mapping_loaded or pending is not None:
+            return None
+        self._reload_instance_auth_mappings()
+        return self._instance_host_auth_mapping.get(key)
 
     def _reload_instance_auth_mappings(self):
         self.get_cloud_instances()
         self.get_custom_instances()
 
     def get_cloud_instances_by_auth(
-        self, auth_config_id: str
+        self, auth_config_id: str, auth_mapping: dict[str, str] | None = None
     ) -> list[NOVACloudInstance]:
+        """Instances of one provider.
+
+        *auth_mapping* lets ``get_cloud_instances`` collect the host -> auth
+        entries of every provider into one dict and publish them in a single
+        assignment; standalone callers update the live mapping directly.
+        """
         token = get_auth_token(auth_config_id)
         if not token:
             carb.log_verbose("No authentication token available for cloud instances")
@@ -69,8 +172,13 @@ class NOVAInstancesAPI:
                 if instance is not None
             ]
 
+            target = (
+                self._instance_host_auth_mapping
+                if auth_mapping is None
+                else auth_mapping
+            )
             for instance in instances:
-                self._instance_host_auth_mapping[instance.host] = auth_config_id
+                target[normalize_host(instance.host)] = auth_config_id
 
             carb.log_verbose(
                 f"Successfully parsed {len(instances)} valid cloud instances"
@@ -94,16 +202,55 @@ class NOVAInstancesAPI:
             return []
 
     def get_cloud_instances(self) -> dict[str, list[NOVACloudInstance]]:
-        return {
-            auth_config_id: self.get_cloud_instances_by_auth(auth_config_id)
-            for auth_config_id in get_auth_configs().keys()
-        }
+        # The panel runs this off the main thread, so the mapping must never be
+        # observable half-written: collect every provider into a fresh dict and
+        # publish it in one assignment. A concurrent lookup then sees either the
+        # previous complete mapping or this one, and keeps resolving tokens while
+        # a refresh is in flight. The in-flight flag only keeps such a lookup
+        # from kicking off a second, blocking refresh of its own.
+        cloud_mapping: dict[str, str] = {}
+        self._auth_mapping_pending = cloud_mapping
+        try:
+            instances = {
+                auth_config_id: self.get_cloud_instances_by_auth(
+                    auth_config_id, auth_mapping=cloud_mapping
+                )
+                for auth_config_id in get_auth_configs().keys()
+            }
+            published = dict(self._instance_host_auth_mapping)
+            published.update(cloud_mapping)
+            self._instance_host_auth_mapping = published
+            self._auth_mapping_loaded = True
+        finally:
+            self._auth_mapping_pending = None
+        return instances
 
     def get_custom_instances(self) -> list[NOVACustomInstance]:
         custom_instances = instance_store.get_instances()
         for instance in custom_instances:
-            self._instance_host_auth_mapping[instance.host] = None
+            # setdefault, not assignment: a custom entry carries no auth, so it
+            # must never clear a mapping a cloud instance established for the
+            # same host. _reload_instance_auth_mappings runs the cloud pass
+            # first, and a manually added duplicate of a cloud host would
+            # otherwise overwrite its auth_config_id with None.
+            self._instance_host_auth_mapping.setdefault(
+                normalize_host(instance.host), None
+            )
         return custom_instances
+
+    async def fetch_primary_cell_id(self, instance: NOVAInstance) -> Optional[str]:
+        """Name of the cell an instance's setups are stored in, or None when it
+        has none. Instances serve a single cell in practice; a second one is
+        logged so a wrong pick is traceable."""
+        cells = await self.fetch_cells_for_instance(instance)
+        if not cells:
+            return None
+        if len(cells) > 1:
+            carb.log_info(
+                f"Instance {instance.display_name} has {len(cells)} cells; "
+                f"using '{cells[0].name}'."
+            )
+        return cells[0].name
 
     async def fetch_cells_for_instance(
         self, instance: NOVAInstance
@@ -195,8 +342,25 @@ class NOVAInstancesAPI:
         try:
             carb.log_verbose("Fetching instance version...")
             system_api = wb_v2.SystemApi(api_client=api_client)
-            version = await system_api.get_system_version()
+            version = await asyncio.wait_for(
+                system_api.get_system_version(), timeout=_VERSION_PROBE_TIMEOUT_S
+            )
             return Version(version)
+        except asyncio.TimeoutError:
+            carb.log_warn(
+                f"Instance version probe timed out after {_VERSION_PROBE_TIMEOUT_S:.0f}s; "
+                "treating instance as unreachable."
+            )
+            return None
+        except InvalidVersion:
+            # The api-gateway returns a JSON error body (not a version string) when
+            # the request is unauthorized. Don't dump the whole blob; just note the
+            # auth failure and treat the instance as unreachable.
+            carb.log_warn(
+                "Instance version probe was rejected (likely unauthorized); "
+                "treating instance as unreachable."
+            )
+            return None
         except Exception as e:
             carb.log_warn(f"Error fetching instance version: {e}")
             return None
@@ -205,7 +369,9 @@ class NOVAInstancesAPI:
         try:
             carb.log_verbose("Fetching cells from instance...")
             cell_api = CellApi(api_client=api_client)
-            cells = await cell_api.list_cells()
+            cells = await asyncio.wait_for(
+                cell_api.list_cells(), timeout=_CELL_CALL_TIMEOUT_S
+            )
             return cells
         except Exception as e:
             # Check if it's a network connectivity issue
@@ -250,67 +416,87 @@ class NOVAInstancesAPI:
         try:
             controller_api = ControllerApi(api_client=api_client)
             motion_group_api = MotionGroupApi(api_client=api_client)
-            controller_names = await controller_api.list_robot_controllers(
-                cell=cell_name
+            controller_names = await asyncio.wait_for(
+                controller_api.list_robot_controllers(cell=cell_name),
+                timeout=_CELL_CALL_TIMEOUT_S,
+            )
+
+            # Fan the per-controller descriptions out concurrently. This was a
+            # serial loop of 1 + C + C*M round-trips per cell, which dominated the
+            # time to populate the panel on a reachable instance.
+            results = await asyncio.gather(
+                *(
+                    self._fetch_controller_data(
+                        controller_api, motion_group_api, cell_name, controller_name
+                    )
+                    for controller_name in controller_names
+                ),
+                return_exceptions=True,
             )
 
             controllers_data = []
-            for controller_name in controller_names:
-                try:
-                    controller_desc: wb_v2.ControllerDescription = (
-                        await controller_api.get_controller_description(
-                            cell=cell_name, controller=controller_name
-                        )
-                    )
-
-                    motion_groups = []
-
-                    for motion_group_name in controller_desc.connected_motion_groups:
-                        motion_group_desc: wb_v2.MotionGroupDescription = (
-                            await motion_group_api.get_motion_group_description(
-                                cell=cell_name,
-                                controller=controller_name,
-                                motion_group=motion_group_name,
-                            )
-                        )
-                        motion_groups.append(
-                            NOVAMotionGroupData(
-                                name=motion_group_name,
-                                motion_group_model_name=motion_group_desc.motion_group_model.replace(
-                                    "_", " "
-                                ),
-                            )
-                        )
-
-                    controllers_data.append(
-                        NOVAControllerData(
-                            name=controller_name,
-                            cell_name=cell_name,
-                            description=controller_desc,
-                            motion_groups=motion_groups,
-                        )
-                    )
-                except Exception as e:
-                    # Extract concise message for API errors (avoid dumping full HTTP headers)
-                    msg = str(e)
-                    if hasattr(e, "body") and e.body:
-                        try:
-                            import json
-
-                            body = json.loads(e.body)
-                            msg = body.get("message", msg)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+            for controller_name, result in zip(controller_names, results):
+                if isinstance(result, Exception):
                     carb.log_warn(
-                        f"Error fetching data for controller {controller_name} in cell {cell_name}: {msg}"
+                        f"Error fetching data for controller {controller_name} "
+                        f"in cell {cell_name}: {_concise_api_error(result)}"
                     )
-                    continue
+                elif result is not None:
+                    controllers_data.append(result)
 
             return NOVACellData(name=cell_name, controllers=controllers_data)
 
         except Exception as e:
             carb.log_warn(f"Error fetching data for cell {cell_name}: {e}")
             return None
+
+    async def _fetch_controller_data(
+        self,
+        controller_api: ControllerApi,
+        motion_group_api: MotionGroupApi,
+        cell_name: str,
+        controller_name: str,
+    ) -> Optional[NOVAControllerData]:
+        controller_desc: wb_v2_models.ControllerDescription = await asyncio.wait_for(
+            controller_api.get_controller_description(
+                cell=cell_name, controller=controller_name
+            ),
+            timeout=_CELL_CALL_TIMEOUT_S,
+        )
+
+        # Fan the motion-group descriptions out concurrently too. No
+        # return_exceptions here: a failure propagates and drops this whole
+        # controller (matching the original serial behaviour), where the caller's
+        # gather logs and skips it.
+        mg_names = controller_desc.connected_motion_groups
+        mg_descs: list[wb_v2_models.MotionGroupDescription] = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    motion_group_api.get_motion_group_description(
+                        cell=cell_name,
+                        controller=controller_name,
+                        motion_group=mg_name,
+                    ),
+                    timeout=_CELL_CALL_TIMEOUT_S,
+                )
+                for mg_name in mg_names
+            )
+        )
+
+        motion_groups = [
+            NOVAMotionGroupData(
+                name=mg_name,
+                motion_group_model_name=mg_desc.motion_group_model,
+            )
+            for mg_name, mg_desc in zip(mg_names, mg_descs)
+        ]
+
+        return NOVAControllerData(
+            name=controller_name,
+            cell_name=cell_name,
+            description=controller_desc,
+            motion_groups=motion_groups,
+        )
 
     # Helper methods for cloud instance management
     def _get_instances_path(self, auth_config_id: str) -> str:

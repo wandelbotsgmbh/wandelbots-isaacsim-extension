@@ -12,7 +12,6 @@ from collections.abc import AsyncIterator, Generator, Sequence
 from types import TracebackType
 from typing import Any, Callable, cast
 
-from ..asyncio.compatibility import asyncio_timeout
 from ..datastructures import Headers, HeadersLike
 from ..exceptions import (
     InvalidHeader,
@@ -569,6 +568,17 @@ class Connect:
             if not old_wsuri.secure and new_wsuri.secure:
                 factory.keywords["secure"] = True
                 self._create_connection.keywords.setdefault("ssl", True)
+            # Strip credentials to avoid leaking them to a different origin.
+            extra_headers = factory.keywords.get("extra_headers")
+            if extra_headers is not None:  # pragma: no cover
+                factory.keywords["extra_headers"] = Headers(
+                    (
+                        (key, value)
+                        for key, value in Headers(extra_headers).raw_items()
+                        if key.lower()
+                        not in ["authorization", "cookie", "proxy-authorization"]
+                    )
+                )
             # Replace secure, host, and port arguments of the protocol factory.
             factory = functools.partial(
                 factory.func,
@@ -645,7 +655,7 @@ class Connect:
         return self.__await_impl__().__await__()
 
     async def __await_impl__(self) -> WebSocketClientProtocol:
-        async with asyncio_timeout(self.open_timeout):
+        async with asyncio.timeout(self.open_timeout):
             for _redirects in range(self.MAX_REDIRECTS_ALLOWED):
                 _transport, protocol = await self._create_connection()
                 try:
@@ -670,10 +680,6 @@ class Connect:
                     return protocol
             else:
                 raise SecurityError("too many redirects")
-
-    # ... = yield from connect(...) - remove when dropping Python < 3.11
-
-    __iter__ = __await__
 
 
 connect = Connect

@@ -12,9 +12,14 @@ from .motion_group_service import (
 )
 from .utils import (
     get_scene_motion_group_prim_paths,
+    release_scene_motion_group_prim_cache,
     dh_transform_matrix,
     compute_forward_kinematics_chain,
     get_motion_group_current_joint_positions,
+)
+from .lookup import (
+    find_motion_group_prim,
+    host_key,
 )
 from .articulation_cache import (
     ArticulationCache,
@@ -30,11 +35,14 @@ __all__ = [
     "MotionGroupConfiguration",
     "get_motion_group_service",
     "get_scene_motion_group_prim_paths",
+    "release_scene_motion_group_prim_cache",
     "is_prim_motion_group",
     "get_motion_group_configuration_from_prim",
     "dh_transform_matrix",
     "compute_forward_kinematics_chain",
     "get_motion_group_current_joint_positions",
+    "find_motion_group_prim",
+    "host_key",
     "ArticulationCache",
     "ArticulationCacheHandle",
     "get_articulation_cache",

@@ -156,6 +156,12 @@ class ExecutionOrchestrator:
             return
         cell, controller, motion_group = params
         try:
+            # Start the simulation so the virtual controller actually drives the
+            # robot to the requested joints (mirrors _do_execute).
+            timeline = omni.timeline.get_timeline_interface()
+            if not timeline.is_playing():
+                timeline.play()
+
             service = get_trajectory_planner_service()
             await service.set_virtual_joint_position(
                 api_configuration=api_config,

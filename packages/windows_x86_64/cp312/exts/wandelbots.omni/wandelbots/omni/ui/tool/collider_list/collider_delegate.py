@@ -7,7 +7,7 @@ from typing import Callable
 import omni.ui as ui
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import ICON_BTN_STYLE
 from wandelbots.omni.ui.utils import get_icon
 
 from wandelbots.omni.ui.tool.collider_list.collider_item import (

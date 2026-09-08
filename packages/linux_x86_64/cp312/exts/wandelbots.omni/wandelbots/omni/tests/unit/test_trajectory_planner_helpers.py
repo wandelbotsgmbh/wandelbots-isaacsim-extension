@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import omni.kit.test
+import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.tests.unit.test_fixtures import (
     SAMPLE_CELL,
@@ -13,6 +14,9 @@ from wandelbots.omni.tests.unit.test_fixtures import (
     SAMPLE_TCP_NAME,
     make_mock_description,
 )
+from wandelbots_api_client.v2.exceptions import NotFoundException
+
+from wandelbots.omni.manipulators import host_key
 from wandelbots.omni.ui.tool.trajectory_planner.service.helpers import (
     MotionGroupContext,
     build_global_limits,
@@ -20,6 +24,47 @@ from wandelbots.omni.ui.tool.trajectory_planner.service.helpers import (
     extract_joint_position_limits,
     fetch_motion_group_context,
 )
+
+
+class TestHostKey(omni.kit.test.AsyncTestCase):
+    """Instance identity is hostname plus port: this repo runs same-host,
+    different-port NOVA endpoints in parallel."""
+
+    async def test_url_with_explicit_port(self):
+        self.assertEqual(host_key("http://127.0.0.1:8011/api/v2"), ("127.0.0.1", 8011))
+
+    async def test_same_host_different_port_are_distinct(self):
+        self.assertNotEqual(
+            host_key("http://127.0.0.1:8011/api/v2"),
+            host_key("http://127.0.0.1:8012/api/v2"),
+        )
+
+    async def test_url_scheme_default_ports(self):
+        self.assertEqual(host_key("http://nova.local/api/v2"), ("nova.local", 80))
+        self.assertEqual(host_key("https://nova.local/api/v2"), ("nova.local", 443))
+
+    async def test_bare_host_uses_secure_flag_for_default_port(self):
+        self.assertEqual(host_key("172.31.11.31", secure=False), ("172.31.11.31", 80))
+        self.assertEqual(host_key("172.31.11.31", secure=True), ("172.31.11.31", 443))
+        self.assertEqual(host_key("172.31.11.31"), ("172.31.11.31", 80))
+
+    async def test_bare_host_with_port_keeps_port(self):
+        self.assertEqual(
+            host_key("172.31.11.31:8012", secure=True), ("172.31.11.31", 8012)
+        )
+
+    async def test_client_url_matches_prim_bare_host(self):
+        # api_client.configuration.host (URL) vs. the prim's stored bare host.
+        self.assertEqual(
+            host_key("http://172.31.11.31/api/v2"),
+            host_key("172.31.11.31", secure=False),
+        )
+
+    async def test_unparsable_values_return_none(self):
+        self.assertIsNone(host_key(None))
+        self.assertIsNone(host_key(""))
+        self.assertIsNone(host_key(123))
+        self.assertIsNone(host_key("172.31.11.31:not-a-port"))
 
 
 class TestExtractJointPositionLimits(omni.kit.test.AsyncTestCase):
@@ -79,7 +124,7 @@ class TestBuildGlobalLimits(omni.kit.test.AsyncTestCase):
     async def test_returns_base_limits_when_no_overrides(self):
         desc = make_mock_description()
         result = build_global_limits(desc, None, None)
-        # No override → returns auto_limits unchanged
+        # No override returns auto_limits unchanged.
         self.assertEqual(result, desc.operation_limits.auto_limits)
 
     async def test_returns_base_limits_when_zero_overrides(self):
@@ -141,9 +186,20 @@ class TestBuildMotionGroupSetup(omni.kit.test.AsyncTestCase):
 
         self.assertEqual(result.motion_group_model, "UR10e")
         self.assertEqual(result.cycle_time, 4)
-        self.assertEqual(result.mounting, desc.mounting)
+        # Without an explicit mounting the setup carries none, and
+        # description.mounting is never used.
+        self.assertIsNone(result.mounting)
         self.assertEqual(result.tcp_offset, tcp_offset)
         self.assertIsNone(result.payload)
+
+    async def test_setup_with_mounting_passthrough(self):
+        # The stage-derived base pose is passed through verbatim.
+        desc = make_mock_description()
+        mounting = wb_v2_models.Pose(
+            position=[3499.6, 0.0, 3752.5], orientation=[2.221, 2.221, 0.0]
+        )
+        result = build_motion_group_setup(desc, None, mounting=mounting)
+        self.assertEqual(result.mounting, mounting)
 
     async def test_setup_with_payload(self):
         desc = make_mock_description()
@@ -183,9 +239,13 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
         pass
 
     @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.find_current_mounting",
+        return_value=None,
+    )
+    @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.MotionGroupApi"
     )
-    async def test_fetches_basic_context(self, mock_mg_api_cls):
+    async def test_fetches_basic_context(self, mock_mg_api_cls, mock_find_mounting):
         mock_api = AsyncMock()
         mock_mg_api_cls.return_value = mock_api
         desc = make_mock_description(model_name="UR10e")
@@ -203,13 +263,23 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
         self.assertIsNone(ctx.joint_position_limits)
 
     @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.find_current_mounting"
+    )
+    @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.MotionGroupModelsApi"
+    )
+    @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.StoreCollisionSetupsApi"
     )
     @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.MotionGroupApi"
     )
     async def test_fetches_context_with_tcp_and_collision(
-        self, mock_mg_api_cls, mock_collision_api_cls
+        self,
+        mock_mg_api_cls,
+        mock_collision_api_cls,
+        mock_models_api_cls,
+        mock_find_mounting,
     ):
         mock_api = AsyncMock()
         mock_mg_api_cls.return_value = mock_api
@@ -220,7 +290,22 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
         mock_collision_api = AsyncMock()
         mock_collision_api_cls.return_value = mock_collision_api
         collision_setup = MagicMock()
+        # Stored statics must pass through untouched; the stored link chain
+        # holds extras only and gets merged onto the fresh canonical model.
+        statics = {"pallet": MagicMock()}
+        collision_setup.colliders = statics
+        collision_setup.link_chain = [{}, {"dresspack": "extra-collider"}]
         mock_collision_api.get_stored_collision_setup.return_value = collision_setup
+
+        mock_models_api = AsyncMock()
+        mock_models_api.get_motion_group_collision_model.return_value = [
+            {"visuals": "model-link-0"},
+            {"visuals": "model-link-1"},
+        ]
+        mock_models_api_cls.return_value = mock_models_api
+
+        mounting = MagicMock()
+        mock_find_mounting.return_value = mounting
 
         api_client = MagicMock()
         ctx = await fetch_motion_group_context(
@@ -235,11 +320,29 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
         self.assertEqual(ctx.tcp_offset, tcp_pose)
         self.assertIsNotNone(ctx.collision_setups)
         self.assertIn("my_setup", ctx.collision_setups)
+        # Statics untouched (world frame pass-through)
+        self.assertIs(collision_setup.colliders, statics)
+        # Robot geometry = fresh canonical model with extras merged per link
+        self.assertEqual(
+            collision_setup.link_chain,
+            [
+                {"visuals": "model-link-0"},
+                {"visuals": "model-link-1", "dresspack": "extra-collider"},
+            ],
+        )
+        # Stage-derived mounting is carried on the context
+        self.assertIs(ctx.mounting, mounting)
 
+    @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.find_current_mounting",
+        return_value=None,
+    )
     @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.MotionGroupApi"
     )
-    async def test_fetches_joint_limits_when_requested(self, mock_mg_api_cls):
+    async def test_fetches_joint_limits_when_requested(
+        self, mock_mg_api_cls, mock_find_mounting
+    ):
         mock_api = AsyncMock()
         mock_mg_api_cls.return_value = mock_api
         desc = make_mock_description(num_joints=6)
@@ -258,13 +361,17 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
         self.assertEqual(len(ctx.joint_position_limits), 6)
 
     @patch(
+        "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.find_current_mounting",
+        return_value=None,
+    )
+    @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.StoreCollisionSetupsApi"
     )
     @patch(
         "wandelbots.omni.ui.tool.trajectory_planner.service.helpers.wb_v2.MotionGroupApi"
     )
     async def test_handles_collision_setup_fetch_error(
-        self, mock_mg_api_cls, mock_collision_api_cls
+        self, mock_mg_api_cls, mock_collision_api_cls, mock_find_mounting
     ):
         mock_api = AsyncMock()
         mock_mg_api_cls.return_value = mock_api
@@ -273,8 +380,8 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
 
         mock_collision_api = AsyncMock()
         mock_collision_api_cls.return_value = mock_collision_api
-        mock_collision_api.get_stored_collision_setup.side_effect = Exception(
-            "Not found"
+        mock_collision_api.get_stored_collision_setup.side_effect = NotFoundException(
+            status=404, reason="Not found"
         )
 
         api_client = MagicMock()
@@ -286,5 +393,5 @@ class TestFetchMotionGroupContext(omni.kit.test.AsyncTestCase):
             collision_setup_name="missing_setup",
         )
 
-        # Should not raise, collision_setups should be None
+        # A missing setup must not raise; collision_setups stays None.
         self.assertIsNone(ctx.collision_setups)

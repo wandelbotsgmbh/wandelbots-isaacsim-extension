@@ -14,7 +14,7 @@ from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
 
 from .helpers import (
-    _REQUEST_TIMEOUT,
+    REQUEST_TIMEOUT,
     fetch_motion_group_context,
 )
 
@@ -51,17 +51,20 @@ class IKService:
             )
 
             nova_pose = pose.to_nova_pose()
+            # Targets are world-frame poses; ctx.mounting is the base's
+            # current world pose, which NOVA composes for targets and static
+            # colliders alike.
             ik_request = wb_v2_models.InverseKinematicsRequest(
                 motion_group_model=ctx.model_name,
                 tcp_poses=[nova_pose],
                 tcp_offset=ctx.tcp_offset,
-                mounting=ctx.description.mounting,
+                mounting=ctx.mounting,
                 joint_position_limits=ctx.joint_position_limits,
                 collision_setups=ctx.collision_setups,
             )
             ik_api = wb_v2.KinematicsApi(api_client)
             carb.log_verbose(
-                f"fetch_ik: sending IK request — "
+                f"fetch_ik: sending IK request: "
                 f"model={ctx.model_name}, "
                 f"has_tcp_offset={ctx.tcp_offset is not None}, "
                 f"has_collision={ctx.collision_setups is not None}, "
@@ -70,7 +73,7 @@ class IKService:
             response = await ik_api.inverse_kinematics(
                 cell=cell,
                 inverse_kinematics_request=ik_request,
-                _request_timeout=_REQUEST_TIMEOUT,
+                _request_timeout=REQUEST_TIMEOUT,
             )
             if response.joints and response.joints[0]:
                 carb.log_verbose(f"fetch_ik: got {len(response.joints[0])} config(s)")
@@ -116,11 +119,12 @@ class IKService:
 
             async def _single_ik(idx: int, pose: WSPose) -> tuple[int, IKResult]:
                 nova_pose = pose.to_nova_pose()
+                # World-frame poses plus the stage mounting, see fetch_ik.
                 ik_request = wb_v2_models.InverseKinematicsRequest(
                     motion_group_model=ctx.model_name,
                     tcp_poses=[nova_pose],
                     tcp_offset=ctx.tcp_offset,
-                    mounting=ctx.description.mounting,
+                    mounting=ctx.mounting,
                     joint_position_limits=ctx.joint_position_limits,
                     collision_setups=ctx.collision_setups,
                 )
@@ -128,14 +132,14 @@ class IKService:
                     response = await ik_api.inverse_kinematics(
                         cell=cell,
                         inverse_kinematics_request=ik_request,
-                        _request_timeout=_REQUEST_TIMEOUT,
+                        _request_timeout=REQUEST_TIMEOUT,
                     )
                     if response.joints and response.joints[0]:
                         result = IKResult(joint_configs=response.joints[0])
                     else:
                         result = IKResult(joint_configs=[])
                 except Exception as exc:
-                    carb.log_verbose(f"fetch_ik_batch[{idx}]: failed — {exc}")
+                    carb.log_verbose(f"fetch_ik_batch[{idx}]: failed - {exc}")
                     result = IKResult(joint_configs=[], error=str(exc))
                 if on_result:
                     on_result(idx, result)

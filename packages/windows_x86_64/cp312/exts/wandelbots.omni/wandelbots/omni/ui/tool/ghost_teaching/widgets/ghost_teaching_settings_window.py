@@ -81,6 +81,7 @@ class GhostTeachingSettingsWindow(ui.Window):
         self.model = model
         self.motion_stream_configuration = motion_stream_configuration
         self._operation_limits: wb_models.OperationLimits = None
+        self._limits_loading: bool = False
         self._show_task: asyncio.Task = None
 
     def show(self, x, y):
@@ -89,15 +90,29 @@ class GhostTeachingSettingsWindow(ui.Window):
         self._show_task = run_coroutine(self._show_async(x, y))
 
     async def _show_async(self, x, y):
-        self._operation_limits = await planner_utils.get_operation_limits(
-            self.motion_stream_configuration
-        )
-        self._clamp_model_values()
-        await omni.kit.app.get_app().next_update_async()
+        self._limits_loading = True
+        self._operation_limits = None
         self._build_ui()
         self.position_x, self.position_y = x, y
         self.visible = True
         self.focus()
+        await self._fetch_limits()
+
+    async def _fetch_limits(self):
+        try:
+            self._operation_limits = await planner_utils.get_operation_limits(
+                self.motion_stream_configuration
+            )
+        except Exception as exception:
+            carb.log_verbose(
+                f"Could not fetch operation limits, settings will open without limit constraints: {exception}"
+            )
+            self._operation_limits = None
+        finally:
+            self._limits_loading = False
+        self._clamp_model_values()
+        await omni.kit.app.get_app().next_update_async()
+        self._build_ui()
 
     def _build_ui(self):
         def build_section(name, build_func):
@@ -251,7 +266,10 @@ class GhostTeachingSettingsWindow(ui.Window):
                 max=self.max_tcp_velocity,
                 name="Velocity",
                 width=ui.Pixel(120),
-                tooltip="Velocity of motion",
+                tooltip="Loading limits..."
+                if self._limits_loading
+                else "Velocity of motion",
+                enabled=not self._limits_loading,
             )
 
             def set_velocity(m: ui.SimpleIntModel):

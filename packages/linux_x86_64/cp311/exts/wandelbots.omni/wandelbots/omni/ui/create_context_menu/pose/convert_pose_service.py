@@ -9,19 +9,34 @@ separate from ``convert_pose_window.py`` so the window only deals with widgets.
 from __future__ import annotations
 
 import carb
+import isaacsim.core.utils.prims as prims_utils
 import isaacsim.core.utils.stage as stage_utils
 import omni.usd
-from pxr import Usd, UsdGeom
+from pxr import Sdf, Usd, UsdGeom
 
 import wandelbots_api_client.v2 as wb_v2
 
 from wandelbots.omni.datatypes import TCPSource
 from wandelbots.omni.manipulators import get_motion_group_configuration_from_prim
 from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
-from wandelbots.omni.usd import SchemaUtils
+from wandelbots.omni.usd import SchemaUtils, TcpUtils
 from wandelbots.omni.utils.api import get_api_client_from_config
 from wandelbots.omni.utils.prims import PrimUtils
 from wandelbots.omni.utils.teaching import GhostObjectUtils
+
+
+def is_nova_managed_prim(prim: Usd.Prim) -> bool:
+    """True when *prim* is (or is nested inside) a robot/tool schema hierarchy.
+
+    Covers motion-group roots and their links, tools, and TCPs — none of these
+    should be eligible for a generic scene-marker conversion, since overwriting
+    them in place would destroy part of the robot/tool setup.
+    """
+    return (
+        SchemaUtils.find_parent_motion_group(prim) is not None
+        or SchemaUtils.find_parent_tool(prim) is not None
+        or TcpUtils.is_tcp(prim)
+    )
 
 
 def is_pose_prim(prim: Usd.Prim) -> bool:
@@ -48,6 +63,71 @@ def is_convertible_prim(prim: Usd.Prim) -> bool:
     if GhostObjectUtils.is_ghost_object(prim):
         return False
     return bool(UsdGeom.Xformable(prim))
+
+
+def is_pose_convertible_prim(prim: Usd.Prim) -> bool:
+    """True when *prim* can be tagged as a POSE.
+
+    Any transformable prim that is neither a ghost object, already a POSE, nor
+    part of a robot/tool schema hierarchy (motion groups, links, tools, TCPs) —
+    the in-place conversion overwrites the prim's spec, which would destroy
+    those NOVA-managed prims instead of just tagging a generic scene marker.
+    """
+    if not prim or not prim.IsValid():
+        return False
+    if (
+        GhostObjectUtils.is_ghost_object(prim)
+        or is_pose_prim(prim)
+        or is_nova_managed_prim(prim)
+    ):
+        return False
+    return bool(UsdGeom.Xformable(prim))
+
+
+def convert_prims_to_poses(prim_paths: list[str]) -> int:
+    """Convert each prim into a Wandelbots POSE gizmo. Returns the count converted.
+
+    Mirrors the "Add Pose" flow (``pose_utils.create_pose_prim``): it embeds the
+    gizmo so the prim is overridden to look like a normal pose, ensures the
+    translate/orient/scale xformOps exist (the scale op keeps the transform and
+    material intact when reparented into a scaled xform) and sets
+    ``customData["wandelbots"]["type"] = "POSE"``. The prim's current local pose is
+    preserved so the gizmo stays where the prim was. Ghost objects are excluded.
+    """
+    from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import embed_gizmo
+
+    stage = omni.usd.get_context().get_stage()
+    if stage is None:
+        return 0
+    converted = 0
+    for path in prim_paths:
+        prim = stage.GetPrimAtPath(path)
+        if not prim or not prim.IsValid() or not is_pose_convertible_prim(prim):
+            continue
+        try:
+            # Keep the prim where it is: capture its local pose before the gizmo
+            # spec replaces the prim's content.
+            local_pose = PrimUtils.get_prim_pose(
+                path, coordinate_system="local", stage=stage
+            )
+            # Override the prim with the gizmo (Sdf.CopySpec replaces the spec, so
+            # it must run before the xformOps are (re)added below).
+            embed_gizmo(stage, path)
+            xform = UsdGeom.Xform.Get(stage, path) or UsdGeom.Xform.Define(stage, path)
+            prim = xform.GetPrim()
+            if not prim.HasAttribute("xformOp:translate"):
+                xform.AddTranslateOp()
+            if not prim.HasAttribute("xformOp:orient"):
+                xform.AddOrientOp()
+            if not prim.HasAttribute("xformOp:scale"):
+                xform.AddScaleOp()
+            PrimUtils.set_prim_pose(path, local_pose, stage=stage)
+            prim.SetCustomDataByKey("wandelbots", {"type": "POSE"})
+            prim.SetMetadata("kind", "assembly")
+            converted += 1
+        except Exception as exc:
+            carb.log_error(f"Failed to convert prim '{path}' to pose: {exc}")
+    return converted
 
 
 class ConvertPoseService:
@@ -143,46 +223,124 @@ class ConvertPoseService:
         )
 
     @staticmethod
-    def create_ghost_for_pose(
+    def create_ghost_override(
         stage: Usd.Stage,
         pose_path: str,
         tcp_prim: Usd.Prim,
         tool_prim: Usd.Prim,
+    ) -> str | None:
+        """Convert the pose at *pose_path* into a ghost object **in place**.
+
+        The pose prim is replaced by the ghost at the same path/name (no ``_go``
+        sibling). Returns the ghost prim path (== ``pose_path``) on success, or
+        ``None`` on failure. The returned ghost serves as the reusable template for
+        :meth:`copy_ghost_to_pose` (the merged mesh/material/TCP link are identical
+        for every pose in the batch, so only this first one is built from scratch).
+        """
+        tmp_path = stage_utils.get_next_free_path(f"{pose_path}_convert_tmp")
+        try:
+            pose_prim = stage.GetPrimAtPath(pose_path)
+            if not pose_prim or not pose_prim.IsValid():
+                carb.log_warn(f"Pose prim '{pose_path}' is no longer valid.")
+                return None
+            pose_local = PrimUtils.get_prim_pose(
+                pose_path, coordinate_system="local", stage=stage
+            )
+            world_pose = PrimUtils.get_prim_pose(
+                pose_path, coordinate_system="world", stage=stage
+            )
+            preferred_joint_values = GhostObjectUtils.get_preferred_joint_values(
+                pose_prim
+            )
+
+            # Build the ghost at a scratch path first — a failure here (e.g. no
+            # TCP source found) must not delete the pose it would have replaced.
+            GhostObjectUtils.add_ghost_object(
+                source_prim=tool_prim,
+                tcp_world_pose=world_pose,
+                target_path=tmp_path,
+                tcp_prim=tcp_prim,
+            )
+            tmp_prim = stage.GetPrimAtPath(tmp_path)
+            if not tmp_prim or not GhostObjectUtils.is_ghost_object(tmp_prim):
+                carb.log_error(f"Failed to build ghost object for pose '{pose_path}'.")
+                return None
+
+            # Only now overwrite the pose: CopySpec replaces the destination
+            # spec (including stale children/customData) in one step, so the
+            # original is never left deleted without a replacement.
+            layer = stage.GetEditTarget().GetLayer()
+            if not Sdf.CopySpec(layer, Sdf.Path(tmp_path), layer, Sdf.Path(pose_path)):
+                carb.log_error(
+                    f"Failed to move ghost object into place for pose '{pose_path}'."
+                )
+                return None
+            # The ghost origin is the TCP; reuse the pose's local transform so the
+            # TCP coincides with where the pose was.
+            PrimUtils.set_prim_pose(pose_path, pose_local, stage=stage)
+            if preferred_joint_values is not None:
+                GhostObjectUtils.set_preferred_joint_values(
+                    stage.GetPrimAtPath(pose_path), preferred_joint_values
+                )
+            return pose_path
+        except Exception as exc:
+            carb.log_error(
+                f"Failed to convert pose '{pose_path}' to ghost object: {exc}"
+            )
+            return None
+        finally:
+            if stage.GetPrimAtPath(tmp_path).IsValid():
+                prims_utils.delete_prim(tmp_path)
+
+    @staticmethod
+    def copy_ghost_to_pose(
+        stage: Usd.Stage, template_path: str, pose_path: str
     ) -> bool:
-        """Create one ghost object aligned to *pose_path*. Returns True on success."""
+        """Override the pose at *pose_path* with a copy of the *template_path* ghost.
+
+        Reuses the already-merged ghost (mesh + ``Looks`` material +
+        ``GhostObjectAPI``/``SourceTcpRel``) via ``Sdf.CopySpec`` instead of
+        re-merging the tool meshes, then re-applies the pose's local transform.
+        """
         try:
             pose_prim = stage.GetPrimAtPath(pose_path)
             if not pose_prim or not pose_prim.IsValid():
                 carb.log_warn(f"Pose prim '{pose_path}' is no longer valid.")
                 return False
-            pose_parent_path = pose_prim.GetParent().GetPath().pathString
-            # Name the ghost after the pose it was created from ("<pose>_go") and
-            # place it as a sibling right next to that pose prim, instead of the
-            # default location/name under the tool's hierarchy.
-            pose_name = pose_prim.GetName()
-            target_path = stage_utils.get_next_free_path(
-                f"{pose_parent_path}/{pose_name}_go"
-            )
-
-            world_pose = PrimUtils.get_prim_pose(
-                pose_path, coordinate_system="world", stage=stage
-            )
-            GhostObjectUtils.add_ghost_object(
-                source_prim=tool_prim,
-                tcp_world_pose=world_pose,
-                target_path=target_path,
-                tcp_prim=tcp_prim,
-            )
-            # The ghost prim's origin is the TCP, so giving it the same local
-            # transform as the pose prim (its sibling) makes the TCP coincide with
-            # the pose and keeps both relative transforms identical.
             pose_local = PrimUtils.get_prim_pose(
                 pose_path, coordinate_system="local", stage=stage
             )
-            PrimUtils.set_prim_pose(target_path, pose_local, stage=stage)
+            preferred_joint_values = GhostObjectUtils.get_preferred_joint_values(
+                pose_prim
+            )
+
+            # CopySpec replaces the destination spec in place (including stale
+            # children/customData), so the pose is only ever overwritten once the
+            # copy has actually succeeded — it is never deleted up front, which
+            # would otherwise lose the pose if the copy failed.
+            layer = stage.GetEditTarget().GetLayer()
+            if not Sdf.CopySpec(
+                layer, Sdf.Path(template_path), layer, Sdf.Path(pose_path)
+            ):
+                carb.log_warn(
+                    f"Failed to copy ghost template '{template_path}' to '{pose_path}'."
+                )
+                return False
+            PrimUtils.set_prim_pose(pose_path, pose_local, stage=stage)
+            # CopySpec above also copied the template's own preferredJointValues
+            # (if any). Restore this pose's own preference, or clear the
+            # inherited template value if it didn't have one — otherwise every
+            # pose without a manual selection would silently inherit the first
+            # pose's preferred config.
+            if preferred_joint_values is not None:
+                GhostObjectUtils.set_preferred_joint_values(
+                    stage.GetPrimAtPath(pose_path), preferred_joint_values
+                )
+            else:
+                GhostObjectUtils.clear_preferred_joint_values(
+                    stage.GetPrimAtPath(pose_path)
+                )
             return True
         except Exception as exc:
-            carb.log_error(
-                f"Failed to convert pose '{pose_path}' to ghost object: {exc}"
-            )
+            carb.log_error(f"Failed to copy ghost to pose '{pose_path}': {exc}")
             return False

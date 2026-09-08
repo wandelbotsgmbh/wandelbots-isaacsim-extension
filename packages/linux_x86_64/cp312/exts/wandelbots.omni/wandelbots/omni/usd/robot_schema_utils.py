@@ -25,18 +25,28 @@ class RobotSchemaUtils:
         return None
 
     @staticmethod
+    def get_link_number(prim: Usd.Prim) -> int | None:
+        """The link's position in the kinematic chain for canonically named
+        links (`link_<n>`), None otherwise."""
+        match = re.match(r"link_(\d+)$", prim.GetName())
+        return int(match.group(1)) if match else None
+
+    @staticmethod
     def get_motion_group_links_ordered(motion_group_prim: Usd.Prim) -> list[Usd.Prim]:
-        stage: Usd.Stage = motion_group_prim.GetStage()
-        if motion_group_prim.HasAPI(rs.Classes.ROBOT_API.value):
-            robot_links: Usd.Relationship = motion_group_prim.GetRelationship(
-                rs.Relations.ROBOT_LINKS.name
-            )
-            link_targets = robot_links.GetForwardedTargets()
-            return [stage.GetPrimAtPath(link_path) for link_path in link_targets]
-        else:
-            link_prims = [
-                prim
-                for prim in Usd.PrimRange(motion_group_prim)
-                if RobotSchemaUtils.is_robot_link(prim)
-            ]
-            return sorted(link_prims, key=lambda prim: prim.GetPath().pathString)
+        # The robot_links relationship is skipped on purpose: the auto-applied
+        # schema only targets prims carrying RigidBodyAPI, so it can hold
+        # nothing but the articulation root.
+        links = [
+            prim
+            for prim in Usd.PrimRange(motion_group_prim, Usd.TraverseInstanceProxies())
+            if RobotSchemaUtils.is_robot_link(prim)
+        ]
+
+        def link_order(prim: Usd.Prim) -> tuple[int, int, str]:
+            number = RobotSchemaUtils.get_link_number(prim)
+            if number is None:
+                # Unnumbered links sort after the numbered chain, by path.
+                return (1, 0, prim.GetPath().pathString)
+            return (0, number, "")
+
+        return sorted(links, key=link_order)

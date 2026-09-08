@@ -10,7 +10,10 @@ import omni.ui as ui
 import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import _TOOLTIP_SUB
+from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
+    migrate_blending_dict,
+)
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 
 _LABEL_WIDTH = 200
 _BLENDING_TYPES = ["none", "auto", "position"]
@@ -22,7 +25,7 @@ def blending_from_dict(d: dict | None) -> wb_v2_models.MotionCommandBlending | N
     """Reconstruct a MotionCommandBlending from its serialized dict."""
     if not d:
         return None
-    return wb_v2_models.MotionCommandBlending.from_dict(d)
+    return wb_v2_models.MotionCommandBlending.from_dict(migrate_blending_dict(d))
 
 
 def limits_from_dict(d: dict | None) -> wb_v2_models.LimitsOverride | None:
@@ -104,7 +107,7 @@ class MotionSettingsDialog:
         self._position_blending = (
             copy.deepcopy(self._blending.actual_instance)
             if self._blending_type == "position" and self._blending
-            else wb_v2_models.BlendingPosition()
+            else wb_v2_models.BlendingPosition(blending_name="BlendingPosition")
         )
         self._show(title)
 
@@ -173,7 +176,10 @@ class MotionSettingsDialog:
                 "TCP",
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip="TCP used for IK and planning of this pose. (default) uses the global TCP.",
+                tooltip_fn=lambda: build_tooltip(
+                    "TCP used for IK and planning of this pose. (default) uses the global TCP."
+                ),
+                style=TOOLTIP_RESET,
             )
             if self._tcp_names:
                 display_names = ["(default)"] + self._tcp_names
@@ -304,7 +310,10 @@ class MotionSettingsDialog:
                     "Space",
                     width=_LABEL_WIDTH,
                     alignment=ui.Alignment.LEFT_CENTER,
-                    tooltip="Defines the space in which blending is performed.",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Defines the space in which blending is performed."
+                    ),
+                    style=TOOLTIP_RESET,
                 )
                 combo = ui.ComboBox(space_idx, *_SPACE_OPTIONS, height=22)
                 combo.model.add_item_changed_fn(
@@ -452,7 +461,7 @@ class MotionSettingsDialog:
                 width=130,
                 height=30,
                 clicked_fn=self._on_reset_defaults,
-                tooltip="Reset to auto blending defaults",
+                tooltip_fn=lambda: build_tooltip("Reset to auto blending defaults"),
                 style={
                     "Button": {
                         "background_color": NOVAColor.SECONDARY_TONAL.color,
@@ -461,7 +470,7 @@ class MotionSettingsDialog:
                     "Button:hovered": {
                         "background_color": NOVAColor.BUTTON_HOVER.color
                     },
-                    **_TOOLTIP_SUB,
+                    **TOOLTIP_RESET,
                 },
             )
             ui.Spacer()
@@ -499,7 +508,8 @@ class MotionSettingsDialog:
                 label,
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
             )
             field = ui.IntField(height=22, alignment=ui.Alignment.CENTER)
             field.model.set_value(value)
@@ -521,7 +531,8 @@ class MotionSettingsDialog:
                 label,
                 width=_LABEL_WIDTH,
                 alignment=ui.Alignment.LEFT_CENTER,
-                tooltip=tooltip,
+                tooltip_fn=lambda t=tooltip: build_tooltip(t),
+                style=TOOLTIP_RESET,
             )
             field = ui.FloatField(height=22, alignment=ui.Alignment.CENTER)
             if value is not None:
@@ -555,7 +566,10 @@ class MotionSettingsDialog:
     def _build_result_blending(self) -> wb_v2_models.MotionCommandBlending | None:
         if self._blending_type == "auto":
             return wb_v2_models.MotionCommandBlending(
-                wb_v2_models.BlendingAuto(min_velocity_in_percent=self._auto_min_vel)
+                wb_v2_models.BlendingAuto(
+                    min_velocity_in_percent=self._auto_min_vel,
+                    blending_name="BlendingAuto",
+                )
             )
         elif self._blending_type == "position":
             return wb_v2_models.MotionCommandBlending(self._position_blending)
@@ -569,7 +583,9 @@ class MotionSettingsDialog:
     def _on_reset_defaults(self) -> None:
         """Reset to auto blending defaults and apply."""
         default_blending = wb_v2_models.MotionCommandBlending(
-            wb_v2_models.BlendingAuto(min_velocity_in_percent=50)
+            wb_v2_models.BlendingAuto(
+                min_velocity_in_percent=50, blending_name="BlendingAuto"
+            )
         )
         if self._on_apply_cb:
             self._on_apply_cb(default_blending, None)

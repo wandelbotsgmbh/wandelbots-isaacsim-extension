@@ -1,11 +1,11 @@
 from typing import Callable, Optional
 
 import omni.ui as ui
-from pxr import Sdf, Usd, Vt
+from pxr import Usd
 
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.utils.kinematics import InverseKinematicsResult, joint_config_signs
-from wandelbots.omni.utils.teaching import GhostObjectUtils, PREFERRED_JOINT_VALUES_ATTR
+from wandelbots.omni.utils.teaching import GhostObjectUtils
 
 
 class JointConfigSelector:
@@ -49,6 +49,14 @@ class JointConfigSelector:
         self._joint_limits = list(ik_result.joint_limits)
         self._build_ui()
 
+    def set_loading(self) -> None:
+        self._frame.clear()
+        with self._frame:
+            ui.Label(
+                "Loading...",
+                style={"color": NOVAColor.TEXT_SECONDARY.color, "font_size": 12},
+            )
+
     def _build_ui(self):
         self._frame.clear()
         with self._frame:
@@ -89,15 +97,9 @@ class JointConfigSelector:
         self._on_selection(idx - (1 if no_match else 0))
 
     def _write_preferred_joint_values(self, joint_values: list[float]):
-        if not self._ghost_object_prim or not self._ghost_object_prim.IsValid():
-            return
-        attr = self._ghost_object_prim.GetAttribute(PREFERRED_JOINT_VALUES_ATTR)
-        if not attr:
-            attr = self._ghost_object_prim.CreateAttribute(
-                PREFERRED_JOINT_VALUES_ATTR,
-                Sdf.ValueTypeNames.FloatArray,
-            )
-        attr.Set(Vt.FloatArray(joint_values))
+        GhostObjectUtils.set_preferred_joint_values(
+            self._ghost_object_prim, joint_values
+        )
 
     def _read_preferred_index(self) -> int | None:
         stored = GhostObjectUtils.get_preferred_joint_values(self._ghost_object_prim)

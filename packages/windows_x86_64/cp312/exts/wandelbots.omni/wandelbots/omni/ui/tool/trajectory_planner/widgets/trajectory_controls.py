@@ -8,7 +8,13 @@ from typing import Callable
 import omni.ui as ui
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE, _TOOLTIP_SUB
+from wandelbots.omni.ui.wb_theme import TOOLTIP_STYLE, TOOLTIP_RESET, build_tooltip
+
+
+def _set_tooltip(widget: ui.Widget, text: str) -> None:
+    """Themed replacement for assigning ``widget.tooltip`` - the default string
+    tooltip ignores per-widget "Tooltip" styles in this build."""
+    widget.set_tooltip_fn(lambda t=text: build_tooltip(t))
 
 
 class TrajectoryControls:
@@ -62,35 +68,43 @@ class TrajectoryControls:
                         "Start from here",
                         width=120,
                         height=34,
-                        tooltip="Execute the planned trajectory starting at the "
-                        "selected pose.",
+                        tooltip_fn=lambda: build_tooltip(
+                            "Execute the planned trajectory starting at the "
+                            "selected pose."
+                        ),
                         visible=False,
                         clicked_fn=lambda ws=weakref.ref(self): (
                             ws()._on_start_from_here() if ws() else None
                         ),
                         style={
-                            "background_color": 0xFF292929,
-                            "font_size": 15,
-                            ":hovered": {
+                            "Button": {
+                                "background_color": 0xFF292929,
+                                "font_size": 15,
+                            },
+                            "Button:hovered": {
                                 "background_color": NOVAColor.BUTTON_HOVER.color
                             },
+                            **TOOLTIP_RESET,
                         },
                     )
                     self._replan_btn = ui.Button(
                         "Replan",
                         width=80,
                         height=34,
-                        tooltip="Re-plan the trajectory.",
+                        tooltip_fn=lambda: build_tooltip("Re-plan the trajectory."),
                         visible=False,
                         clicked_fn=lambda ws=weakref.ref(self): (
                             ws()._on_replan() if ws() else None
                         ),
                         style={
-                            "background_color": 0xFF292929,
-                            "font_size": 15,
-                            ":hovered": {
+                            "Button": {
+                                "background_color": 0xFF292929,
+                                "font_size": 15,
+                            },
+                            "Button:hovered": {
                                 "background_color": NOVAColor.BUTTON_HOVER.color
                             },
+                            **TOOLTIP_RESET,
                         },
                     )
                     if live_update_widget_fn:
@@ -99,7 +113,9 @@ class TrajectoryControls:
                     "Stop",
                     width=80,
                     height=34,
-                    tooltip="Stop execution and return to planned state.",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Stop execution and return to planned state."
+                    ),
                     visible=False,
                     clicked_fn=lambda ws=weakref.ref(self): (
                         ws()._on_stop_clicked() if ws() else None
@@ -112,14 +128,16 @@ class TrajectoryControls:
                         "Button:hovered": {
                             "background_color": NOVAColor.ERROR_DARK.color
                         },
-                        **_TOOLTIP_SUB,
+                        **TOOLTIP_RESET,
                     },
                 )
                 self._action_btn = ui.Button(
                     "Calculate IKs",
                     width=160,
                     height=34,
-                    tooltip="Calculate inverse kinematics for all poses.",
+                    tooltip_fn=lambda: build_tooltip(
+                        "Calculate inverse kinematics for all poses."
+                    ),
                     clicked_fn=lambda ws=weakref.ref(self): (
                         ws()._on_clicked() if ws() else None
                     ),
@@ -131,7 +149,7 @@ class TrajectoryControls:
                         "Button:hovered": {
                             "background_color": NOVAColor.PRIMARY_LIGHT.color
                         },
-                        **_TOOLTIP_SUB,
+                        **TOOLTIP_RESET,
                     },
                 )
                 ui.Spacer(width=5)
@@ -234,28 +252,31 @@ class TrajectoryControls:
 
         if not has_motion_group:
             self._action_btn.text = "Calculate IKs"
-            self._action_btn.tooltip = "Select a motion group first."
+            _set_tooltip(self._action_btn, "Select a motion group first.")
             self._action_btn.enabled = False
             self._set_secondary_buttons_visible(False)
             return
 
         if _has_trajectory:
             self._action_btn.text = "Execute"
-            self._action_btn.tooltip = "Execute the planned trajectory on the robot."
+            _set_tooltip(
+                self._action_btn, "Execute the planned trajectory on the robot."
+            )
             self._action_btn.enabled = True
             self._set_secondary_buttons_visible(True)
         elif all_iks_ready:
             label = "Plan *" if self._collision_free else "Plan"
             self._action_btn.text = label
-            self._action_btn.tooltip = "Plan the trajectory via the NOVA API."
+            _set_tooltip(self._action_btn, "Plan the trajectory via the NOVA API.")
             self._action_btn.enabled = True
             self._set_secondary_buttons_visible(False)
         else:
             self._action_btn.text = "Calculate IKs"
-            self._action_btn.tooltip = (
+            _set_tooltip(
+                self._action_btn,
                 "Calculate inverse kinematics for all poses."
                 if has_poses
-                else "Add poses first."
+                else "Add poses first.",
             )
             self._action_btn.enabled = bool(has_poses)
             self._set_secondary_buttons_visible(False)

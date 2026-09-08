@@ -394,3 +394,187 @@ class TestStageDiscovery(omni.kit.test.AsyncTestCase):
             )
             # Exact config match wins
             self.assertEqual(suggestions, ["/World/UR10e"])
+
+    # ------------------------------------------------------------------
+    # Plant-notation suffix matching
+    # ------------------------------------------------------------------
+
+    async def test_prim_suggestions_plant_notation_suffix_match(self):
+        """A prim named with the full station number matches a controller
+        carrying only the station's tail digits (ir_313340r02_hose for
+        ir340r02, station 13340)."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="ir340r02",
+            motion_group="0@ir340r02",
+            scene_articulations=[
+                "/World/ir_313340r01_hose",
+                "/World/ir_313340r02_hose",
+                "/World/ir_313350r01_hose",
+            ],
+        )
+        self.assertEqual(suggestions, ["/World/ir_313340r02_hose"])
+
+    async def test_prim_suggestions_plant_notation_requires_primary_group(self):
+        """Secondary motion groups (1@..., typically external axes) share the
+        controller name, so the suffix rule must not claim the robot prim for
+        them."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="ir350r01",
+            motion_group="1@ir350r01",
+            scene_articulations=["/World/ir_313350r01_hose"],
+        )
+        self.assertEqual(suggestions, [])
+
+    async def test_prim_suggestions_plant_notation_ambiguous_returns_empty(self):
+        """Two stations whose numbers both end in the controller's digits are
+        ambiguous — better no suggestion than a wrong one."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="ir340r01",
+            motion_group="0@ir340r01",
+            scene_articulations=[
+                "/World/ir_313340r01_hose",
+                "/World/ir_312340r01_hose",
+            ],
+        )
+        self.assertEqual(suggestions, [])
+
+    async def test_prim_suggestions_plant_notation_robot_token_boundary(self):
+        """The robot token must end at a digit boundary (r02 must not match
+        inside r021)."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="ir340r02",
+            motion_group="0@ir340r02",
+            scene_articulations=["/World/ir_313340r021_hose"],
+        )
+        self.assertEqual(suggestions, [])
+
+    async def test_prim_suggestions_plant_notation_ignores_other_name_shapes(self):
+        """Controller names outside the alpha+digits+rNN shape skip the rule
+        entirely."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="k8urw1313340r02",
+            motion_group="0@k8urw1313340r02",
+            scene_articulations=["/World/ir_313340r02_hose"],
+        )
+        self.assertEqual(suggestions, [])
+
+    async def test_prim_suggestions_exact_name_beats_plant_notation(self):
+        """An exact prim-name match outranks the suffix rule (which would be
+        ambiguous here, since both prims embed the controller name)."""
+        suggestions = list_motion_group_prim_suggestions(
+            configs=[],
+            cell="cell",
+            controller="ir340r02",
+            motion_group="0@ir340r02",
+            scene_articulations=["/World/ir340r02", "/World/ir_313340r02_hose"],
+        )
+        self.assertEqual(suggestions, ["/World/ir340r02"])
+
+    async def test_prim_suggestions_plant_notation_beats_model_match(self):
+        """The suffix rule sits above the model-name fallback: a unique
+        name-derived hit wins over a prim whose custom-data model matches."""
+        with self._create_stage() as stage:
+            prim = UsdGeom.Xform.Define(stage, "/World/other_robot").GetPrim()
+            prim.SetCustomData({"motionGroupModel": "KUKA_KR240_R2900"})
+
+            suggestions = list_motion_group_prim_suggestions(
+                configs=[],
+                cell="cell",
+                controller="ir340r02",
+                motion_group="0@ir340r02",
+                scene_articulations=[
+                    "/World/other_robot",
+                    "/World/ir_313340r02_hose",
+                ],
+                motion_group_model_name="KUKA_KR240_R2900",
+            )
+            self.assertEqual(suggestions, ["/World/ir_313340r02_hose"])
+
+    async def test_prim_discovery_tracks_stage_switches(self):
+        """Discovery must re-traverse after a stage switch, even without a
+        stage event. In-memory stages reuse anonymous root-layer identifiers,
+        so a cache keyed on the identifier can serve the previous stage's
+        prims. The cycle repeats because the reuse depends on the allocator.
+        """
+        for index in range(10):
+            with self._create_stage() as stage:
+                config = _make_robot_config(
+                    prim_path=f"/World/Robot_{index}",
+                    host=NOVA_HOST_1,
+                    cell="cell",
+                    controller=f"bot{index}",
+                    motion_group=f"0@bot{index}",
+                )
+                _apply_robots_to_stage(stage, [config])
+                paths = get_scene_motion_group_prim_paths(
+                    include_prims_without_api=False
+                )
+                self.assertEqual(paths, [f"/World/Robot_{index}"])
+
+
+class TestStalePrimPaths(omni.kit.test.AsyncTestCase):
+    """A prim path that does not resolve must not raise.
+
+    The stage-config readers feed get_motion_group_configuration_from_prim from
+    the cached path list of get_scene_motion_group_prim_paths, which can name
+    prims that no longer exist. HasAPI raises "Accessed invalid null prim" for
+    those rather than returning False.
+    """
+
+    async def test_null_prim_yields_no_configuration(self):
+        # No use_stage() needed: the prim is handed in directly, and the guard has
+        # to return before it touches the stage at all.
+        stage = Usd.Stage.CreateInMemory("TestStalePrimPaths")
+        missing = stage.GetPrimAtPath("/World/does_not_exist")
+        self.assertFalse(missing.IsValid())
+        self.assertIsNone(get_motion_group_configuration_from_prim(missing))
+
+    async def test_none_yields_no_configuration(self):
+        self.assertIsNone(get_motion_group_configuration_from_prim(None))
+
+
+class TestStageDiscoveryHostNormalization(omni.kit.test.AsyncTestCase):
+    """Host classification must not care about the scheme.
+
+    known_hosts and the *host* filter come from ``NOVAInstance.host`` (a cloud
+    instance keeps its scheme) while the stored config host was stripped of its
+    scheme by ``apply_to_prim``. Comparing verbatim made a known cloud instance
+    look like an orphan and hid its cells.
+    """
+
+    async def test_known_cloud_host_with_scheme_is_not_an_orphan(self):
+        configs = [
+            _make_robot_config(
+                "/World/robot", "nova.example.io", "cell", "ctrl", "0@ctrl"
+            )
+        ]
+        orphans = filter_unknown_host_instances(configs, {"https://nova.example.io"})
+        self.assertEqual(orphans, [])
+
+    async def test_genuinely_unknown_host_still_reported(self):
+        configs = [
+            _make_robot_config(
+                "/World/robot", "other.example.io", "cell", "ctrl", "0@ctrl"
+            )
+        ]
+        orphans = filter_unknown_host_instances(configs, {"https://nova.example.io"})
+        self.assertEqual([o.host for o in orphans], ["other.example.io"])
+
+    async def test_cells_found_for_scheme_carrying_host(self):
+        configs = [
+            _make_robot_config(
+                "/World/robot", "nova.example.io", "cell", "ctrl", "0@ctrl"
+            )
+        ]
+        cells = list_cells_for_host(configs, "https://nova.example.io")
+        self.assertEqual([c.name for c in cells], ["cell"])

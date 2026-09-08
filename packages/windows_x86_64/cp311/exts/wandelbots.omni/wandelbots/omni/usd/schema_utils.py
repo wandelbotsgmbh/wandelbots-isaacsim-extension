@@ -6,6 +6,18 @@ from .tcp_utils import TcpUtils
 
 class SchemaUtils:
     @staticmethod
+    def ensure_motion_group_api(prim: Usd.Prim) -> bool:
+        """Apply MotionGroupAPI to the prim if it is missing.
+
+        Returns True if the prim has MotionGroupAPI afterwards.
+        """
+        if not prim.IsValid():
+            return False
+        if not prim.HasAPI(wb_schema.MotionGroupAPI):
+            prim.ApplyAPI(wb_schema.MotionGroupAPI)
+        return prim.HasAPI(wb_schema.MotionGroupAPI)
+
+    @staticmethod
     def find_motion_group_tcp(motion_group: Usd.Prim) -> Usd.Prim | None:
         """
         Get the TCP prim path of a motion group.

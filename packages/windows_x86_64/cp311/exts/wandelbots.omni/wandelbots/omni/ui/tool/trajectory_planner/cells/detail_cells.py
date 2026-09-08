@@ -9,7 +9,12 @@ import omni.usd
 
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE, ICON_BTN_STYLE
+from wandelbots.omni.ui.wb_theme import (
+    ICON_BTN_STYLE,
+    TOOLTIP_STYLE,
+    TOOLTIP_RESET,
+    build_tooltip,
+)
 from wandelbots.omni.ui.tool.ghost_teaching.widgets.joint_config_selector import (
     JointConfigSelector,
 )
@@ -54,11 +59,12 @@ def build_tcp_detail(pose: WSPose, tcp_label: str) -> None:
                 pose_text,
                 alignment=ui.Alignment.LEFT_CENTER,
                 elided_text=True,
-                tooltip=pose_tooltip,
+                tooltip_fn=lambda t=pose_tooltip: build_tooltip(t),
                 tooltip_offset_y=14,
                 style={
                     "color": NOVAColor.TEXT_SECONDARY.color,
                     "font_size": 12,
+                    **TOOLTIP_RESET,
                 },
             )
             ui.Button(
@@ -68,9 +74,9 @@ def build_tcp_detail(pose: WSPose, tcp_label: str) -> None:
                 image_url=get_icon("copy.svg"),
                 image_width=12,
                 image_height=12,
-                tooltip="Copy pose to clipboard",
+                tooltip_fn=lambda: build_tooltip("Copy pose to clipboard"),
                 clicked_fn=lambda t=pose_text: _copy_to_clipboard(t),
-                style=ICON_BTN_STYLE,
+                style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
             )
 
 
@@ -107,11 +113,12 @@ def build_joint_config_detail(
                 text,
                 alignment=ui.Alignment.LEFT_CENTER,
                 elided_text=True,
-                tooltip=text,
+                tooltip_fn=lambda t=text: build_tooltip(t),
                 tooltip_offset_y=14,
                 style={
                     "color": NOVAColor.TEXT_SECONDARY.color,
                     "font_size": 12,
+                    **TOOLTIP_RESET,
                 },
             )
             ui.Button(
@@ -121,9 +128,9 @@ def build_joint_config_detail(
                 image_url=get_icon("copy.svg"),
                 image_width=12,
                 image_height=12,
-                tooltip="Copy joint config to clipboard",
+                tooltip_fn=lambda: build_tooltip("Copy joint config to clipboard"),
                 clicked_fn=lambda t=text: _copy_to_clipboard(t),
-                style=ICON_BTN_STYLE,
+                style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
             )
 
 
@@ -208,14 +215,20 @@ def _build_joint_config_label(
         tooltip = ", ".join(f"{v:.3f}" for v in cfg)
     else:
         text, tooltip = "-", ""
+    # No popup at all when there is nothing to show (an empty build_tooltip
+    # would still render a tiny popup rectangle on hover).
+    tooltip_kwargs = (
+        {"tooltip_fn": lambda t=tooltip: build_tooltip(t)} if tooltip else {}
+    )
     ui.Label(
         text,
         alignment=ui.Alignment.CENTER,
-        tooltip=tooltip,
         style={
             "color": NOVAColor.TEXT_SECONDARY.color,
             "font_size": 12,
+            **TOOLTIP_RESET,
         },
+        **tooltip_kwargs,
     )
 
 

@@ -13,7 +13,6 @@ import omni.usd
 import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.datatypes import WSPose
-from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
 from wandelbots.omni.ui.tool.trajectory_planner.events import TrajectoryPlannerEvents
@@ -45,16 +44,23 @@ from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import 
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.motion_group_setup import (
     MotionGroupSetup,
 )
+from wandelbots.omni.ui.tool.trajectory_planner.widgets.rendering_settings_section import (
+    RenderingSettingsSection,
+)
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.trajectory_controls import (
     TrajectoryControls,
 )
-from wandelbots.omni.ui.tool.trajectory_planner.widgets.progress_status_bar import (
+from wandelbots.omni.ui.widgets.progress_status_bar import (
     ProgressStatusBar,
 )
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.settings_section import (
     SettingsSection,
 )
-from wandelbots.omni.ui.styles import TOOLTIP_STYLE, _TOOLTIP_SUB
+from wandelbots.omni.ui.wb_theme import (
+    TOOLTIP_STYLE,
+    TOOLTIP_RESET,
+    build_tooltip,
+)
 from wandelbots.omni.ui.utils import get_icon
 from wandelbots.omni.utils.api import ApiConfiguration
 from wandelbots.omni.utils.prims import PrimUtils
@@ -92,6 +98,9 @@ class TrajectoryPlannerWidget:
 
         # Data model
         self._pose_model = PoseModel()
+        # Drag reorder routes through the same event as the up/down buttons so
+        # the plan is invalidated and the tree refreshed flicker-free.
+        self._pose_model.on_reordered = self._events.poses_reordered.emit
 
         # Delegate wires directly to pose_list / events (no widget callbacks)
         self._pose_delegate = PoseDelegate(
@@ -127,6 +136,10 @@ class TrajectoryPlannerWidget:
             on_setting_changed=self._events.setting_changed.emit,
         )
 
+        self._rendering_settings = RenderingSettingsSection(
+            on_setting_changed=self._events.setting_changed.emit,
+        )
+
         self._progress = ProgressStatusBar(name=name)
 
         self._controls = TrajectoryControls(
@@ -140,7 +153,7 @@ class TrajectoryPlannerWidget:
 
         self._pose_list = PoseListManager(
             pose_model=self._pose_model,
-            get_pose_relative_to_mg=self._get_pose_relative_to_mg,
+            get_planning_pose=self._get_planning_pose,
             events=self._events,
             get_nova_tcps=lambda: self._mg_setup.nova_tcps,
         )
@@ -167,6 +180,13 @@ class TrajectoryPlannerWidget:
             get_settings=self._get_planning_settings,
             events=self._events,
             get_tcp_for_item=self._get_tcp_for_pose_item,
+            get_mounting_offset=lambda: tuple(self._rendering_settings.mounting_offset),
+            get_mounting_rotation=lambda: tuple(
+                self._rendering_settings.mounting_rotation
+            ),
+            get_reference_frame_path=lambda: (
+                self._rendering_settings.reference_frame_path
+            ),
         )
         self._planner.set_skill_name(name)
 
@@ -189,6 +209,7 @@ class TrajectoryPlannerWidget:
             pose_delegate=self._pose_delegate,
             mg_setup=self._mg_setup,
             settings=self._settings,
+            rendering_settings=self._rendering_settings,
             controls=self._controls,
             progress=self._progress,
             preview=self._preview,
@@ -203,7 +224,7 @@ class TrajectoryPlannerWidget:
             update_poses_title_fn=lambda ws=weakref.ref(self): (
                 ws()._update_poses_section_title() if ws() else None
             ),
-            get_pose_relative_to_mg=self._get_pose_relative_to_mg,
+            get_planning_pose=self._get_planning_pose,
         )
 
     @property
@@ -298,9 +319,9 @@ class TrajectoryPlannerWidget:
             collision_setup=self._mg_setup.selected_collision_setup,
             poses=poses,
             live_update=self._settings.live_update,
-            overlay_color=list(self._settings.overlay_color),
-            trajectory_color=list(self._settings.trajectory_color),
-            velocity_coloring=self._settings.velocity_coloring,
+            overlay_color=list(self._rendering_settings.overlay_color),
+            trajectory_color=list(self._rendering_settings.trajectory_color),
+            velocity_coloring=self._rendering_settings.velocity_coloring,
             tcp_velocity=self._settings.tcp_velocity,
             tcp_acceleration=self._settings.tcp_acceleration,
             auto_blending=self._settings.auto_blending,
@@ -316,6 +337,9 @@ class TrajectoryPlannerWidget:
             collapsed=self._collapsed,
             poses_collapsed=self._poses_collapsed,
             planned_trajectory=planned_trajectory,
+            reference_frame_path=self._rendering_settings.reference_frame_path,
+            mounting_offset=list(self._rendering_settings.mounting_offset),
+            mounting_rotation=list(self._rendering_settings.mounting_rotation),
         )
 
     def apply_config(self, config: TrajectoryPlannerConfig) -> None:
@@ -324,9 +348,9 @@ class TrajectoryPlannerWidget:
         self._poses_collapsed = config.poses_collapsed
 
         self._settings.live_update = config.live_update
-        self._settings.overlay_color = list(config.overlay_color)
-        self._settings.trajectory_color = list(config.trajectory_color)
-        self._settings.velocity_coloring = config.velocity_coloring
+        self._rendering_settings.overlay_color = list(config.overlay_color)
+        self._rendering_settings.trajectory_color = list(config.trajectory_color)
+        self._rendering_settings.velocity_coloring = config.velocity_coloring
         self._settings.tcp_velocity = config.tcp_velocity
         self._settings.tcp_acceleration = config.tcp_acceleration
         self._settings.auto_blending = config.auto_blending
@@ -343,6 +367,9 @@ class TrajectoryPlannerWidget:
         self._settings.move_to_start = config.move_to_start
 
         self._mg_setup.set_collision_setup(config.collision_setup)
+        self._rendering_settings.set_reference_frame(config.reference_frame_path)
+        self._rendering_settings.set_mounting_offset(config.mounting_offset)
+        self._rendering_settings.set_mounting_rotation(config.mounting_rotation)
         # Collision-free is an independent planning mode now, not implied by the
         # presence of a collision scene.
         plan_cf = config.plan_collision_free
@@ -367,22 +394,12 @@ class TrajectoryPlannerWidget:
         if config.poses and self._mg_setup.robot_prim:
             stage = omni.usd.get_context().get_stage()
             if stage:
-                link_0 = get_link_0_from_motion_group_prim(self._mg_setup.robot_prim)
-                reference_path = (
-                    str(link_0.GetPath())
-                    if link_0
-                    else self._mg_setup.robot_prim.GetPath().pathString
-                )
                 for pose_cfg in config.poses:
                     prim = stage.GetPrimAtPath(pose_cfg.prim_path)
                     if not prim.IsValid():
                         missing_prims = True
                         continue
-                    pose = PrimUtils.get_relative_prim_pose(
-                        prim_path_a=reference_path,
-                        prim_path_b=pose_cfg.prim_path,
-                        rotation_type="cartesian",
-                    )
+                    pose = self._get_planning_pose(pose_cfg.prim_path, stage)
                     item = self._pose_model.add_pose(
                         prim_path=pose_cfg.prim_path,
                         name=prim.GetName(),
@@ -490,7 +507,7 @@ class TrajectoryPlannerWidget:
                 image_url=get_icon("close.svg"),
                 image_width=16,
                 image_height=16,
-                tooltip="Delete skill",
+                tooltip_fn=lambda: build_tooltip("Delete skill"),
                 clicked_fn=lambda ws=weakref.ref(self): (
                     ws()._on_delete(ws()) if ws() else None
                 ),
@@ -503,7 +520,7 @@ class TrajectoryPlannerWidget:
                     "Button:hovered": {
                         "background_color": NOVAColor.BUTTON_HOVER.color
                     },
-                    **_TOOLTIP_SUB,
+                    **TOOLTIP_RESET,
                 },
             )
             ui.Spacer()
@@ -537,6 +554,7 @@ class TrajectoryPlannerWidget:
                     header_visible=False,
                     height=0,
                     columns_resizable=False,
+                    drop_between_items=True,
                     selection_changed_fn=lambda sel, ws=weakref.ref(self): (
                         ws()._controller._on_tree_selection_changed(sel)
                         if ws()
@@ -588,6 +606,7 @@ class TrajectoryPlannerWidget:
                 )
 
             self._settings.build()
+            self._rendering_settings.build()
             with ui.VStack(spacing=0, height=0):
                 self._controls.build(
                     live_update_widget_fn=self._build_live_update_controls
@@ -602,7 +621,9 @@ class TrajectoryPlannerWidget:
             width=30,
             height=ui.Fraction(1),
             image_url=get_icon("link.svg" if active else "unlink.svg"),
-            tooltip="Apply changes automatically: re-plan when poses are moved.",
+            tooltip_fn=lambda: build_tooltip(
+                "Apply changes automatically: re-plan when poses are moved."
+            ),
             clicked_fn=lambda ws=weakref.ref(self): (
                 ws()._on_live_update_toggled(not ws()._settings.live_update)
                 if ws()
@@ -622,7 +643,7 @@ class TrajectoryPlannerWidget:
                     if active
                     else NOVAColor.BUTTON_HOVER.color
                 },
-                **_TOOLTIP_SUB,
+                **TOOLTIP_RESET,
             },
         )
 
@@ -648,7 +669,7 @@ class TrajectoryPlannerWidget:
                         if enabled
                         else NOVAColor.BUTTON_HOVER.color
                     },
-                    **_TOOLTIP_SUB,
+                    **TOOLTIP_RESET,
                 }
             )
 
@@ -711,22 +732,18 @@ class TrajectoryPlannerWidget:
             "cf_algorithm": self._settings.cf_algorithm,
             "cf_max_iterations": self._settings.cf_max_iterations,
             "plan_collision_free": self._settings.plan_collision_free,
-            "velocity_coloring": self._settings.velocity_coloring,
+            "velocity_coloring": self._rendering_settings.velocity_coloring,
         }
 
-    def _get_pose_relative_to_mg(self, prim_path: str, stage=None) -> WSPose:
+    def _get_planning_pose(self, prim_path: str, stage=None) -> WSPose:
+        """World pose of a target prim (mm plus rotation vector).
+
+        Planning and IK requests carry world-frame poses plus the mounting,
+        so a target is simply the prim's world transform. That stays correct
+        when the robot base moves.
+        """
         if stage is None:
             stage = omni.usd.get_context().get_stage()
-        mg = self._mg_setup.mg_config
-        if mg and mg.prim_path:
-            mg_prim = stage.GetPrimAtPath(mg.prim_path)
-            link_0 = get_link_0_from_motion_group_prim(mg_prim)
-            reference_path = str(link_0.GetPath()) if link_0 else mg.prim_path
-            return PrimUtils.get_relative_prim_pose(
-                prim_path_a=reference_path,
-                prim_path_b=prim_path,
-                rotation_type="cartesian",
-            )
         return PrimUtils.get_prim_pose(
             prim_path=prim_path,
             coordinate_system="world",
@@ -739,7 +756,9 @@ class TrajectoryPlannerWidget:
             "Add poses",
             width=70,
             height=22,
-            tooltip="Pick GhostObjects or Pose prims to add as trajectory poses",
+            tooltip_fn=lambda: build_tooltip(
+                "Pick GhostObjects or Pose prims to add as trajectory poses"
+            ),
             clicked_fn=lambda ws=weakref.ref(self): (
                 ws()._pose_list.pick_poses() if ws() else None
             ),
@@ -750,14 +769,16 @@ class TrajectoryPlannerWidget:
                     "border_radius": 4,
                 },
                 "Button:hovered": {"background_color": NOVAColor.PRIMARY_LIGHT.color},
-                **_TOOLTIP_SUB,
+                **TOOLTIP_RESET,
             },
         )
         self._edit_mode_btn = ui.Button(
             "Done" if self._controller.edit_mode else "Edit",
             width=50,
             height=22,
-            tooltip="Toggle edit mode (reorder, hide, delete)",
+            tooltip_fn=lambda: build_tooltip(
+                "Toggle edit mode (reorder, hide, delete)"
+            ),
             clicked_fn=lambda ws=weakref.ref(self): (
                 ws()._toggle_edit_mode() if ws() else None
             ),
@@ -768,7 +789,7 @@ class TrajectoryPlannerWidget:
                     "border_radius": 4,
                 },
                 "Button:hovered": {"background_color": NOVAColor.BUTTON_HOVER.color},
-                **_TOOLTIP_SUB,
+                **TOOLTIP_RESET,
             },
         )
 
@@ -778,6 +799,7 @@ class TrajectoryPlannerWidget:
     def _toggle_edit_mode(self) -> None:
         self._controller.edit_mode = not self._controller.edit_mode
         self._pose_delegate.edit_mode = self._controller.edit_mode
+        self._pose_model.edit_mode = self._controller.edit_mode
         if self._edit_mode_btn:
             self._edit_mode_btn.text = "Done" if self._controller.edit_mode else "Edit"
         self._controller.refresh_tree_view()

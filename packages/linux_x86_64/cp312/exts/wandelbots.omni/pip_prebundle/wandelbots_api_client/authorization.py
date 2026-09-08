@@ -2,7 +2,7 @@
 
 import aiohttp
 import asyncio
-from typing import Optional
+from typing import Any
 from abc import ABC, abstractmethod
 import pydantic
 
@@ -37,7 +37,7 @@ class DeviceCodeFlowConfig(pydantic.BaseModel, ABC):
         """Build the device code request data."""
         pass
 
-    async def request_device_code(self) -> dict[str, any]:
+    async def request_device_code(self) -> dict[str, Any]:
         """
         Request device code from the authorization server.
 
@@ -65,9 +65,7 @@ class DeviceCodeFlowConfig(pydantic.BaseModel, ABC):
 
                 return await response.json()
 
-    async def poll_token_endpoint(
-        self, device_code: str, interval: int = 5, expires_in: int = 900
-    ) -> dict[str, str]:
+    async def poll_token_endpoint(self, device_code: str, interval: int = 5, expires_in: int = 900) -> dict[str, str]:
         """
         Poll the token endpoint until authorization is complete.
 
@@ -152,9 +150,9 @@ class DeviceCodeFlowConfig(pydantic.BaseModel, ABC):
 class Auth0Config(DeviceCodeFlowConfig):
     """Configuration for Auth0 device code flow authentication."""
 
-    domain: Optional[str] = None
-    client_id: Optional[str] = None
-    audience: Optional[str] = None
+    domain: str | None = None
+    client_id: str | None = None
+    audience: str | None = None
 
     @classmethod
     def default(cls) -> "Auth0Config":
@@ -203,8 +201,8 @@ class Auth0Config(DeviceCodeFlowConfig):
 class EntraIDConfig(DeviceCodeFlowConfig):
     """Configuration for Microsoft Entra ID (Azure AD) device code flow authentication."""
 
-    client_id: Optional[str] = None
-    tenant_id: Optional[str] = None
+    client_id: str | None = None
+    tenant_id: str | None = None
 
     def is_complete(self) -> bool:
         """Check if all required fields are set."""
@@ -232,6 +230,8 @@ class EntraIDConfig(DeviceCodeFlowConfig):
 
     def _build_device_code_request(self) -> dict[str, str]:
         """Build the device code request data."""
+        if not self.client_id:
+            raise ValueError("Client ID is not set")
         return {
             "client_id": self.client_id,
             "scope": self.scope,

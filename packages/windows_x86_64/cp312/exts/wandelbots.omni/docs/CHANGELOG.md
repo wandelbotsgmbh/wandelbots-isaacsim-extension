@@ -1,5 +1,155 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.63.1 (2026-09-07)
+
+### Bug Fixes
+
+* Animation recorder bug
+
+## 2.63.0 (2026-09-04)
+
+### Features
+
+* Reply measured physics state on external joint stream
+
+## 2.62.1 (2026-09-03)
+
+### Bug Fixes
+
+* Fixed depth and point cloud endpoint and migrated semantic labels to 6.0 api
+
+## 2.62.0 (2026-09-02)
+
+### Features
+
+* World-frame collision setup contract with reachability, planner and overlay integration
+
+## 2.61.1 (2026-08-14)
+
+### Bug Fixes
+
+* Added trajectory debug log and stream app fixes
+
+## 2.61.0 (2026-08-14)
+
+### Features
+
+* Upgraded api client versions in pip.tomls
+
+## 2.60.1 (2026-08-11)
+
+### Bug Fixes
+
+* Fixed nova tag version invalid evaluation
+
+## 2.60.0 (2026-08-03)
+
+### Features
+
+* Cache get_root_articulation_path results per prim
+
+## 2.59.2 (2026-08-03)
+
+### Bug Fixes
+
+* **nova-connector:** Fixes the connection state in the "Connect to NOVA" list.
+
+## 2.59.1 (2026-07-31)
+
+### Bug Fixes
+
+* **diagnose:** Fixes diagnose package selection and make instance optional.
+
+## 2.59.0 (2026-07-30)
+
+### Features
+
+* **trajectory-planner:** Trajectory Planner allows to drag-and-drop poses for reordering with flicker-free updates
+
+## 2.58.1 (2026-07-29)
+
+### Bug Fixes
+
+* **nova-connector:** Fix "Connect to NOVA" freezes, articulation matching, and virtual controller creation
+
+## 2.58.0 (2026-07-24)
+
+### Features
+
+* Enhance motion group performance with coalesced joint application and validation checks
+
+## 2.57.0 (2026-07-20)
+
+### Features
+
+* **nova-connector:** Auto select virtual controller type for motion group model
+
+## 2.56.0 (2026-07-15)
+
+### Features
+
+* **reachability-analysis:** Update instances button, multiple bases analysis, collider tree sweep, enhanced manufacturer filter, list refresh
+
+## 2.55.0 (2026-07-13)
+
+### Features
+
+* **trajectory-planner:** Overlay suppression, external-axis offset, convert-to-pose, pose fixes
+
+## 2.54.0 (2026-07-13)
+
+### Features
+
+* Updated to latest NOVA api client version
+
+## 2.53.2 (2026-07-10)
+
+### Bug Fixes
+
+* Fix apply relative pose transformation.
+
+## 2.53.1 (2026-07-08)
+
+### Bug Fixes
+
+* Instances does not refresh all widgets on stage change
+
+## 2.53.0 (2026-07-08)
+
+### Features
+
+* Add trajectory generation example with supporting files and configurations
+
+## 2.52.1 (2026-07-06)
+
+### Bug Fixes
+
+* Removed api v1 client option
+
+## 2.52.0 (2026-07-03)
+
+### Features
+
+* Adding a material converter to the animation recorder
+
+## 2.51.2 (2026-07-02)
+
+### Bug Fixes
+
+* Fixed joint values not updating in the TP pose details
+
+## 2.51.1 (2026-06-29)
+
+### Bug Fixes
+
+* **CSI-2778:** Fixed joint config displayed in overlay for ghost teaching and update toolbar when motion group connection is changed
+
+## 2.51.0 (2026-06-23)
+
+### Features
+
+* **CSI-2686:** Create virtual controller from isaac sim (including TCP and mounting definition)
+
 ## 2.50.0 (2026-06-22)
 
 ### Features

@@ -1,6 +1,6 @@
 import carb.events
 from typing import Any, Callable, cast
-from wandelbots.omni.utils.teaching import GhostObjectUtils, GhostObject
+from wandelbots.omni.utils.teaching import GhostObjectUtils
 import omni.usd
 import weakref
 
@@ -26,18 +26,19 @@ class GhostObjectsSubscription:
             )
         )
 
-    def _load_ghost_objects(self) -> list[str]:
-        return set(
-            [
-                ghost_object.prim_path
-                for ghost_object in GhostObjectUtils.get_ghost_objects()
-            ]
-        )
+    def _load_ghost_objects(self) -> set[str]:
+        # Only the prim paths are needed here, and this runs on every
+        # HIERARCHY_CHANGED event (including ghost creation itself). Use the
+        # physics-free enumeration so we never construct RigidPrim views over
+        # robot links while PhysX is rebuilding the simulation view -- that
+        # rescan was the source of the "Simulation view object is invalidated"
+        # spam and a likely trigger of the sim-view rebuild that drops the arm.
+        return set(GhostObjectUtils.get_ghost_object_prim_paths())
 
     def _on_stage_event(self, event: carb.events.IEvent):
         if event.type != int(omni.usd.StageEventType.HIERARCHY_CHANGED):
             return
-        updated_ghost_objects: list[GhostObject] = self._load_ghost_objects()
-        if set(self._ghost_objects) != updated_ghost_objects:
+        updated_ghost_objects: set[str] = self._load_ghost_objects()
+        if self._ghost_objects != updated_ghost_objects:
             self._ghost_objects = updated_ghost_objects
             self.ghost_object_changed_fn()

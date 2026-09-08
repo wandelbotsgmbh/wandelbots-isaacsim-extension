@@ -41,7 +41,10 @@ from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_preview impor
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.motion_group_setup import (
     MotionGroupSetup,
 )
-from wandelbots.omni.ui.tool.trajectory_planner.widgets.progress_status_bar import (
+from wandelbots.omni.ui.tool.trajectory_planner.widgets.rendering_settings_section import (
+    RenderingSettingsSection,
+)
+from wandelbots.omni.ui.widgets.progress_status_bar import (
     ProgressStatusBar,
 )
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.settings_section import (
@@ -53,7 +56,10 @@ from wandelbots.omni.ui.tool.trajectory_planner.widgets.trajectory_controls impo
 from wandelbots.omni.ui.utils import defer_call
 from wandelbots.omni.utils.api import get_api_client_from_config
 from wandelbots.omni.utils.kinematics import weighted_joint_distance
-from wandelbots.omni.utils.teaching import make_ghost_tcp_matcher
+from wandelbots.omni.utils.teaching import GhostObjectUtils, make_ghost_tcp_matcher
+from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import (
+    set_pose_motion_metadata,
+)
 
 _DEBOUNCE_DELAY = 0.3
 
@@ -69,6 +75,7 @@ class TrajectoryPlannerController:
         pose_delegate: PoseDelegate,
         mg_setup: MotionGroupSetup,
         settings: SettingsSection,
+        rendering_settings: RenderingSettingsSection,
         controls: TrajectoryControls,
         progress: ProgressStatusBar,
         preview: TrajectoryPlannerPreview,
@@ -79,13 +86,14 @@ class TrajectoryPlannerController:
         on_selection_changed: Callable[[PoseItem | None], None],
         rebuild_fn: Callable[[], None],
         update_poses_title_fn: Callable[[], None],
-        get_pose_relative_to_mg: Callable[..., object],
+        get_planning_pose: Callable[..., object],
     ) -> None:
         self._events = events
         self._pose_model = pose_model
         self._pose_delegate = pose_delegate
         self._mg_setup = mg_setup
         self._settings = settings
+        self._rendering_settings = rendering_settings
         self._controls = controls
         self._progress = progress
         self._preview = preview
@@ -96,11 +104,12 @@ class TrajectoryPlannerController:
         self._on_selection_changed = on_selection_changed
         self._rebuild_fn = rebuild_fn
         self._update_poses_title_fn = update_poses_title_fn
-        self._get_pose_relative_to_mg = get_pose_relative_to_mg
+        self._get_planning_pose = get_planning_pose
 
         self._selected_pose_item: PoseItem | None = None
         self._syncing_selection: bool = False
-        self._debounce_task: asyncio.Task | None = None
+        self._persisting_metadata_paths: set[str] = set()
+        self._debounce_tasks: dict[str, asyncio.Task] = {}
         self._watch_subs: list = []
         self._stage_event_sub = None
         self._cached_tool_colliders: dict | None = None
@@ -108,7 +117,7 @@ class TrajectoryPlannerController:
         self._motion_group_limits: dict | None = None
         self._last_motion_group_id: tuple | None = None
         # Execute is gated on a successful visualization, not just a successful
-        # plan — this is True only once the curve has been drawn.
+        # plan - this is True only once the curve has been drawn.
         self._trajectory_visualized: bool = False
         # One-shot flag: a config is being restored (load / reopen). It drives a
         # restore-safe motion-group init in on_rebuild that refreshes the tree and
@@ -176,7 +185,7 @@ class TrajectoryPlannerController:
         """Call after every widget._rebuild() to refresh controller-owned state."""
         # On restore, drive a one-shot motion-group init now that the tree view +
         # motion group context exist: refreshes the tree (poses show) and the
-        # TCP/collision selectors, fetches reference limits — without clearing the
+        # TCP/collision selectors, fetches reference limits - without clearing the
         # restored joint configs or overwriting restored velocity/accel (identity
         # was pre-seeded by begin_restore, so it is treated as unchanged).
         if self._restoring and self._mg_setup.mg_config:
@@ -186,8 +195,8 @@ class TrajectoryPlannerController:
             cs = self._mg_setup.selected_collision_setup
             if cs and self._cached_collision_setup_name != cs:
                 self._fetch_tool_colliders_for_setup()
-        # NOTE: a restored trajectory's curve is NOT redrawn automatically — the
-        # user triggers it explicitly via the window's Refresh action.
+        # A restored trajectory's curve is not redrawn here; the user
+        # triggers it with the window's Refresh action.
         self._update_controls()
 
     def refresh_trajectory(self) -> None:
@@ -197,7 +206,9 @@ class TrajectoryPlannerController:
         run_coroutine(self._refresh_trajectory_async())
 
     async def _refresh_trajectory_async(self) -> None:
-        ok = await self._planner.visualize_trajectory(self._settings.trajectory_color)
+        ok = await self._planner.visualize_trajectory(
+            self._rendering_settings.trajectory_color
+        )
         # A successfully drawn curve also enables Execute for a restored plan.
         self._trajectory_visualized = ok
         self._update_controls()
@@ -247,9 +258,9 @@ class TrajectoryPlannerController:
     def teardown_watchers(self) -> None:
         self._watch_subs.clear()
         self._stage_event_sub = None
-        if self._debounce_task is not None:
-            self._debounce_task.cancel()
-            self._debounce_task = None
+        for task in self._debounce_tasks.values():
+            task.cancel()
+        self._debounce_tasks.clear()
 
     def destroy(self) -> None:
         self.teardown_watchers()
@@ -297,7 +308,7 @@ class TrajectoryPlannerController:
         """Mark that a restored config's motion group is set.
 
         Pre-seeds the identity so the restore-time motion-group init (run in
-        on_rebuild) is treated as *unchanged* — it refreshes the tree/selectors
+        on_rebuild) is treated as *unchanged* - it refreshes the tree/selectors
         and fetches limit references without clearing the restored joint configs
         or overwriting restored velocity/accel.
         """
@@ -308,12 +319,15 @@ class TrajectoryPlannerController:
 
     def _on_tcp_changed(self, tcp_name: str | None) -> None:
         self._resolve_ghost_tcp_names()
-        self._planner.invalidate()
         self._preview.hide()
         self._controls.set_trajectory_planned(False)
-        self._update_controls()
         if self._pose_model.items:
-            self._ik_manager.refresh_all_ik()
+            # Go stale instead of eagerly re-fetching IK - the user must click
+            # "Calculate IKs" to pay for the recalculation.
+            self._mark_ik_stale(self._pose_model.items)
+        else:
+            self._planner.invalidate()
+            self._update_controls()
 
     def _resolve_ghost_tcp_names(self) -> None:
         """Retroactively set tcp_name on ghost items using offset matching."""
@@ -360,6 +374,7 @@ class TrajectoryPlannerController:
                         velocity=auto_limits.tcp.velocity,
                         acceleration=auto_limits.tcp.acceleration,
                     )
+                    self._rendering_settings.set_tcp_velocity(auto_limits.tcp.velocity)
                 self._motion_group_limits = {
                     "tcp_velocity": auto_limits.tcp.velocity,
                     "tcp_acceleration": auto_limits.tcp.acceleration,
@@ -390,7 +405,7 @@ class TrajectoryPlannerController:
         # Planning" toggle (rendered below the collision selector). We still fetch
         # the tool colliders so the preview is correct in either mode.
         if setup is None and self._settings.plan_collision_free:
-            # Collision-free is meaningless without a scene — turn it off.
+            # Collision-free is meaningless without a scene - turn it off.
             self._set_plan_collision_free(False)
         self._planner.invalidate()
         self._fetch_tool_colliders_for_setup()
@@ -416,13 +431,17 @@ class TrajectoryPlannerController:
             pass
         elif key == "trajectory_color":
             if self._planner.planned_joint_trajectory:
-                self._planner.update_trajectory_color(self._settings.trajectory_color)
+                self._planner.update_trajectory_color(
+                    self._rendering_settings.trajectory_color
+                )
         elif key == "velocity_coloring":
             # Re-render the curve so it switches between the speed gradient and the
             # solid color (the gradient is recomputed from FK + times).
             if self._planner.planned_joint_trajectory:
                 run_coroutine(
-                    self._planner.visualize_trajectory(self._settings.trajectory_color)
+                    self._planner.visualize_trajectory(
+                        self._rendering_settings.trajectory_color
+                    )
                 )
         elif key == "plan_collision_free":
             self._on_plan_collision_free_changed(bool(value))
@@ -442,12 +461,20 @@ class TrajectoryPlannerController:
         defer_call(self._rebuild_fn)
 
     def _on_poses_reordered(self, item: PoseItem) -> None:
-        # move has already happened in PoseListManager
+        # The move already happened (up/down button or drag-and-drop); the model
+        # emitted its own item-changed so the row order is current. Refresh the
+        # tree in place instead of rebuilding the whole skill frame -- a frame
+        # rebuild is what made the list flicker and re-render every cell.
+        #
+        # Reordering changes only the trajectory order, never per-pose IK or
+        # reachability (those depend on the pose alone, not its position in the
+        # list), so we deliberately do NOT re-run check_reachability / re-fetch
+        # IK here. Only the plan is order-dependent, so re-plan on live update.
         self._planner.invalidate()
         self._selected_pose_item = item
-        defer_call(lambda: self._rebuild_and_reselect(item))
-        if self._settings.live_update:
-            self._trigger_live_update()
+        defer_call(lambda: self._reselect_after_reorder(item))
+        if self._settings.live_update and len(self._pose_model.items) >= 2:
+            self._planner.plan()
 
     def _on_motion_type_changed(self, item: PoseItem, motion_type: str) -> None:
         self._planner.invalidate()
@@ -455,10 +482,92 @@ class TrajectoryPlannerController:
         if self._settings.live_update:
             self._trigger_live_update()
 
-    def _on_inline_config_changed(self, item: PoseItem, idx: int) -> None:
-        item.selected_config_idx = idx
+    def _persist_pose_metadata(self, item: PoseItem) -> None:
+        """Store the pose's selected TCP/joint config on its prim so the planner
+        recognizes them on reload. Ghost objects persist via their own schema."""
+        if item.is_ghost_object:
+            return
+
+        # This write lands on the same prim the change-info watcher below is
+        # subscribed to; suppress it so our own metadata write isn't mistaken
+        # for an external pose edit and doesn't reset the joint config it just set.
+        self._persisting_metadata_paths.add(item.prim_path)
+        try:
+            stage = omni.usd.get_context().get_stage()
+            set_pose_motion_metadata(stage, item.prim_path, tcp_name=item.tcp_name)
+            if stage and item.selected_joint_config:
+                prim = stage.GetPrimAtPath(item.prim_path)
+                GhostObjectUtils.set_preferred_joint_values(
+                    prim, item.selected_joint_config
+                )
+        finally:
+            self._persisting_metadata_paths.discard(item.prim_path)
+
+    def _clear_persisted_joint_config(self, item: PoseItem) -> None:
+        """Remove a persisted ``preferredJointValues`` after a genuine pose edit.
+
+        Ghost objects persist via their own schema and are left untouched, as
+        in ``_persist_pose_metadata``.
+        """
+        if item.is_ghost_object:
+            return
+        stage = omni.usd.get_context().get_stage()
+        if not stage:
+            return
+        self._persisting_metadata_paths.add(item.prim_path)
+        try:
+            prim = stage.GetPrimAtPath(item.prim_path)
+            GhostObjectUtils.clear_preferred_joint_values(prim)
+        finally:
+            self._persisting_metadata_paths.discard(item.prim_path)
+
+    def _mark_ik_stale(self, items: list[PoseItem]) -> None:
+        """Discard cached IK results for *items* without re-fetching.
+
+        Used when something (e.g. a TCP change) invalidates the cached joint
+        configs: rather than eagerly recalculating IK, this just drops the stale
+        cache so ``_update_controls`` sees ``all_iks_ready=False`` and the action
+        button falls back to "Calculate IKs", requiring an explicit click before
+        paying for the network round-trip.
+
+        A soft ``invalidate()`` alone isn't enough here: it keeps
+        ``trajectory_planned``/``planned_joint_trajectory`` intact, so
+        ``_update_controls()`` would recompute ``has_trajectory`` as True again
+        and the button would bounce back to "Execute" - letting the user run a
+        trajectory planned under the config that just became stale. Removing
+        the visualization forces a real replan first.
+        """
+        for item in items:
+            item.joint_configs = []
+            item.selected_config_idx = 0
+            item.reachable = None
+        self._planner.invalidate(remove_visualization=True)
+        defer_call(self.refresh_tree_view)
+        self._update_controls()
+
+    def _on_inline_config_changed(self, item: PoseItem, config_idx: int) -> None:
+        item.selected_config_idx = config_idx
+
+        # Only the expanded joint_config detail row needs rebuilding to show the
+        # updated joint values label. Notifying the parent PoseItem row would cause
+        # omni.ui to destroy and recreate the combo box widget, causing a flicker.
+        joint_config_detail = next(
+            (
+                child
+                for child in item._detail_children
+                if child.detail_type == "joint_config"
+            ),
+            None,
+        )
+        if joint_config_detail:
+            self._pose_model.notify_item_changed(joint_config_detail)
+
+        # Move the ghost preview to reflect the newly selected config.
         if item.selected_joint_config:
             self._show_preview(item.selected_joint_config)
+        self._persist_pose_metadata(item)
+
+        # The chosen seed config affects planning; any cached result is stale.
         self._planner.invalidate()
         self._update_controls()
         if self._settings.live_update:
@@ -483,9 +592,11 @@ class TrajectoryPlannerController:
 
         def _on_tcp_changed(tcp_name: str | None):
             item.tcp_name = tcp_name
+            self._persist_pose_metadata(item)
             self._pose_model.notify_item_changed(item)
-            self._planner.invalidate()
-            self._ik_manager.fetch_ik_for_pose(item)
+            # Go stale instead of eagerly re-fetching IK - the user must click
+            # "Calculate IKs" to pay for the recalculation.
+            self._mark_ik_stale([item])
 
         MotionSettingsDialog(
             title=f"Motion Settings - {item.name_model.get_value_as_string()}",
@@ -530,15 +641,20 @@ class TrajectoryPlannerController:
         self.refresh_tree_view()
 
     def _on_calculate_iks(self) -> None:
+        # Fetch IK against each pose's actual current prim position, not a
+        # possibly-stale cached one (the watcher only refreshes it reactively).
+        self._recalculate_all_poses()
         self._ik_manager.refresh_all_ik()
 
     def _on_plan(self) -> None:
-        # Not visualized yet — keep Execute disabled until the curve is drawn.
+        self._recalculate_all_poses()
+        # Not visualized yet - keep Execute disabled until the curve is drawn.
         self._trajectory_visualized = False
         self._planner.plan()
         self._controls.set_cancel_label()
 
     def _on_replan(self) -> None:
+        self._recalculate_all_poses()
         self._planner.invalidate()
         self._planner.plan()
         self._controls.set_cancel_label()
@@ -684,7 +800,7 @@ class TrajectoryPlannerController:
             self._progress.set_hint(msg)
 
     def _on_plan_complete(self, joint_trajectory: wb_v2_models.JointTrajectory) -> None:
-        # Execute is enabled only once the trajectory has been visualized — see
+        # Execute is enabled only once the trajectory has been visualized - see
         # _visualize_then_hide. Keep it disabled until then.
         self._trajectory_visualized = False
         duration = None
@@ -750,7 +866,7 @@ class TrajectoryPlannerController:
         ok = False
         try:
             ok = await self._planner.visualize_trajectory(
-                self._settings.trajectory_color
+                self._rendering_settings.trajectory_color
             )
         finally:
             self._progress.hide()
@@ -767,10 +883,10 @@ class TrajectoryPlannerController:
         count = getattr(self, "_planned_waypoint_count", None)
         waypoints = f"{count} waypoints" if count is not None else "trajectory"
         if version:
-            self._progress.set_hint(f"Planned · stored {version}")
+            self._progress.set_hint(f"Planned - stored {version}")
             message = f"Trajectory planned ({waypoints}), stored as {version}."
         else:
-            self._progress.set_hint("Planned · storage failed")
+            self._progress.set_hint("Planned - storage failed")
             message = f"Trajectory planned ({waypoints}); storage failed (see log)."
         nm.post_notification(
             message,
@@ -839,7 +955,7 @@ class TrajectoryPlannerController:
         mg = self._mg_setup.mg_config
         if not mg or not mg.prim_path:
             return
-        color = list(self._settings.overlay_color) + [0.3]
+        color = list(self._rendering_settings.overlay_color) + [0.3]
         self._preview.show(
             mg.prim_path,
             joint_positions,
@@ -954,16 +1070,38 @@ class TrajectoryPlannerController:
             defer_call(self.refresh_tree_view)
 
     def _on_prim_changed(self, prim_path: str) -> None:
-        if self._debounce_task is not None:
-            self._debounce_task.cancel()
-        self._debounce_task = run_coroutine(self._debounced_update(prim_path))
+        if prim_path in self._persisting_metadata_paths:
+            # Our own metadata write, not an external pose edit - ignore.
+            return
+        pending = self._debounce_tasks.get(prim_path)
+        if pending is not None:
+            pending.cancel()
+        self._debounce_tasks[prim_path] = run_coroutine(
+            self._debounced_update(prim_path)
+        )
 
     async def _debounced_update(self, prim_path: str) -> None:
         await asyncio.sleep(_DEBOUNCE_DELAY)
-        self._debounce_task = None
+        self._debounce_tasks.pop(prim_path, None)
         self._refresh_pose(prim_path)
         if self._settings.live_update:
             self._trigger_live_update()
+
+    @staticmethod
+    def _pose_unchanged(old_pose, new_pose, tol: float = 1e-6) -> bool:
+        """True when *new_pose* is numerically the same as *old_pose*.
+
+        Used to tell a genuine transform edit (must reset the joint-config
+        selection - IK may no longer be valid at the new position) apart from a
+        change-info notification that fired for some other reason on the same
+        prim, most notably an echo of the tool's own metadata write
+        (``_persist_pose_metadata``). Content-based rather than timing-based, so
+        it can't be defeated by the USD watcher delivering the notice on a later
+        frame than the suppression window covers.
+        """
+        if old_pose is None or len(old_pose.pose) != len(new_pose.pose):
+            return False
+        return all(abs(a - b) < tol for a, b in zip(old_pose.pose, new_pose.pose))
 
     def _refresh_pose(self, prim_path: str) -> None:
         if not self._pose_model.get_items_by_path(prim_path):
@@ -978,9 +1116,17 @@ class TrajectoryPlannerController:
             defer_call(self.refresh_tree_view)
             return
         try:
-            pose = self._get_pose_relative_to_mg(prim_path, stage)
+            pose = self._get_planning_pose(prim_path, stage)
             items = self._pose_model.get_items_by_path(prim_path)
             for item in items:
+                if self._pose_unchanged(item.pose, pose):
+                    # The transform didn't actually move - this notification is
+                    # not a genuine pose edit (e.g. our own metadata write, or an
+                    # unrelated change on the same prim). Keep the cached IK/
+                    # joint-config selection intact.
+                    item.update_pose(pose)
+                    self._pose_model.notify_item_changed(item)
+                    continue
                 item.update_pose(pose)
                 item.reachable = None
                 item.joint_configs = []
@@ -988,7 +1134,15 @@ class TrajectoryPlannerController:
                 if item is self._selected_pose_item:
                     self._preview.hide()
                 self._pose_model.notify_item_changed(item)
-                self._ik_manager.fetch_ik_for_pose(item, silent=True)
+                # A real edit invalidates any previously persisted manual
+                # selection. Clearing it (not just skipping it for this one
+                # fetch) prevents a later batch Refresh IK, stage reload, or
+                # re-add from resurrecting the stale config via
+                # _read_preferred_from_prim().
+                self._clear_persisted_joint_config(item)
+                self._ik_manager.fetch_ik_for_pose(
+                    item, silent=True, apply_preferred=False
+                )
             self._planner.invalidate()
             defer_call(self.refresh_tree_view)
             self._update_controls()
@@ -1015,7 +1169,21 @@ class TrajectoryPlannerController:
     def _recalculate_all_poses(self) -> None:
         for item in self._pose_model.items:
             try:
-                pose = self._get_pose_relative_to_mg(item.prim_path)
+                pose = self._get_planning_pose(item.prim_path)
+                if not self._pose_unchanged(item.pose, pose):
+                    # Real edit since the last IK fetch: the cached joint
+                    # configs no longer match this pose. Drop them so planning
+                    # (which runs right after this) can't reuse a stale
+                    # config - see _do_plan()'s live re-fetch for a pose with
+                    # no selected_joint_config. Also clear the persisted
+                    # preference (like _refresh_pose()) so a Calculate IKs
+                    # click before the debounced watcher runs can't read the
+                    # stale attribute back off the prim and re-select it.
+                    item.joint_configs = []
+                    item.selected_config_idx = 0
+                    self._clear_persisted_joint_config(item)
+                    if item is self._selected_pose_item:
+                        self._preview.hide()
                 item.update_pose(pose)
                 item.reachable = None
             except Exception as exc:
@@ -1029,6 +1197,23 @@ class TrajectoryPlannerController:
         self._ik_manager.check_reachability()
         if len(items) >= 2:
             self._planner.plan()
+
+    def _reselect_after_reorder(self, item: PoseItem) -> None:
+        """Flicker-free counterpart to _rebuild_and_reselect for reordering.
+
+        Refreshes the tree widgets (recomputes per-row index state such as the
+        up/down button enablement) without clearing the skill frame, then keeps
+        the moved pose selected and its preview shown.
+        """
+        self.refresh_tree_view()
+        if self.tree_view and item in self._pose_model.items:
+            self._syncing_selection = True
+            self.tree_view.selection = [item]
+            self._syncing_selection = False
+        if item.selected_joint_config:
+            self._show_preview(item.selected_joint_config)
+        else:
+            self._preview.hide()
 
     def _rebuild_and_reselect(self, item: PoseItem) -> None:
         self._rebuild_fn()

@@ -2,6 +2,8 @@ from typing import Callable
 import wandelbots_api_client.v2 as wb
 from omni.kit.async_engine import run_coroutine
 import omni.ui as ui
+from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.wb_theme import COMBOBOX_STYLE, build_tooltip
 from wandelbots.omni.utils.api import get_api_client_from_config
 import carb
 
@@ -21,7 +23,7 @@ class CollisionSetupModel(ui.AbstractItemModel):
         ]
         self._current_index = ui.SimpleIntModel(
             collision_setups.index(selected_collision_setup)
-            if selected_collision_setup is not None
+            if selected_collision_setup in collision_setups
             else -1
         )
         self._current_index.add_value_changed_fn(
@@ -44,12 +46,14 @@ class CollisionSetupSelector:
         cell: str,
         collision_setup_changed_fn: Callable[[str], None],
         selected_collision_setup: str = None,
+        collision_setups_loaded_fn: Callable[[list[str]], None] | None = None,
     ):
         self._api_configuration = api_configuration
         self._cell = cell
         self._collision_setup_changed_fn = collision_setup_changed_fn
         self._collision_setups = []
         self._selected_collision_setup = selected_collision_setup
+        self._collision_setups_loaded_fn = collision_setups_loaded_fn
         run_coroutine(self.refresh_collision_setups()).add_done_callback(
             lambda _: self._build_ui()
         )
@@ -65,12 +69,17 @@ class CollisionSetupSelector:
         except Exception as e:
             self._collision_setups = []
             carb.log_warn(f"Failed to fetch collision setups: {e}")
+        if self._collision_setups_loaded_fn:
+            self._collision_setups_loaded_fn(list(self._collision_setups))
 
     def _build_ui(self):
         self._frame.clear()
         with self._frame:
             if len(self._collision_setups) == 0:
-                ui.Label("No collision setups found")
+                ui.Label(
+                    "No collision setups found",
+                    style={"color": NOVAColor.TEXT_SECONDARY.color},
+                )
                 return
             self._collision_setups_model = CollisionSetupModel(
                 self._selected_collision_setup, self._collision_setups
@@ -87,4 +96,11 @@ class CollisionSetupSelector:
                     assign_collision_setup
                 )
             )
-            ui.ComboBox(self._collision_setups_model)
+            ui.ComboBox(
+                self._collision_setups_model,
+                height=20,
+                style=COMBOBOX_STYLE,
+                tooltip_fn=lambda: build_tooltip(
+                    "Stored collision setup on the selected NOVA instance"
+                ),
+            )

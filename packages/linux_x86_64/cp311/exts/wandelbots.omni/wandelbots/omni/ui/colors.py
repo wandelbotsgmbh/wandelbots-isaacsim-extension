@@ -95,9 +95,7 @@ class NOVAColor(Enum):
     TREEVIEW_HOVERED = "#2E2E28"
 
     # Tooltip Colors
-    TOOLTIP_BACKGROUND = "#2A2A2A"
-    TOOLTIP_TEXT = "#FFFFFFDE"
-    TOOLTIP_BORDER = "#4A4A4A"
+    TOOLTIP_BORDER = "#FFFFFF1F"
 
     # Progress Bar Colors
     PROGRESS_BAR_BACKGROUND = "#1A1A1A"
@@ -106,6 +104,21 @@ class NOVAColor(Enum):
     BACKGROUND_PAPER = "#343434"
     BACKGROUND_DEFAULT = "#505050"
     BACKGROUND_PAPER_DARK = "#2C2C2C"
+
+    # Layer Colors (z-stack depth, lower = darker)
+    LAYER_DROPDOWN_BODY = "#1F2124"
+    LAYER_DROPDOWN_WIDGET = "#292929"
+    LAYER_HEADER = "#1F2223"
+    LAYER_BASE = "#323434"
+
+    # Surface overlays (translucent white over LAYER_BASE; flat at every depth)
+    SURFACE_OVERLAY = "#FFFFFF14"
+    SURFACE_OVERLAY_HOVER = "#FFFFFF1F"
+    # Fully transparent: lets the parent surface show through unchanged
+    SURFACE_TRANSPARENT = "#FFFFFF00"
+    # Generic translucent overlays for insets/wells over arbitrary backgrounds.
+    OVERLAY_LIGHT = "#FFFFFF20"
+    OVERLAY_DARK = "#00000040"
 
     # Background Paper Elevation Levels
     BACKGROUND_ELEVATION_0 = "#11131F"

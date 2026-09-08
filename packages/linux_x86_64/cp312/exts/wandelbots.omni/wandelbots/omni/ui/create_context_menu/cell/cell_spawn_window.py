@@ -16,6 +16,7 @@ from omni.usd import get_watcher
 from pxr import Gf, Sdf, Usd, UsdGeom
 
 import wandelbots_api_client.v2 as wb_v2
+import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import (
@@ -537,10 +538,10 @@ class CellSpawnWindow:
             else model_name.replace("-", "_")
         )
 
-        mounting: wb_v2.Pose | None = None
-        tcps: dict[str, wb_v2.TcpOffset] = {}
+        mounting: wb_v2_models.Pose | None = None
+        tcps: dict[str, wb_v2_models.TcpOffset] = {}
         try:
-            mg_desc: wb_v2.MotionGroupDescription = (
+            mg_desc: wb_v2_models.MotionGroupDescription = (
                 await motion_group_api.get_motion_group_description(
                     cell=cell_name,
                     controller=controller_name,
@@ -617,7 +618,7 @@ class CellSpawnWindow:
     def _apply_mounting(
         self,
         xform: UsdGeom.Xform,
-        mounting: wb_v2.Pose,
+        mounting: wb_v2_models.Pose,
         stage_units: float,
     ) -> None:
         unit_factor = 0.001 / stage_units
@@ -669,7 +670,7 @@ class CellSpawnWindow:
         self,
         stage: Usd.Stage,
         robot_prim_path: str,
-        tcps: dict[str, wb_v2.TcpOffset],
+        tcps: dict[str, wb_v2_models.TcpOffset],
         stage_units: float,
     ) -> None:
         unit_factor = 0.001 / stage_units

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from typing import Any, Protocol
 
@@ -22,6 +23,10 @@ class MultipleValuesError(LookupError):
         if len(self.args) == 1:
             return repr(self.args[0])
         return super().__str__()
+
+
+# Same regex as http11._value_re, but for matching str rather than bytes.
+is_valid_header_value = re.compile(r"[\x09\x20-\x7e\x80-\xff]*").fullmatch
 
 
 class Headers(MutableMapping[str, str]):
@@ -60,6 +65,26 @@ class Headers(MutableMapping[str, str]):
     - :meth:`get_all` returns a list of all values for a header;
     - :meth:`raw_items` returns an iterator of ``(name, values)`` pairs.
 
+    Header names and values are expected to contain only ASCII text. However,
+    non-ASCII values happen in practice, even though there is no standard for
+    transmitting non-ASCII data in HTTP headers. :class:`Headers` supports it
+    by treating it as ISO-8859-1 data. This is a safe and reversible encoding
+    to represent arbitrary data in a :class:`str`.
+
+    When reading headers from the network, if the actual encoding isn't
+    ISO-8859-1, you must re-encode and decode, e.g.::
+
+        value = headers[key].encode("iso-8859-1").decode("utf-8")
+
+    Conversely, when sending headers to the network, if you need to use a
+    different encoding, you can encode and decode, e.g.::
+
+        headers[key] = value.encode("utf-8").decode("iso-8859-1")
+
+    When assigning a value to a header, as a security hardening measure, the
+    value is checked for unsafe characters. The name isn't checked because it's
+    usually a constant in code, unlikely to be tainted by user input.
+
     """
 
     __slots__ = ["_dict", "_list"]
@@ -83,8 +108,9 @@ class Headers(MutableMapping[str, str]):
         return copy
 
     def serialize(self) -> bytes:
-        # Since headers only contain ASCII characters, we can keep this simple.
-        return str(self).encode()
+        # parse_headers() supports non-ASCII header values. It decodes them as
+        # ISO-8859-1. Encode back in ISO-8859-1 in order to round-trip cleanly.
+        return str(self).encode("iso-8859-1")
 
     # Collection methods
 
@@ -107,6 +133,8 @@ class Headers(MutableMapping[str, str]):
             raise MultipleValuesError(key)
 
     def __setitem__(self, key: str, value: str) -> None:
+        if not is_valid_header_value(str(value)):
+            raise InvalidHeaderValue(key, value)
         self._dict.setdefault(key.lower(), []).append(value)
         self._list.append((key, value))
 
@@ -158,17 +186,27 @@ class Headers(MutableMapping[str, str]):
         """
         return iter(self._list)
 
+    # Internal methods
+
+    def set_insecure(self, key: str, value: str) -> None:
+        """
+        Set a header without validating its value.
+
+        """
+        self._dict.setdefault(key.lower(), []).append(value)
+        self._list.append((key, value))
+
 
 # copy of _typeshed.SupportsKeysAndGetItem.
-class SupportsKeysAndGetItem(Protocol):  # pragma: no cover
+class SupportsKeysAndGetItem(Protocol):
     """
     Dict-like types with ``keys() -> str`` and ``__getitem__(key: str) -> str`` methods.
 
     """
 
-    def keys(self) -> Iterable[str]: ...
+    def keys(self) -> Iterable[str]: ...  # pragma: no branch
 
-    def __getitem__(self, key: str) -> str: ...
+    def __getitem__(self, key: str) -> str: ...  # pragma: no branch
 
 
 HeadersLike = (
@@ -181,3 +219,7 @@ In addition to :class:`Headers` itself, this includes dict-like types where both
 keys and values are :class:`str`.
 
 """
+
+
+# At the bottom to break an import cycle.
+from .exceptions import InvalidHeaderValue  # noqa: E402
