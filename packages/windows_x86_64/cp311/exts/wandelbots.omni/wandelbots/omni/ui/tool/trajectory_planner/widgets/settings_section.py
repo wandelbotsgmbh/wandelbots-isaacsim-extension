@@ -8,12 +8,15 @@ from typing import Callable
 import omni.ui as ui
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
+from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
+    CF_STEP_SIZE_MIN,
+)
+from wandelbots.omni.ui.wb_theme import FIELD_STYLE, TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
+from wandelbots.omni.ui.widgets.form_row import form_row
+from wandelbots.omni.ui.widgets.styled_checkbox import styled_checkbox
 
 _LABEL_WIDTH = 170
-_ALGORITHM_OPTIONS = ["RRTConnectAlgorithm", "MidpointInsertionAlgorithm"]
-_ALGORITHM_DISPLAY = ["RRTConnect", "MidpointInsertion"]
 
 
 class SettingsSection:
@@ -30,8 +33,8 @@ class SettingsSection:
         global_limits_override: dict | None = None,
         payload_name: str = "",
         payload_mass: float = 0.0,
-        cf_algorithm: str = "RRTConnectAlgorithm",
         cf_max_iterations: int = 10000,
+        cf_step_size: float | None = None,
         plan_collision_free: bool = False,
         move_to_start: bool = False,
         on_setting_changed: Callable[[str, object], None] | None = None,
@@ -45,14 +48,16 @@ class SettingsSection:
         self.global_limits_override = global_limits_override
         self.payload_name = payload_name
         self.payload_mass = payload_mass
-        self.cf_algorithm = cf_algorithm
         self.cf_max_iterations = cf_max_iterations
+        self.cf_step_size = cf_step_size
         self.plan_collision_free = plan_collision_free
         self.move_to_start = move_to_start
         self._on_setting_changed = on_setting_changed
         self._live_update_checkbox: ui.CheckBox | None = None
         self._move_to_start_checkbox: ui.CheckBox | None = None
-        self._algorithm_combo: ui.ComboBox | None = None
+        self._cf_step_size_field: ui.FloatDrag | None = None
+        self._cf_step_size_override: ui.SimpleBoolModel | None = None
+        self._cf_step_size_model: ui.SimpleFloatModel | None = None
         self._global_settings_button: ui.Button | None = None
         self._collision_free: bool = False
         self._motion_group_limits: dict | None = None
@@ -73,13 +78,13 @@ class SettingsSection:
                     "Mass of the payload in kilograms.",
                     "payload_mass",
                 )
-                self._build_algorithm_row()
                 self._build_int_row(
                     "CF Max Iterations",
                     self.cf_max_iterations,
                     "Maximum iterations for collision-free planning algorithm.",
                     "cf_max_iterations",
                 )
+                self._build_cf_step_size_row()
                 self._build_move_to_start_row()
 
     def set_tcp_limits(
@@ -265,6 +270,65 @@ class SettingsSection:
         setattr(self, key, clamped)
         self._notify(key, clamped)
 
+    def _build_cf_step_size_row(self) -> None:
+        # A number field cannot show "no value", so the checkbox is what makes
+        # leaving the step size to the algorithm visible and reversible.
+        override_active = self.cf_step_size is not None
+        self._cf_step_size_override = ui.SimpleBoolModel(override_active)
+        self._cf_step_size_model = ui.SimpleFloatModel(
+            self.cf_step_size if override_active else CF_STEP_SIZE_MIN
+        )
+        with form_row(
+            "CF Step Size",
+            tooltip=(
+                "Largest step, in joint space, that collision-free planning "
+                "extends its search by. Smaller steps follow narrow passages "
+                "more closely and plan more slowly. Leave it unchecked to let "
+                "the algorithm pick the step size."
+            ),
+        ):
+            with ui.HStack(height=18, spacing=8):
+                styled_checkbox(model=self._cf_step_size_override, width=18, height=18)
+                self._cf_step_size_field = ui.FloatDrag(
+                    model=self._cf_step_size_model,
+                    min=CF_STEP_SIZE_MIN,
+                    step=0.01,
+                    height=18,
+                    enabled=override_active,
+                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+                )
+        self._cf_step_size_override.add_value_changed_fn(
+            lambda m, ws=weakref.ref(self): (
+                ws()._on_cf_step_size_override_changed(m.get_value_as_bool())
+                if ws()
+                else None
+            )
+        )
+        self._cf_step_size_model.add_value_changed_fn(
+            lambda m, ws=weakref.ref(self): (
+                ws()._on_cf_step_size_changed(m.get_value_as_float()) if ws() else None
+            )
+        )
+
+    def _on_cf_step_size_override_changed(self, enabled: bool) -> None:
+        self.cf_step_size = (
+            self._cf_step_size_model.get_value_as_float() if enabled else None
+        )
+        if self._cf_step_size_field is not None:
+            self._cf_step_size_field.enabled = enabled
+        self._notify("cf_step_size", self.cf_step_size)
+
+    def _on_cf_step_size_changed(self, value: float) -> None:
+        clamped = max(CF_STEP_SIZE_MIN, value)
+        if abs(clamped - value) > 1e-9:
+            # Writing the clamped value back re-enters here with it applied.
+            self._cf_step_size_model.set_value(clamped)
+            return
+        if not self._cf_step_size_override.get_value_as_bool():
+            return
+        self.cf_step_size = clamped
+        self._notify("cf_step_size", clamped)
+
     def _build_payload_name_row(self) -> None:
         with ui.HStack(height=26, spacing=16):
             ui.Spacer(width=5)
@@ -291,37 +355,6 @@ class SettingsSection:
     def _on_payload_name_changed(self, value: str) -> None:
         self.payload_name = value.strip()
         self._notify("payload_name", self.payload_name)
-
-    def _build_algorithm_row(self) -> None:
-        with ui.HStack(height=26, spacing=16):
-            ui.Spacer(width=5)
-            ui.Label(
-                "CF Algorithm",
-                width=_LABEL_WIDTH,
-                alignment=ui.Alignment.LEFT_CENTER,
-                tooltip_fn=lambda: build_tooltip(
-                    "Path planning algorithm for collision-free segments."
-                ),
-                style=TOOLTIP_RESET,
-            )
-            initial_idx = 0
-            if self.cf_algorithm in _ALGORITHM_OPTIONS:
-                initial_idx = _ALGORITHM_OPTIONS.index(self.cf_algorithm)
-            self._algorithm_combo = ui.ComboBox(
-                initial_idx, *_ALGORITHM_DISPLAY, height=22
-            )
-            self._algorithm_combo.model.add_item_changed_fn(
-                lambda m, _item, ws=weakref.ref(self): (
-                    ws()._on_algorithm_changed(m) if ws() else None
-                )
-            )
-            ui.Spacer(width=5)
-
-    def _on_algorithm_changed(self, model) -> None:
-        idx = model.get_item_value_model().get_value_as_int()
-        if 0 <= idx < len(_ALGORITHM_OPTIONS):
-            self.cf_algorithm = _ALGORITHM_OPTIONS[idx]
-            self._notify("cf_algorithm", self.cf_algorithm)
 
     def _build_int_row(self, label: str, value: int, tooltip: str, key: str) -> None:
         with ui.HStack(height=26, spacing=16):

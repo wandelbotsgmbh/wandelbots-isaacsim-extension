@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import carb
@@ -12,6 +12,7 @@ import wandelbots_api_client.v2.models as wb_models
 from wandelbots.omni.datatypes import WSPose, JointPositions
 from wandelbots.omni.manipulators import MotionStreamConfiguration
 from wandelbots.omni.utils.api import ApiConfiguration, get_api_client_from_config
+from wandelbots.omni.utils.kinematics import build_collision_free_algorithm
 
 
 MotionCommand = (
@@ -26,11 +27,21 @@ MotionCommand = (
 @dataclass(frozen=True)
 class PlanSuccess:
     joint_trajectory: wb_models.JointTrajectory
+    # Joint configurations the collision-free planner inserted between the
+    # user's poses to route around obstacles. None for motion-type planning.
+    via_joint_positions: list[list[float]] | None = None
 
 
 @dataclass(frozen=True)
 class PlanFailure:
     error: str
+    # The configuration the planner reported as violating, else the last
+    # reachable waypoint before the error. Drives the red robot ghost.
+    failed_joint_position: list[float] | None = None
+    # Waypoints from the start joint position up to the error.
+    partial_joint_positions: list[list[float]] | None = None
+    error_location_on_trajectory: float | None = None
+    segment_index: int | None = None
 
 
 PlanResult = PlanSuccess | PlanFailure
@@ -242,14 +253,19 @@ async def create_joint_p2p_command_from_pose(
 _REQUEST_TIMEOUT = 120.0
 
 
-def _parse_error_from_raw(raw_json: bytes | str) -> str | None:
+def _load_response_dict(raw_json: bytes | str) -> dict | None:
     try:
         data = json.loads(raw_json)
     except (json.JSONDecodeError, TypeError):
         return None
 
     response = data.get("response") if isinstance(data, dict) else None
-    if not isinstance(response, dict):
+    return response if isinstance(response, dict) else None
+
+
+def _parse_error_from_raw(raw_json: bytes | str) -> str | None:
+    response = _load_response_dict(raw_json)
+    if response is None:
         return None
 
     if response.get("joint_positions"):
@@ -296,6 +312,94 @@ def _format_error_feedback(result_inner: object) -> str:
     return " | ".join(parts)
 
 
+# Feedback fields that carry the violating joint configuration, in order of
+# preference: collision / joint limit, then singularity.
+_FEEDBACK_JOINT_FIELDS = ("joint_position", "singular_joint_position")
+
+
+def _is_joint_vector(value: object) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    return all(isinstance(v, (int, float)) for v in value)
+
+
+def _is_waypoint_list(value: object) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    return all(_is_joint_vector(waypoint) for waypoint in value)
+
+
+def _error_location(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _field(source: object, name: str) -> object:
+    """One field of a failed response, whether it arrived typed or as raw JSON.
+
+    Both carry the same field names; only the way to reach them differs. Reading
+    them through here keeps one set of shape rules for both paths.
+    """
+    if isinstance(source, dict):
+        return source.get(name)
+    return getattr(source, name, None)
+
+
+def _feedback_joint_position(response: object) -> list[float] | None:
+    feedback = _field(response, "error_feedback")
+    # A typed feedback is a oneOf wrapper; the fields sit one level down.
+    feedback = getattr(feedback, "actual_instance", feedback)
+    for field_name in _FEEDBACK_JOINT_FIELDS:
+        value = _field(feedback, field_name)
+        if _is_joint_vector(value):
+            return list(value)
+    return None
+
+
+def _partial_joint_positions(response: object) -> list[list[float]] | None:
+    joint_trajectory = _field(response, "joint_trajectory")
+    waypoints = _field(joint_trajectory, "joint_positions")
+    return list(waypoints) if _is_waypoint_list(waypoints) else None
+
+
+def joint_position_from_failed_response(response: object) -> list[float] | None:
+    """Joint configuration to show for a failed plan.
+
+    Prefers the violating configuration the feedback reports (collision, joint
+    limit, singularity) and falls back to the last reachable waypoint.
+    """
+    joint_position = _feedback_joint_position(response)
+    if joint_position is not None:
+        return joint_position
+    partial = _partial_joint_positions(response)
+    return list(partial[-1]) if partial else None
+
+
+def _plan_failure(response: object, error: str) -> PlanFailure:
+    return PlanFailure(
+        error=error,
+        failed_joint_position=joint_position_from_failed_response(response),
+        partial_joint_positions=_partial_joint_positions(response),
+        error_location_on_trajectory=_error_location(
+            _field(response, "error_location_on_trajectory")
+        ),
+    )
+
+
+def plan_failure_from_response(result_inner: object) -> PlanFailure:
+    """Build a PlanFailure from a typed PlanTrajectoryFailedResponse."""
+    return _plan_failure(result_inner, _format_error_feedback(result_inner))
+
+
+def plan_failure_from_raw(raw_json: bytes | str) -> PlanFailure | None:
+    """Build a PlanFailure from a raw plan-trajectory response body."""
+    error = _parse_error_from_raw(raw_json)
+    if error is None:
+        return None
+    return _plan_failure(_load_response_dict(raw_json) or {}, error)
+
+
 async def _call_plan_trajectory(
     planning_api: wb.TrajectoryPlanningApi,
     cell: str,
@@ -320,9 +424,9 @@ async def _call_plan_trajectory(
             _request_timeout=_REQUEST_TIMEOUT,
         )
         raw_body = await raw_response.read()
-        error_msg = _parse_error_from_raw(raw_body)
-        if error_msg:
-            return PlanFailure(error=error_msg)
+        failure = plan_failure_from_raw(raw_body)
+        if failure is not None:
+            return failure
         carb.log_warn(
             f"Raw planning response contained no recognizable error "
             f"(status={raw_response.status}): {raw_body[:2000]!r}"
@@ -336,7 +440,7 @@ async def _call_plan_trajectory(
         f"Planning request did not succeed. Result type: "
         f"{type(result_inner).__name__}, value: {result_inner!r}"
     )
-    return PlanFailure(error=_format_error_feedback(result_inner))
+    return plan_failure_from_response(result_inner)
 
 
 async def plan_trajectory(
@@ -413,6 +517,24 @@ class TrajectorySegmentSpec:
     motion_commands: list[wb_models.MotionCommand]
     # Blend into the NEXT segment (merge-time). None on the last segment.
     blending: wb_models.BlendingPosition | None = None
+
+
+def _segment_failure(
+    failure: PlanFailure,
+    segment_index: int,
+    segment_count: int,
+    planned: list[wb_models.JointTrajectory],
+) -> PlanFailure:
+    # The red partial curve spans start-to-error, so the segments that already
+    # planned are prepended to the failing segment's partial trajectory.
+    partial = [wp for jt in planned for wp in jt.joint_positions]
+    partial += failure.partial_joint_positions or []
+    return replace(
+        failure,
+        error=f"Segment {segment_index + 1}/{segment_count} failed: {failure.error}",
+        partial_joint_positions=partial or None,
+        segment_index=segment_index,
+    )
 
 
 async def plan_trajectory_segments(
@@ -517,9 +639,7 @@ async def plan_trajectory_segments(
             )
             result = await _call_plan_trajectory(planning_api, cell, request)
             if isinstance(result, PlanFailure):
-                return PlanFailure(
-                    error=f"Segment {i + 1}/{len(segments)} failed: {result.error}"
-                )
+                return _segment_failure(result, i, len(segments), planned)
             jt = result.joint_trajectory
             planned.append(jt)
             current_start = jt.joint_positions[-1]
@@ -566,8 +686,8 @@ async def plan_collision_free(
     cycle_time: float | None = None,
     payload_name: str | None = None,
     payload_mass: float | None = None,
-    cf_algorithm: str = "RRTConnectAlgorithm",
     cf_max_iterations: int = 10000,
+    cf_step_size: float | None = None,
     global_limits_override: dict | None = None,
     status_fn: Callable[[str], None] | None = None,
     segment_planned_fn: Callable[[int, list[list[float]]], None] | None = None,
@@ -625,23 +745,14 @@ async def plan_collision_free(
         if ctx.collision_setups:
             mg_setup.collision_setups = ctx.collision_setups
 
-        if cf_algorithm == "MidpointInsertionAlgorithm":
-            algorithm = wb_models.CollisionFreeAlgorithm(
-                wb_models.MidpointInsertionAlgorithm(
-                    max_iterations=cf_max_iterations,
-                    algorithm_name="MidpointInsertionAlgorithm",
-                )
-            )
-        else:
-            algorithm = wb_models.CollisionFreeAlgorithm(
-                wb_models.RRTConnectAlgorithm(
-                    max_iterations=cf_max_iterations,
-                    algorithm_name="RRTConnectAlgorithm",
-                )
-            )
+        # RRTConnect is the only algorithm whose response carries the motion
+        # commands that the final plan-trajectory call replays; midpoint
+        # insertion returns the trajectory alone and cannot be replayed.
+        algorithm = build_collision_free_algorithm(cf_max_iterations, cf_step_size)
 
         planning_api = wb.TrajectoryPlanningApi(api_client)
-        segments: list[wb_models.JointTrajectory] = []
+        all_motion_commands: list[wb_models.MotionCommand] = []
+        via_joint_positions: list[list[float]] = []
         current_start_configs: list[list[float]] = [start_joint_position]
         last_error_msg: str = ""
 
@@ -696,18 +807,52 @@ async def plan_collision_free(
                         continue
 
                     result_inner = response.response.actual_instance
-                    if isinstance(result_inner, wb_models.JointTrajectory):
-                        segments.append(result_inner)
+                    # motion_commands is optional on the response model: a
+                    # server that returns a trajectory without it can't be
+                    # replayed through plan-trajectory, so this must not be
+                    # treated as a successful segment - doing so would
+                    # silently drop the leg from the final concatenated plan
+                    # rather than fail loudly.
+                    if (
+                        isinstance(result_inner, wb_models.JointTrajectory)
+                        and response.motion_commands
+                    ):
+                        segment_commands = list(response.motion_commands)
+                        if limits_override is not None:
+                            # The override lands on the leg that reaches the
+                            # user's pose, not on the via-point legs this
+                            # segment may have inserted to route around an
+                            # obstacle. This is not what the old merge path
+                            # did: MergeTrajectoriesSegment.limits_override
+                            # only bounded the blending at a segment's end, and
+                            # collision-free never set a blending, so it had
+                            # nothing to bound.
+                            segment_commands[-1] = segment_commands[-1].model_copy(
+                                update={"limits_override": limits_override}
+                            )
+                        all_motion_commands.extend(segment_commands)
+                        via_joint_positions.extend(
+                            _via_joint_positions(segment_commands)
+                        )
                         current_start_configs = [result_inner.joint_positions[-1]]
                         segment_planned = True
                         await _status(
                             f"Segment {i} succeeded on attempt "
                             f"{attempt}/{total_attempts} "
-                            f"({len(result_inner.joint_positions)} samples)"
+                            f"({len(segment_commands)} motion command(s))"
                         )
                         if segment_planned_fn:
                             segment_planned_fn(i, result_inner.joint_positions)
                         break
+                    elif isinstance(result_inner, wb_models.JointTrajectory):
+                        last_error_msg = (
+                            "Server returned a trajectory without motion_commands; "
+                            "cannot assemble the final plan without them."
+                        )
+                        await _status(
+                            f"Segment {i} attempt {attempt}/{total_attempts} "
+                            f"failed: {last_error_msg}"
+                        )
                     else:
                         last_error_msg = _format_error_feedback(result_inner)
                         await _status(
@@ -721,28 +866,81 @@ async def plan_collision_free(
                         f"Collision-free planning failed for segment {i} "
                         f"after {total_attempts} attempts. "
                         f"Last error: {last_error_msg}"
-                    )
+                    ),
+                    segment_index=i,
                 )
 
-        await _status(f"Merging {len(segments)} collision-free segments...")
-        merge_segments = [
-            wb_models.MergeTrajectoriesSegment(
-                trajectory=seg,
-                collision_setups=ctx.collision_setups,
-                limits_override=limits_override,
-            )
-            for seg in segments
-        ]
-        merge_request = wb_models.MergeTrajectoriesRequest(
+        await _status(
+            f"Planning final trajectory from {len(all_motion_commands)} "
+            "collision-free motion command(s)..."
+        )
+        # Each collision-free segment's own motion commands (its direct leg,
+        # plus any via-point it needed to route around an obstacle) are
+        # concatenated and planned in one plan-trajectory call instead of
+        # merge-trajectories: merge-trajectories rejects a valid multi-segment
+        # plan whenever a segment's own path needs more than one leg, because
+        # it validates the summed segment-location offsets against the plain
+        # segment count instead of their actual sum (NOVA-side bug).
+        #
+        # merge-trajectories took collision_setups and re-checked wherever
+        # blending pushed the path off the validated segments. plan-trajectory
+        # does not check collisions at all (see plan_trajectory_segments). What
+        # keeps this safe is that every command below is a joint-space move to
+        # a configuration the collision-free planner already validated, and
+        # none of them carries a blending, so the joined path cannot leave the
+        # checked one. Adding blending here would silently drop that guarantee.
+        _warn_on_blending(all_motion_commands)
+        final_request = wb_models.PlanTrajectoryRequest(
             motion_group_setup=mg_setup,
-            trajectory_segments=merge_segments,
+            start_joint_position=start_joint_position,
+            motion_commands=all_motion_commands,
         )
-        merge_response = await planning_api.merge_trajectories(
-            cell=cell,
-            merge_trajectories_request=merge_request,
+        result = await _call_plan_trajectory(planning_api, cell, final_request)
+        if isinstance(result, PlanSuccess):
+            await _status(
+                f"Planned trajectory: "
+                f"{len(result.joint_trajectory.joint_positions)} samples"
+            )
+            return replace(result, via_joint_positions=via_joint_positions or None)
+        return result
+
+
+def _via_joint_positions(
+    segment_commands: list[wb_models.MotionCommand],
+) -> list[list[float]]:
+    """Joint targets of the legs a collision-free segment inserted before its target.
+
+    The last command of a segment reaches the user's pose; every command before
+    it is a via point the planner added to route around an obstacle.
+    """
+    via_joint_positions: list[list[float]] = []
+    for command in segment_commands[:-1]:
+        path = getattr(command.path, "actual_instance", None)
+        if isinstance(path, wb_models.PathJointPTP):
+            via_joint_positions.append(list(path.target_joint_position))
+        else:
+            carb.log_warn(
+                f"Collision-free via point has path type "
+                f"{type(path).__name__}, not PathJointPTP; it gets no marker."
+            )
+    return via_joint_positions
+
+
+def _warn_on_blending(motion_commands: list[wb_models.MotionCommand]) -> None:
+    """Warn if a command carries a blending, which would move the joined path.
+
+    A warning rather than a failure: the plan itself is still the one the server
+    produced, and refusing to plan would be worse than a path that may no longer
+    match the collision-checked segments. It must never happen quietly, though.
+    """
+    blended = [
+        index
+        for index, command in enumerate(motion_commands)
+        if getattr(command, "blending", None) is not None
+    ]
+    if blended:
+        carb.log_warn(
+            f"Collision-free motion commands {blended} carry a blending. The "
+            "joined trajectory can deviate from the collision-checked segments, "
+            "and plan-trajectory does not re-check it."
         )
-        merged = merge_response.joint_trajectory
-        if merged:
-            await _status(f"Merged trajectory: {len(merged.joint_positions)} samples")
-            return PlanSuccess(joint_trajectory=merged)
-        return PlanFailure(error="Merge trajectories returned empty result")

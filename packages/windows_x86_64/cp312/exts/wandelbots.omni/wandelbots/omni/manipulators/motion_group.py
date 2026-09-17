@@ -134,6 +134,22 @@ class MotionGroup:
 
     @property
     def articulation(self) -> SingleArticulation | None:
+        """The articulation, re-resolved through the cache on every access.
+
+        This object lives for a whole PLAY session, so a snapshot taken in
+        __init__ keeps the pre-edit SingleArticulation after a hierarchy edit
+        moves the prim PhysX anchors the articulation under. A cache hit is a
+        dict lookup; only an edit that evicted the entry pays the USD walk.
+        """
+        motion_group_prim = self._stage.GetPrimAtPath(
+            Sdf.Path(self._configuration.prim_path)
+        )
+        if motion_group_prim.IsValid():
+            self._articulation_cache_handle = (
+                get_articulation_cache().get_articulation_for_motion_group(
+                    motion_group_prim
+                )
+            )
         return self._articulation_cache_handle.articulation
 
     @property

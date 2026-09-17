@@ -24,11 +24,13 @@ from wandelbots.omni.io import (
 )
 from wandelbots.omni.manipulators import (
     get_motion_group_service,
+    release_articulation_cache,
     release_scene_motion_group_prim_cache,
     MotionGroupService,
 )
 import wandelbots.omni.ui.overlay as overlay
 from wandelbots.omni.utils.base import get_current_version
+from wandelbots.omni.utils.teaching import GhostObjectUtils
 from wandelbots.omni.ui.utils import make_menu_item_description
 from wandelbots.omni.constants import CONNECTED_INSTANCES_MENU_LABEL
 from wandelbots.omni.instances.events import subscribe_to_open_instances_panel
@@ -42,6 +44,22 @@ from wandelbots.omni.core.nucleus.nucleus_service import get_nucleus_service
 from wandelbots.omni.ui.asset_browser.browser import WandelbotsAssetBrowserManager
 
 kit_app = main.get_app()
+
+
+def stop_timeline_with_the_streams(timeline, motion_group_service) -> None:
+    """Stop the timeline so the streams still get their stop.
+
+    on_shutdown drops the timeline subscription before it stops the timeline,
+    so that stop reaches no handler at all - on an extension reload with the
+    simulation running, the robot stays wherever the last command left it.
+    Calling the hook here hands the streams the same frame a stop from the
+    toolbar would.
+    """
+    if not timeline.is_playing():
+        return
+    carb.log_verbose("Stopping timeline")
+    motion_group_service.on_timeline_stop()
+    timeline.stop()
 
 
 class OmniService(omni.ext.IExt):
@@ -116,6 +134,12 @@ class OmniService(omni.ext.IExt):
             async_loop.create_task(self.start_all_io_streams())
             async_loop.create_task(self.motion_group_service.start_streams())
 
+        if event.type == omni.timeline.TimelineEventType.STOP.value:
+            # Before the async teardown below, which runs a frame or more
+            # later: the streams only get this one frame to react while the
+            # stage is still live.
+            self.motion_group_service.on_timeline_stop()
+
         if event.type in {
             omni.timeline.TimelineEventType.STOP.value,
             omni.timeline.TimelineEventType.PAUSE.value,
@@ -130,9 +154,15 @@ class OmniService(omni.ext.IExt):
             int(omni.usd.StageEventType.CLOSED),
         }:
             host_database.clear_all()
+            GhostObjectUtils.clear_ghost_mesh_cache()
             if self.instance_list_window:
                 self.instance_list_window.setup()
                 self.instance_list_window.build_ui()
+        elif event.type == int(omni.usd.StageEventType.HIERARCHY_CHANGED):
+            # Catches a ghost object duplicated (Kit's built-in Duplicate)
+            # while its background mesh build was still running: the copy
+            # is stuck at whatever quality it had, so finish or reuse it.
+            GhostObjectUtils.repair_pending_ghost_meshes()
 
     async def _async_shutdown(
         motion_group_service: MotionGroupService,
@@ -171,13 +201,18 @@ class OmniService(omni.ext.IExt):
         self.timeline_sub.unsubscribe()
         self.timeline_sub = None
 
-        # The scene motion-group prim cache keeps a USD notice listener and a
-        # stage-event subscription at module scope; both must go with us.
-        release_scene_motion_group_prim_cache()
+        # Before the caches are released, and after the subscription is gone so
+        # the stop below is handled once rather than twice: the stop hook reads
+        # each stream's articulation, which repopulates the articulation cache
+        # and re-registers its stage listener. Releasing first would leave that
+        # listener behind - the very leak the release exists to prevent.
+        stop_timeline_with_the_streams(self.timeline, self.motion_group_service)
 
-        if self.timeline.is_playing():
-            carb.log_verbose("Stopping timeline")
-            self.timeline.stop()
+        # The scene motion-group prim cache keeps a USD notice listener and a
+        # stage-event subscription at module scope; both must go with us. The
+        # articulation cache keeps one too.
+        release_scene_motion_group_prim_cache()
+        release_articulation_cache()
 
         self.schema_extension = None
         self._tools_subscription = None
@@ -355,6 +390,8 @@ class OmniService(omni.ext.IExt):
         )
 
     def _deregister_bundled_packages(self) -> None:
+        # Not get_extension_root(): during shutdown the extension manager
+        # may not reliably know about this extension anymore.
         try:
             pre_bundle_path = (
                 Path(__file__).absolute().parents[2].joinpath("pip_prebundle")

@@ -483,8 +483,7 @@ class MountingAssistantWindow:
             xform_cache = UsdGeom.XformCache()
             world_mat = xform_cache.GetLocalToWorldTransform(self._motion_group_prim)
             t = world_mat.ExtractTranslation()
-            unit_to_mm = 1000.0 / SceneUtils.get_stage_units()
-            return [t[0] * unit_to_mm, t[1] * unit_to_mm, t[2] * unit_to_mm]
+            return [SceneUtils.value_to_millimeters(value) for value in t]
         except Exception:
             return None
 
@@ -514,7 +513,7 @@ class MountingAssistantWindow:
             return
 
         target_center_mm = self._candidate_positions[idx]
-        unit_factor = SceneUtils.get_stage_units() / 1000.0
+        unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
 
         xform_cache = UsdGeom.XformCache()
         center_prim = self._stage.GetPrimAtPath(self._center_prim_path)

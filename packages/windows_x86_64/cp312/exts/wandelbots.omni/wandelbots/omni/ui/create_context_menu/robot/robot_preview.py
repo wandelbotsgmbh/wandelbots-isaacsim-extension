@@ -19,8 +19,8 @@ from pxr import Gf
 
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
+from wandelbots.omni.manipulators.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.manipulators.utils import compute_forward_kinematics_chain
-from .model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.ui.overlay.manipulators.manipulator_mesh import (
     ManipulatorMesh,
     create_from_collider,
@@ -132,7 +132,7 @@ class RobotPreview:
             )
 
             stage_units = SceneUtils.get_stage_units()
-            unit_factor = stage_units / 1000.0
+            unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
 
             base_transform = self._compute_base_transform(
                 prim_path, model_name, stage_units

@@ -318,7 +318,7 @@ class GhostObjectApiSchema(SchemaComponent):
             coordinate_system="world",
         )
 
-        GhostObjectUtils.add_ghost_object(
+        await GhostObjectUtils.add_ghost_object(
             source_prim=tool_prim,
             tcp_world_pose=pose,
             tcp_prim=tool_prim.GetStage().GetPrimAtPath(selected_tcp.prim_path),

@@ -10,6 +10,7 @@ from wandelbots.omni.instances.models import (
     NOVAInstance,
     NOVAMotionGroupData,
 )
+from wandelbots.omni.instances.stage_discovery import get_prim_model_name
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.instances.articulations.motion_group_section import (
     MotionGroupSection,
@@ -98,23 +99,17 @@ class AssignedArticulations(ui.VStack):
                     )
                     covered_prim_paths.update(c.prim_path for c in connected)
 
-        # Recover stale connections: a prim connected to this instance earlier whose
-        # controller/motion group is no longer reported in instance.cells. Only keep
-        # showing it while the absence cannot be trusted (the instance is unreachable
-        # or its cells are still loading) so a transient outage doesn't make the
-        # connection vanish. On a reachable instance a missing motion group means the
-        # controller was deleted server-side, so it is dropped and the prim returns
-        # to the Unassigned section instead.
+        # Keep connections the instance does not report: a prim connected to this
+        # instance earlier whose controller is missing from instance.cells. While
+        # the instance is unreachable or still loading the absence cannot be
+        # trusted; on a reachable instance the controller was deleted server-side
+        # and MotionGroupSection offers to create it again.
         for config in instances_service.find_connected_motion_group_by(
             host=instance.host,
         ):
             if config.prim_path in covered_prim_paths:
                 continue
             stream = config.motion_stream_configuration
-            if not instance.has_live_motion_group(
-                stream.cell, stream.controller, stream.motion_group
-            ):
-                continue
             mg_name = stream.motion_group or config.name or ""
             controller = NOVAControllerData(
                 name=stream.controller or "",
@@ -123,7 +118,8 @@ class AssignedArticulations(ui.VStack):
             )
             motion_group = NOVAMotionGroupData(
                 name=mg_name,
-                motion_group_model_name=mg_name,
+                motion_group_model_name=get_prim_model_name(config.prim_path)
+                or mg_name,
             )
             groups.append((controller, motion_group))
             covered_prim_paths.add(config.prim_path)

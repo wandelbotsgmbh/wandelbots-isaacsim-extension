@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from wandelbots.omni.utils.database import BaseStore
 
+#: Smallest step RRT-Connect can still extend its trees with; below this the
+#: search stops making progress. Shared with the settings section.
+CF_STEP_SIZE_MIN = 0.01
+
 
 # Fields unique to BlendingPosition (BlendingAuto only ever has
 # `min_velocity_in_percent`). Used to backfill the `blending_name`
@@ -60,6 +64,8 @@ class PlannedTrajectoryConfig(BaseModel):
     locations: list[float] = Field(default_factory=list)
     times: list[float] = Field(default_factory=list)
     collision_free: bool = False
+    # Via points the collision-free planner inserted; drawn as markers on the curve.
+    via_joint_positions: list[list[float]] | None = None
 
 
 class TrajectoryPlannerConfig(BaseModel):
@@ -89,8 +95,20 @@ class TrajectoryPlannerConfig(BaseModel):
 
     payload_name: str = ""
     payload_mass: float = 0.0
-    cf_algorithm: str = "RRTConnectAlgorithm"
     cf_max_iterations: int = 10000
+    # None, which is also every config saved before this field existed, leaves
+    # the step size to RRT-Connect so those configs plan exactly as before.
+    cf_step_size: float | None = None
+
+    @field_validator("cf_step_size")
+    @classmethod
+    def _clamp_cf_step_size(cls, value: float | None) -> float | None:
+        # A config edited by hand or written by an older build can hold a value
+        # the settings field would never have allowed.
+        if value is not None and value < CF_STEP_SIZE_MIN:
+            return CF_STEP_SIZE_MIN
+        return value
+
     # Whether to run collision-free planning. Independent of collision_setup: a
     # collision scene can be active while normal (motion-type) planning is used.
     plan_collision_free: bool = False

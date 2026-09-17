@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
 import carb
@@ -38,6 +40,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import 
     migrate_blending_dict,
 )
 from wandelbots.omni.ui.tool.planner_utils import (
+    PlanFailure,
     PlanSuccess,
     TrajectorySegmentSpec,
     plan_trajectory_segments,
@@ -46,9 +49,15 @@ from wandelbots.omni.ui.tool.planner_utils import (
 from wandelbots.omni.visualization import get_trajectory_builder
 from wandelbots.omni.visualization.models import (
     PatchTrajectoryData,
+    SpherePrim,
     TrajectoryData,
+    TrajectoryMarker,
     TrajectoryOptions,
 )
+
+# Amber spheres on the curve where the collision-free planner inserted a via
+# point; distinct from the user's pose gizmos and the trajectory colors.
+_VIA_POINT_MARKER = SpherePrim(type="sphere", radius=15.0, color=(255, 191, 0))
 
 # Nova StoreObject key prefixes. The ExportedSkill (NOVA request format) is stored
 # under TRAJECTORY_PLAN_PREFIX; the lossless TrajectoryPlannerConfig used for
@@ -166,6 +175,8 @@ def _build_motion_commands(
 
 
 _MAX_PREVIEW_POINTS = 2000
+_SEGMENT_TRAJECTORY_COLOR = (128, 128, 128)
+_FAILED_TRAJECTORY_COLOR = (255, 0, 0)
 
 
 def _decimate_indices(n: int, max_points: int = _MAX_PREVIEW_POINTS) -> list[int]:
@@ -247,6 +258,50 @@ def _group_indices_by_tcp(items, default_tcp: str | None) -> list[list[int]]:
     return runs
 
 
+def failed_pose_index(
+    segment_runs: list[list[int]], failure: PlanFailure
+) -> int | None:
+    """Index into the full pose list (start pose = 0) of the pose whose motion failed.
+
+    ``segment_runs`` holds, per planned segment, the target-pose indices it covers.
+    The error location counts motion commands within the failed segment: 0 is the
+    segment start, integer k is the arrival at command k, k.x lies on command k+1.
+    """
+    if failure.segment_index is None:
+        return None
+    if not 0 <= failure.segment_index < len(segment_runs):
+        return None
+    run = segment_runs[failure.segment_index]
+    if not run:
+        return None
+    location = failure.error_location_on_trajectory
+    if location is None:
+        return run[-1] + 1
+    command_index = max(0, math.ceil(location) - 1)
+    return run[min(command_index, len(run) - 1)] + 1
+
+
+def mark_planning_failure(items, failed_index: int | None) -> None:
+    """Set the per-pose ``planned`` flags after a failed plan.
+
+    Poses before the failure planned fine, the failing pose is marked False (red
+    row) and later poses were never attempted. Without a known index nothing
+    counts as planned.
+    """
+    for index, item in enumerate(items):
+        if failed_index is None or index > failed_index:
+            item.planned = None
+        else:
+            item.planned = index < failed_index
+
+
+def _failure_notification(items, failed_index: int | None) -> str:
+    if failed_index is None or not 0 <= failed_index < len(items):
+        return "Planning failed. See log for details."
+    name = items[failed_index].name_model.get_value_as_string()
+    return f"Planning failed at '{name}'. See log for details."
+
+
 def _position_blend_from_dict(
     pose_bl: dict | None, settings: dict
 ) -> wb_v2_models.BlendingPosition | None:
@@ -299,9 +354,14 @@ class PlanningOrchestrator:
         self._visualize_task: asyncio.Task | None = None
         self._trajectory_planned: bool = False
         self._planned_joint_trajectory: wb_v2_models.JointTrajectory | None = None
+        self._planned_via_joint_positions: list[list[float]] | None = None
         self._planned_tcp: str | None = None
         self._trajectory_name: str | None = None
         self._segment_trajectory_names: list[str] = []
+        # Segment / failed-curve renders still waiting on forward kinematics. They
+        # are cancelled together with the curve cleanup so a slow render cannot
+        # author a stale curve after a newer plan has already cleared them.
+        self._segment_visualize_tasks: set[asyncio.Future] = set()
         self._total_plan_segments: int = 0
         self._skill_name: str = ""
         # The drawn curve is kept on edit-driven invalidation and only marked
@@ -324,6 +384,11 @@ class PlanningOrchestrator:
     @property
     def planned_joint_trajectory(self) -> wb_v2_models.JointTrajectory | None:
         return self._planned_joint_trajectory
+
+    @property
+    def planned_via_joint_positions(self) -> list[list[float]] | None:
+        """Via points the collision-free planner inserted into the last plan."""
+        return self._planned_via_joint_positions
 
     @property
     def planned_tcp(self) -> str | None:
@@ -403,6 +468,7 @@ class PlanningOrchestrator:
             if self._trajectory_planned:
                 self._trajectory_planned = False
                 self._planned_joint_trajectory = None
+                self._planned_via_joint_positions = None
             self._trajectory_stale = False
             self._cancel_visualize_task()
             self._remove_trajectory_visualization()
@@ -414,14 +480,18 @@ class PlanningOrchestrator:
         for item in self._pose_model.items:
             item.reachable = None
             item.planned = None
+        self._events.plan_invalidated.emit()
 
     def set_planned(self, planned: bool) -> None:
         self._trajectory_planned = planned
 
     def restore_trajectory(
-        self, joint_trajectory: wb_v2_models.JointTrajectory
+        self,
+        joint_trajectory: wb_v2_models.JointTrajectory,
+        via_joint_positions: list[list[float]] | None = None,
     ) -> None:
         self._planned_joint_trajectory = joint_trajectory
+        self._planned_via_joint_positions = via_joint_positions or None
         self._trajectory_planned = True
         self._trajectory_stale = False
 
@@ -589,7 +659,9 @@ class PlanningOrchestrator:
                 duration=5.0,
                 status=nm.NotificationStatus.WARNING,
             )
-            self._events.plan_failed.emit("No collision scene selected")
+            self._events.plan_failed.emit(
+                PlanFailure(error="No collision scene selected")
+            )
             return
 
         for item in poses:
@@ -627,11 +699,20 @@ class PlanningOrchestrator:
             f"global_blending={settings.get('global_blending')}, "
             f"global_limits_override={settings.get('global_limits_override')}, "
             f"payload={settings.get('payload_name')}/{settings.get('payload_mass')}, "
-            f"cf_algorithm={settings.get('cf_algorithm')}, "
-            f"cf_max_iterations={settings.get('cf_max_iterations')}"
+            f"cf_max_iterations={settings.get('cf_max_iterations')}, "
+            f"cf_step_size={settings.get('cf_step_size')}"
         )
         carb.log_verbose(
             f"Per-pose blending={pose_blending}, limits_override={pose_limits_override}"
+        )
+
+        # Target-pose indices per planned segment: collision-free plans one
+        # segment per pose, motion-type planning one per contiguous TCP run. A
+        # failure reports its segment index, which maps back to a pose through this.
+        segment_runs = (
+            [[i] for i in range(len(target_poses))]
+            if plan_cf
+            else _group_indices_by_tcp(target_poses, planning_tcp)
         )
 
         try:
@@ -654,8 +735,8 @@ class PlanningOrchestrator:
                     cycle_time=None,
                     payload_name=settings.get("payload_name"),
                     payload_mass=settings.get("payload_mass"),
-                    cf_algorithm=settings.get("cf_algorithm", "RRTConnectAlgorithm"),
                     cf_max_iterations=settings.get("cf_max_iterations", 10000),
+                    cf_step_size=settings.get("cf_step_size"),
                     global_limits_override=settings.get("global_limits_override"),
                     status_fn=self._on_status,
                     segment_planned_fn=self._on_segment,
@@ -664,9 +745,8 @@ class PlanningOrchestrator:
                 # Split target poses into contiguous same-TCP runs; plan each with
                 # its own TCP and merge. This time-scales every segment against its
                 # actual tool (no single-TCP reprojection).
-                runs = _group_indices_by_tcp(target_poses, planning_tcp)
                 seg_specs: list[TrajectorySegmentSpec] = []
-                for run_pos, run in enumerate(runs):
+                for run_pos, run in enumerate(segment_runs):
                     seg_tcp = target_poses[run[0]].tcp_name or planning_tcp
                     seg_cmds = _build_motion_commands(
                         [ws_poses[i] for i in run],
@@ -682,7 +762,7 @@ class PlanningOrchestrator:
                     # the final run.
                     blending = (
                         _position_blend_from_dict(pose_blending[run[-1]], settings)
-                        if run_pos < len(runs) - 1
+                        if run_pos < len(segment_runs) - 1
                         else None
                     )
                     seg_specs.append(
@@ -718,6 +798,7 @@ class PlanningOrchestrator:
             if isinstance(result, PlanSuccess):
                 joint_positions = result.joint_trajectory.joint_positions
                 self._planned_joint_trajectory = result.joint_trajectory
+                self._planned_via_joint_positions = result.via_joint_positions
                 self._trajectory_planned = True
                 self._trajectory_stale = False
                 carb.log_info(f"Trajectory planned: {len(joint_positions)} waypoints")
@@ -727,19 +808,13 @@ class PlanningOrchestrator:
 
                 run_coroutine(self._store_to_nova())
             else:
-                carb.log_warn(f"Planning failed: {result.error}")
-                nm.post_notification(
-                    "Planning failed. See log for details.",
-                    duration=5.0,
-                    status=nm.NotificationStatus.WARNING,
-                )
-                self._trajectory_planned = False
-                self._events.plan_failed.emit(result.error)
+                self._handle_plan_failure(result, segment_runs, target_poses, plan_cf)
         except asyncio.CancelledError:
             carb.log_info("Trajectory planning cancelled by user.")
             self._remove_segment_trajectories()
             self._trajectory_planned = False
-            self._events.plan_failed.emit("Cancelled")
+            mark_planning_failure(poses, None)
+            self._events.plan_failed.emit(PlanFailure(error="Cancelled"))
         except Exception as exc:
             carb.log_warn(f"Plan trajectory failed: {exc}")
             nm.post_notification(
@@ -748,9 +823,47 @@ class PlanningOrchestrator:
                 status=nm.NotificationStatus.WARNING,
             )
             self._trajectory_planned = False
-            self._events.plan_failed.emit(str(exc))
+            mark_planning_failure(poses, None)
+            self._events.plan_failed.emit(PlanFailure(error=str(exc)))
         finally:
             self._plan_task = None
+
+    def _handle_plan_failure(
+        self,
+        result: PlanFailure,
+        segment_runs: list[list[int]],
+        target_poses: list,
+        plan_cf: bool,
+    ) -> None:
+        failure = self._with_collision_free_ghost(result, target_poses, plan_cf)
+        poses = self._pose_model.items
+        failed_index = failed_pose_index(segment_runs, failure)
+        mark_planning_failure(poses, failed_index)
+        self._pose_model.notify_item_changed(None)
+        carb.log_warn(f"Planning failed: {failure.error}")
+        nm.post_notification(
+            _failure_notification(poses, failed_index),
+            duration=5.0,
+            status=nm.NotificationStatus.WARNING,
+        )
+        self._trajectory_planned = False
+        self._events.plan_failed.emit(failure)
+        if failure.partial_joint_positions:
+            self.visualize_failed_trajectory(failure.partial_joint_positions)
+
+    @staticmethod
+    def _with_collision_free_ghost(
+        failure: PlanFailure, target_poses: list, plan_cf: bool
+    ) -> PlanFailure:
+        """Collision-free failures carry no joint data; show the unreachable target."""
+        if not plan_cf or failure.failed_joint_position is not None:
+            return failure
+        index = failure.segment_index
+        if index is None or not 0 <= index < len(target_poses):
+            return failure
+        return replace(
+            failure, failed_joint_position=target_poses[index].selected_joint_config
+        )
 
     def _on_status(self, msg: str) -> None:
         carb.log_verbose(f"Planning status: {msg}")
@@ -958,15 +1071,42 @@ class PlanningOrchestrator:
         joint_positions: list[list[float]],
         tcp_name: str | None = None,
     ) -> None:
-        run_coroutine(
-            self._do_visualize_segment(segment_idx, joint_positions, tcp_name)
+        self._start_segment_visualization(
+            self._do_visualize_segment(
+                f"segment_{segment_idx}", joint_positions, tcp_name
+            )
         )
+
+    def visualize_failed_trajectory(self, joint_positions: list[list[float]]) -> None:
+        """Draw the start-to-error part of a failed plan as a red curve.
+
+        The curve is tracked like a segment preview, so the next plan or an
+        invalidation removes it.
+        """
+        self._start_segment_visualization(
+            self._do_visualize_segment(
+                "failed",
+                _decimate_for_preview(joint_positions),
+                color=_FAILED_TRAJECTORY_COLOR,
+            )
+        )
+
+    def _start_segment_visualization(self, render) -> None:
+        task = run_coroutine(render)
+        self._segment_visualize_tasks.add(task)
+        task.add_done_callback(self._segment_visualize_tasks.discard)
+
+    def _cancel_segment_visualizations(self) -> None:
+        for task in list(self._segment_visualize_tasks):
+            task.cancel()
+        self._segment_visualize_tasks.clear()
 
     async def _do_visualize_segment(
         self,
-        segment_idx: int,
+        suffix: str,
         joint_positions: list[list[float]],
         tcp_name: str | None = None,
+        color: tuple[int, int, int] = _SEGMENT_TRAJECTORY_COLOR,
     ) -> None:
         api_config = self._get_api_config()
         params = self._get_stream_params()
@@ -988,20 +1128,24 @@ class PlanningOrchestrator:
                 tcp_name=tcp_name,
             )
             safe_name = Tf.MakeValidIdentifier(self._skill_name.replace(" ", "_"))
-            name = f"{safe_name}_segment_{segment_idx}"
-            trajectory_builder = get_trajectory_builder()
-            trajectory_builder.create_trajectory(
+            name = f"{safe_name}_{suffix}"
+            # A curve of the same name (e.g. a redrawn failed curve) is replaced,
+            # and the name is tracked before authoring so cleanup always finds it.
+            if name in self._segment_trajectory_names:
+                self._remove_segment_trajectory(name)
+            else:
+                self._segment_trajectory_names.append(name)
+            get_trajectory_builder().create_trajectory(
                 TrajectoryData(
                     name=name,
                     parent_prim_path=self._visualization_parent_path(),
                     poses=tcp_poses,
-                    options=TrajectoryOptions(color=(128, 128, 128), width=4.0),
+                    options=TrajectoryOptions(color=color, width=4.0),
                     container_pose=self._container_pose(),
                 )
             )
-            self._segment_trajectory_names.append(name)
         except Exception as exc:
-            carb.log_warn(f"Failed to visualize segment {segment_idx}: {exc}")
+            carb.log_warn(f"Failed to visualize {suffix} curve: {exc}")
 
     async def visualize_trajectory(self, trajectory_color: list[float]) -> bool:
         """Render the trajectory curve. Returns True when the curve was drawn.
@@ -1112,6 +1256,7 @@ class PlanningOrchestrator:
                     container_pose=self._container_pose(),
                 )
             )
+            await self._draw_via_point_markers(service, api_config, params, tcp_name)
             return True
         except asyncio.CancelledError:
             carb.log_info(
@@ -1126,6 +1271,39 @@ class PlanningOrchestrator:
                 f"Trajectory visualization failed: {exc}\n{traceback.format_exc()}"
             )
             return False
+
+    async def _draw_via_point_markers(
+        self,
+        service,
+        api_config: ApiConfiguration,
+        params: tuple[str, str, str],
+        tcp_name: str | None,
+    ) -> None:
+        """Mark where the collision-free planner inserted via points on the curve.
+
+        Markers are children of the trajectory prim, so they follow the reference
+        frame and mounting offset and are removed together with the curve. They are
+        decoration only: a failure here must not block Execute, which is gated on
+        the curve having been drawn.
+        """
+        if not self._planned_via_joint_positions or not self._trajectory_name:
+            return
+        cell, controller, motion_group = params
+        try:
+            via_poses = await service.forward_kinematics(
+                api_configuration=api_config,
+                cell=cell,
+                controller=controller,
+                motion_group=motion_group,
+                joint_positions=self._planned_via_joint_positions,
+                tcp_name=tcp_name,
+            )
+            get_trajectory_builder().create_marker(
+                self._trajectory_name,
+                TrajectoryMarker(prim=_VIA_POINT_MARKER, poses=via_poses),
+            )
+        except Exception as exc:
+            carb.log_warn(f"Failed to mark collision-free via points: {exc}")
 
     def update_trajectory_color(self, trajectory_color: list[float]) -> None:
         """Update the color of the existing trajectory visualization without re-computing FK."""
@@ -1151,15 +1329,19 @@ class PlanningOrchestrator:
             carb.log_warn(f"Failed to update trajectory color: {exc}")
 
     def _remove_segment_trajectories(self) -> None:
-        if not self._segment_trajectory_names:
-            return
-        trajectory_builder = get_trajectory_builder()
+        # Cancel first: a render still waiting on forward kinematics would
+        # otherwise author its curve after this cleanup has already run.
+        self._cancel_segment_visualizations()
         for name in self._segment_trajectory_names:
-            try:
-                trajectory_builder.remove_trajectory(name)
-            except Exception:
-                pass
+            self._remove_segment_trajectory(name)
         self._segment_trajectory_names.clear()
+
+    @staticmethod
+    def _remove_segment_trajectory(name: str) -> None:
+        try:
+            get_trajectory_builder().remove_trajectory(name)
+        except Exception as exc:
+            carb.log_verbose(f"Segment curve '{name}' not removed: {exc}")
 
     def _remove_trajectory_visualization(self) -> None:
         self._last_color_list = None

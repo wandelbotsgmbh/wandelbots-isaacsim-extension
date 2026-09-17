@@ -22,10 +22,9 @@ from usd.schema.isaac.robot_schema import utils as robot_schema_utils
 # get_scene_motion_group_prim_paths runs a full-stage traverse that costs
 # hundreds of ms on large scenes, and the connect UI calls it once or twice per
 # motion-group section per rebuild (measured: ~60 traverses / ~25 s of blocked
-# main thread on one window open). The prim SET only changes on structural
-# (resync) edits — prims added/removed, API schemas applied — so the result is
-# cached and invalidated on resync notices; attribute-only churn (e.g. the
-# 32 Hz pose streaming while robots run) leaves the cache valid.
+# main thread on one window open). The prim set only changes when a prim is
+# added or removed or an API schema is applied, so the result is cached and
+# only those edits invalidate it.
 # ---------------------------------------------------------------------------
 _scene_mg_prim_cache: dict[bool, list[str]] = {}
 _scene_mg_tf_listener = None
@@ -38,10 +37,21 @@ _scene_mg_cache_root_layer: Sdf.Layer | None = None
 _scene_mg_stage_event_sub = None
 
 
+def _resync_can_change_prim_set(notice) -> bool:
+    """Whether a notice can change which prims carry the motion-group APIs.
+
+    Only a prim resync can: a prim added or removed, an API schema applied.
+    Creating an xform op resyncs the property path instead, so a viewport
+    gizmo drag that adds a scale or rotate op must not clear the cache and
+    force another full-stage traverse on the main thread for every mouse
+    sample. A full-stage resync reports the absolute root, which is not a
+    prim path, so it needs the wider check.
+    """
+    return any(path.IsAbsoluteRootOrPrimPath() for path in notice.GetResyncedPaths())
+
+
 def _invalidate_scene_mg_prim_cache(notice=None, sender=None):
-    # Attribute/metadata-only changes cannot alter which prims carry the APIs,
-    # so only structural resyncs invalidate.
-    if notice is not None and not notice.GetResyncedPaths():
+    if notice is not None and not _resync_can_change_prim_set(notice):
         return
     _scene_mg_prim_cache.clear()
 
@@ -101,6 +111,15 @@ def release_scene_motion_group_prim_cache() -> None:
         _scene_mg_tf_listener = None
     _scene_mg_stage_event_sub = None
     _scene_mg_cache_root_layer = None
+
+
+def scene_motion_group_prim_cache_is_warm() -> bool:
+    """Whether the cached prim list survived the last stage change.
+
+    get_scene_motion_group_prim_paths returns the same answer either way, so
+    this is the only way to tell a kept cache from a re-traversed one.
+    """
+    return bool(_scene_mg_prim_cache)
 
 
 def get_scene_motion_group_prim_paths(include_prims_without_api=True) -> list[str]:
@@ -258,19 +277,64 @@ def _apply_isaac_robot_schema(motion_group_prim: Usd.Prim) -> None:
             joints_rel.AddTarget(prim.GetPath())
 
 
+def get_flange_from_motion_group_prim(
+    motion_group_prim: Usd.Prim,
+) -> Usd.Prim | None:
+    """The ``tcp_flange`` prim of a motion group, or ``None``.
+
+    This is the frame NOVA reports motion-group poses in, so it is the frame to
+    compare against when checking scene geometry against a NOVA model.
+    """
+    if not motion_group_prim or not motion_group_prim.IsValid():
+        return None
+    for prim in Usd.PrimRange(motion_group_prim):
+        if prim.GetName() == "tcp_flange":
+            return prim
+    return None
+
+
 def get_motion_group_current_joint_positions(
     motion_group_prim: Usd.Prim,
 ) -> list[float] | None:
+    """This motion group's measured joint positions, in its own joint order.
+
+    The articulation reports every dof it owns. Once several motion groups
+    share one articulation that vector also carries the other groups' joints,
+    and callers that rank IK solutions against it would compare unrelated
+    joints, so it is narrowed to this group here.
+    """
     try:
         handle = get_articulation_cache().get_articulation_for_motion_group(
             motion_group_prim
         )
         articulation = handle.articulation
         if articulation and articulation.is_valid():
-            return [float(x) for x in articulation.get_joint_positions()]
+            positions = [float(x) for x in articulation.get_joint_positions()]
+            return joint_positions_in_motion_group_order(
+                positions, motion_group_dof_indices(motion_group_prim)
+            )
     except Exception:
         pass
     return None
+
+
+def joint_positions_in_motion_group_order(
+    articulation_positions: list[float], joint_indices: list[int]
+) -> list[float]:
+    """The positions `joint_indices` selects, in the order they are given.
+
+    An empty index list means the mapping could not be built (no robot joints
+    authored, no stage). The full articulation vector is returned then, which
+    is what callers saw before groups could share an articulation - narrowing
+    it to nothing would silently hand them an empty pose.
+    """
+    if not joint_indices:
+        return articulation_positions
+    return [
+        articulation_positions[index]
+        for index in joint_indices
+        if index < len(articulation_positions)
+    ]
 
 
 def get_articulation_joint_indices(motion_group: MotionGroup) -> list[int]:
@@ -279,14 +343,39 @@ def get_articulation_joint_indices(motion_group: MotionGroup) -> list[int]:
         carb.log_warn("No stage available, using sequential indices")
         return list(range(motion_group.num_dof))
 
-    motion_group_prim_path_obj = motion_group.configuration.prim_path
-    motion_group_prim = stage.GetPrimAtPath(motion_group_prim_path_obj)
+    motion_group_prim = stage.GetPrimAtPath(motion_group.configuration.prim_path)
+    return motion_group_dof_indices(motion_group_prim)
 
-    articulation_root_path = get_root_articulation_path(motion_group_prim)
-    articulation_root = stage.GetPrimAtPath(articulation_root_path)
 
-    ordered_joints = _get_articulation_group_joints(articulation_root)
+def motion_group_dof_indices(motion_group_prim: Usd.Prim) -> list[int]:
+    """Articulation dof index for each joint of this motion group, in its order.
 
+    Empty when there is no stage or the group states no joints; callers fall
+    back to the whole articulation then.
+    """
+    stage = motion_group_prim.GetStage()
+    if stage is None:
+        return []
+
+    articulation_root = stage.GetPrimAtPath(
+        get_root_articulation_path(motion_group_prim)
+    )
+    return joint_indices_in_motion_group_order(
+        _get_articulation_group_joints(articulation_root),
+        motion_group_joint_paths(motion_group_prim),
+    )
+
+
+def motion_group_joint_paths(motion_group_prim: Usd.Prim) -> list[str]:
+    """The joints this motion group states, in the order the asset states them.
+
+    NOVA sends joint values in that order, so the order is what pairs a value
+    with a dof. GetAllRobotJoints does not preserve it on its own: joints the
+    robotJoints relationship leaves out are discovered by walking the
+    articulation and appended at the end, where they line up with whichever dof
+    happens to sit at that position. Nothing in the scene says where they
+    belong, so this reports them instead of guessing.
+    """
     robot_joints = robot_schema_utils.GetAllRobotJoints(
         motion_group_prim.GetStage(), motion_group_prim
     )
@@ -296,10 +385,52 @@ def get_articulation_joint_indices(motion_group: MotionGroup) -> list[int]:
             motion_group_prim.GetStage(), motion_group_prim
         )
 
-    joint_indices = []
-    robot_joint_paths = {joint.GetPrimPath().pathString for joint in robot_joints}
-    for idx, joint_path in enumerate(ordered_joints):
-        if joint_path in robot_joint_paths:
-            joint_indices.append(idx)
+    joint_paths = [joint.GetPrimPath().pathString for joint in robot_joints]
+    _warn_about_unauthored_joints(motion_group_prim, joint_paths)
+    return joint_paths
 
-    return joint_indices
+
+def _warn_about_unauthored_joints(
+    motion_group_prim: Usd.Prim, joint_paths: list[str]
+) -> None:
+    relationship = motion_group_prim.GetRelationship(
+        robot_schema.Relations.ROBOT_JOINTS.name
+    )
+    authored = (
+        {target.pathString for target in relationship.GetTargets()}
+        if relationship
+        else set()
+    )
+    if not authored:
+        return
+    appended = [path for path in joint_paths if path not in authored]
+    if not appended:
+        return
+    carb.log_warn(
+        f"{motion_group_prim.GetPath()} does not name {appended} in "
+        f"{robot_schema.Relations.ROBOT_JOINTS.name}. They were found by walking the "
+        "articulation and appended after the authored joints, so their joint values "
+        "may reach the wrong dof. Author every joint of the motion group, in the "
+        "order NOVA reports them."
+    )
+
+
+def joint_indices_in_motion_group_order(
+    articulation_dof_paths: list[str], motion_group_joint_paths: list[str]
+) -> list[int]:
+    """Articulation dof index for each of the motion group's joints, in the
+    motion group's own order.
+
+    apply_action pairs joint_positions[k] with joint_indices[k], and the
+    positions arrive in the order the motion group states its joints in. Walking
+    the articulation's dof order instead gives the same answer only while the
+    motion group IS the articulation; once several groups share one, its dof
+    order interleaves them and every joint would receive another joint's target.
+
+    Joints with no degree of freedom - a group's root_joint, its link_0 weld -
+    are not in the dof list and simply contribute no index.
+    """
+    dof_index_of = {path: index for index, path in enumerate(articulation_dof_paths)}
+    return [
+        dof_index_of[path] for path in motion_group_joint_paths if path in dof_index_of
+    ]

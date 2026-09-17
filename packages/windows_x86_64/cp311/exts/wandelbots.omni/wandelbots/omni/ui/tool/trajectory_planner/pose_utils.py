@@ -33,18 +33,64 @@ def next_pose_name(stage, parent_path: str) -> str:
     return f"Pose_{idx:02d}"
 
 
-def embed_gizmo(stage, prim_path: str) -> None:
-    """Copy the gizmo.usd content directly into the stage at prim_path."""
+#: The shared gizmo template is kept under an invisible Scope. Ancestor visibility is
+#: not composed through a reference, so hiding the Scope hides the template without
+#: hiding the poses that reference it.
+GIZMO_PROTOTYPE_SCOPE = "/World/WandelbotsPrototypes"
+GIZMO_PROTOTYPE_PATH = f"{GIZMO_PROTOTYPE_SCOPE}/PoseGizmo"
+
+
+def ensure_gizmo_prototype(stage) -> str | None:
+    """Copy gizmo.usd into the current edit target once and return the template path.
+
+    The template is materialized per layer rather than per stage. Trajectory markers
+    are authored into the session layer, which is dropped on reload, so a pose in the
+    root layer that reused that template would lose its geometry when the scene is
+    reopened.
+    """
+    target_layer = stage.GetEditTarget().GetLayer()
+    if target_layer.GetPrimAtPath(GIZMO_PROTOTYPE_PATH) is not None:
+        return GIZMO_PROTOTYPE_PATH
+
     gizmo_layer = Sdf.Layer.FindOrOpen(GIZMO_USD_FILE)
     if not gizmo_layer:
         carb.log_warn(f"Could not open gizmo layer: {GIZMO_USD_FILE}")
-        return
-    target_layer = stage.GetEditTarget().GetLayer()
+        return None
     root_prim = gizmo_layer.rootPrims[0] if gizmo_layer.rootPrims else None
     if root_prim is None:
         carb.log_warn("Gizmo USD has no root prim to copy.")
+        return None
+
+    scope = UsdGeom.Scope.Define(stage, GIZMO_PROTOTYPE_SCOPE)
+    scope.CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+
+    if not Sdf.CopySpec(
+        gizmo_layer, root_prim.path, target_layer, Sdf.Path(GIZMO_PROTOTYPE_PATH)
+    ):
+        carb.log_warn(f"Could not copy gizmo template to {GIZMO_PROTOTYPE_PATH}")
+        return None
+    return GIZMO_PROTOTYPE_PATH
+
+
+def embed_gizmo(stage, prim_path: str) -> None:
+    """Point *prim_path* at the shared gizmo template as a scene-graph instance.
+
+    The reference is internal rather than a reference to gizmo.usd, so a saved stage
+    bakes in no absolute install path. Whatever the prim was before is dropped from
+    the edit target: "Convert to Pose" relies on that to shed the old type, the old
+    children and any applied API such as ``UsdPhysics.RigidBodyAPI``.
+    """
+    prototype_path = ensure_gizmo_prototype(stage)
+    if prototype_path is None:
         return
-    Sdf.CopySpec(gizmo_layer, root_prim.path, target_layer, Sdf.Path(prim_path))
+    if Sdf.Path(prim_path).HasPrefix(Sdf.Path(GIZMO_PROTOTYPE_SCOPE)):
+        # Never let the template reference itself.
+        return
+
+    stage.RemovePrim(prim_path)
+    prim = UsdGeom.Xform.Define(stage, prim_path).GetPrim()
+    prim.GetReferences().AddInternalReference(Sdf.Path(prototype_path))
+    prim.SetInstanceable(True)
 
 
 def create_pose_prim(stage, parent_path: str | None = None) -> str | None:

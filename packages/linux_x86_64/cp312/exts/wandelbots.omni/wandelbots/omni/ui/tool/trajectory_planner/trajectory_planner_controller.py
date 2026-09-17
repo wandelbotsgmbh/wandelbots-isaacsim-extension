@@ -18,6 +18,7 @@ import wandelbots_api_client.v2 as wb_v2
 import wandelbots_api_client.v2.models as wb_v2_models
 
 from wandelbots.omni.manipulators import get_motion_group_service
+from wandelbots.omni.ui.tool.planner_utils import PlanFailure
 from wandelbots.omni.ui.tool.trajectory_planner.cells import is_joint_config_editable
 from wandelbots.omni.ui.tool.trajectory_planner.events import TrajectoryPlannerEvents
 from wandelbots.omni.ui.tool.trajectory_planner.execution_orchestrator import (
@@ -36,6 +37,7 @@ from wandelbots.omni.ui.tool.trajectory_planner.pose_tree_widget import (
     PoseModel,
 )
 from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_preview import (
+    REASON_FAILED_PLAN,
     TrajectoryPlannerPreview,
 )
 from wandelbots.omni.ui.tool.trajectory_planner.widgets.motion_group_setup import (
@@ -159,6 +161,7 @@ class TrajectoryPlannerController:
         ev.plan_progress.connect(self._on_plan_progress)
         ev.plan_complete.connect(self._on_plan_complete)
         ev.plan_failed.connect(self._on_plan_failed)
+        ev.plan_invalidated.connect(self._hide_failure_ghost)
         ev.plan_stored.connect(self._on_plan_stored)
         ev.execution_started.connect(self._on_execution_started)
         ev.execution_paused.connect(self._on_execution_paused)
@@ -894,12 +897,37 @@ class TrajectoryPlannerController:
             status=nm.NotificationStatus.INFO,
         )
 
-    def _on_plan_failed(self, error: str) -> None:
+    def _on_plan_failed(self, failure: PlanFailure) -> None:
         self._controls.set_trajectory_planned(False)
         self._pose_model.notify_item_changed(None)
         self.refresh_tree_view()
         self._progress.hide()
+        self._progress.set_hint(f"Planning failed: {failure.error}")
+        self._show_failure_ghost(failure)
         self._update_controls()
+
+    def _show_failure_ghost(self, failure: PlanFailure) -> None:
+        """Render the robot in red at the configuration where planning failed."""
+        mg_config = self._mg_setup.mg_config
+        if (
+            not failure.failed_joint_position
+            or not mg_config
+            or not mg_config.prim_path
+        ):
+            return
+        # No color: the overlay default is the semi-transparent red the SDK
+        # viewer uses for the same feedback.
+        self._preview.show(
+            mg_config.prim_path,
+            failure.failed_joint_position,
+            tool_colliders=self._cached_tool_colliders,
+            reason=REASON_FAILED_PLAN,
+        )
+
+    def _hide_failure_ghost(self) -> None:
+        # Only our own ghost: an invalidation must not remove a selection
+        # preview the user has since brought up.
+        self._preview.hide(only_if=REASON_FAILED_PLAN)
 
     def _on_execution_started(self) -> None:
         self._controls.set_pause_label()

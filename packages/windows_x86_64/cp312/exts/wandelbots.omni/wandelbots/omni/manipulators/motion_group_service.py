@@ -41,6 +41,22 @@ class MotionGroupService:
             stream.apply_pending_joints()
             stream.maybe_sleep_when_idle()
 
+    def on_timeline_stop(self) -> None:
+        """Tell every stream the timeline stopped, while the stage is still live.
+
+        Synchronous on purpose: stop_streams() is scheduled as a task and runs
+        a frame or more later, by which time each stream has missed the frame
+        the stop gave it.
+        """
+        for stream in list(self._streams.values()):
+            try:
+                stream.wake_for_reset()
+            except Exception as error:
+                carb.log_warn(
+                    f"Could not wake {stream.motion_group.identifier} for the "
+                    f"timeline reset: {error}"
+                )
+
     @property
     def _stage(self) -> Usd.Stage:
         return omni.usd.get_context().get_stage()

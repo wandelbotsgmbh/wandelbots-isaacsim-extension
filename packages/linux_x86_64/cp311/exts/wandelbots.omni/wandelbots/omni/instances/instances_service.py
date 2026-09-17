@@ -24,7 +24,6 @@ from wandelbots.omni.instances.stage_discovery import (
 from wandelbots.omni.instances.events import push_motion_group_connection_changed
 from wandelbots.omni.environment import instance_store
 from wandelbots.omni.manipulators import (
-    is_prim_motion_group,
     get_motion_group_service,
     get_motion_group_configuration_from_prim,
     get_scene_motion_group_prim_paths,
@@ -37,6 +36,55 @@ from omni.kit.async_engine import run_coroutine
 
 import isaacsim.core.utils.stage as stage_utils
 from .instances_api import get_instances_api
+
+
+def retarget_motion_group_configuration(
+    prim: Usd.Prim,
+    prim_path: str,
+    instance: NOVAInstance,
+    controller: NOVAControllerData,
+    motion_group_name: str,
+    use_external_joint_stream: Optional[bool] = None,
+) -> MotionGroupConfiguration:
+    """Configuration that points *prim* at the given instance motion group.
+
+    An already connected prim keeps the settings that are the user's to make -
+    enabled, response rate, and the joint stream source unless the caller picked
+    one - because reconnecting it, for instance to recreate a deleted virtual
+    controller, must not silently change how the robot runs. An unconfigured
+    prim starts from the defaults.
+    """
+    existing = get_motion_group_configuration_from_prim(prim)
+    # Robots ship with MotionGroupAPI applied but empty attributes, so the host
+    # is what tells a previous connection from an unconfigured prim.
+    if existing is None or not existing.motion_stream_configuration.host:
+        return MotionGroupConfiguration(
+            name=motion_group_name,
+            prim_path=prim_path,
+            motion_stream_configuration=MotionStreamConfiguration(
+                host=instance.host,
+                secure_connection=instance.is_secure_connection,
+                cell=controller.cell_name,
+                controller=controller.name,
+                motion_group=motion_group_name,
+                use_external_joint_stream=bool(use_external_joint_stream),
+            ),
+        )
+
+    carb.log_info(
+        f"Articulation at {prim_path} is already connected. "
+        "Updating configuration to selected motion group"
+    )
+    existing.name = motion_group_name
+    stream_config = existing.motion_stream_configuration
+    stream_config.host = instance.host
+    stream_config.secure_connection = instance.is_secure_connection
+    stream_config.cell = controller.cell_name
+    stream_config.controller = controller.name
+    stream_config.motion_group = motion_group_name
+    if use_external_joint_stream is not None:
+        stream_config.use_external_joint_stream = use_external_joint_stream
+    return existing
 
 
 class NOVAInstancesService:
@@ -244,9 +292,14 @@ class NOVAInstancesService:
         controller: NOVAControllerData,
         motion_group_name: str,
         prim_path: str,
-        use_external_joint_stream: bool,
+        use_external_joint_stream: Optional[bool] = None,
         callback: Optional[callable] = None,
     ):
+        """Point the prim at the given motion group and open its stream.
+
+        Pass ``use_external_joint_stream`` only when the user picked a joint
+        stream source; leaving it out keeps the one the prim already carries.
+        """
         prim: Usd.Prim = stage_utils.get_current_stage().GetPrimAtPath(prim_path)
         try:
             if not prim_path:
@@ -264,24 +317,13 @@ class NOVAInstancesService:
                 f"Creating motion group '{motion_group_name}' assigned to '{prim_path}'"
             )
 
-            if is_prim_motion_group(prim):
-                carb.log_info(
-                    f"Articulation at {prim_path} is already connected. Updating configuration to selected motion group"
-                )
-
-            motion_stream_config = MotionStreamConfiguration(
-                host=instance.host,
-                secure_connection=instance.is_secure_connection,
-                cell=controller.cell_name,
-                controller=controller.name,
-                motion_group=motion_group_name,
-                use_external_joint_stream=use_external_joint_stream,
-            )
-
-            motion_group_config = MotionGroupConfiguration(
-                name=motion_group_name,
+            motion_group_config = retarget_motion_group_configuration(
+                prim=prim,
                 prim_path=prim_path,
-                motion_stream_configuration=motion_stream_config,
+                instance=instance,
+                controller=controller,
+                motion_group_name=motion_group_name,
+                use_external_joint_stream=use_external_joint_stream,
             )
 
             async def create_motion_group_async():

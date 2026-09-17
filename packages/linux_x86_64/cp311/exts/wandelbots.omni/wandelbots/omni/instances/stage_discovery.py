@@ -11,7 +11,7 @@ from wandelbots.omni.instances.models import (
 from wandelbots.omni.manipulators import MotionGroupConfiguration
 from wandelbots.omni.utils.hosts import normalize_host
 import isaacsim.core.utils.stage as stage_utils
-from pxr import Sdf
+from pxr import Sdf, Usd
 
 
 def filter_unknown_host_instances(
@@ -73,7 +73,7 @@ def list_cells_for_host(
         cell_controller_tree.setdefault(cell_name, {}).setdefault(
             controller_name, []
         ).append(motion_group_name)
-        model_name = _get_prim_model_name(config.prim_path)
+        model_name = get_prim_model_name(config.prim_path)
         if model_name:
             model_name_by_motion_group.setdefault(motion_group_name, model_name)
 
@@ -107,27 +107,48 @@ def _normalize_model_name(name: str) -> str:
     return name.lower().replace("_", " ").strip()
 
 
-def _get_prim_model_name(prim_path: str) -> str | None:
-    """Read the model identifier from a prim's custom data.
+# Custom data keys holding a robot's model name, in the order they win:
+# motionGroupModel (v1), motion_group_name (v2), and name, which downloaded
+# robots carry next to robot-configuration. Finding the robot prim and reading
+# its model name go through this one list; a walk that anchored on fewer keys
+# than the read would stop on the wrong prim for the formats it skips.
+_MODEL_NAME_KEYS = ("motionGroupModel", "motion_group_name", "name")
 
-    Checks (in order):
-    - motionGroupModel (v1 custom data)
-    - motion_group_name (v2 custom data)
-    - name (fallback)
+
+def find_robot_prim(prim: Usd.Prim) -> Usd.Prim:
+    """Return the prim carrying the robot's custom data.
+
+    The connected motion group can sit on a descendant such as a root_joint
+    while the data is authored on the robot's root prim, so walk up until a
+    prim carries it. Falls back to *prim* when no ancestor does.
     """
+    current = prim
+    while current and current.IsValid():
+        if any(current.GetCustomData().get(key) for key in _MODEL_NAME_KEYS):
+            return current
+        current = current.GetParent()
+    return prim
 
+
+def model_name_from_prim(prim: Usd.Prim) -> str | None:
+    """Read the model identifier from the robot prim's custom data."""
+    custom_data = find_robot_prim(prim).GetCustomData()
+    for key in _MODEL_NAME_KEYS:
+        model_name = custom_data.get(key)
+        if model_name:
+            return model_name
+    return None
+
+
+def get_prim_model_name(prim_path: str) -> str | None:
+    """Model identifier of the robot at *prim_path*, or None."""
     stage = stage_utils.get_current_stage()
     if stage is None:
         return None
     prim = stage.GetPrimAtPath(Sdf.Path(prim_path))
     if not prim or not prim.IsValid():
         return None
-    custom_data = prim.GetCustomData()
-    return (
-        custom_data.get("motionGroupModel")
-        or custom_data.get("motion_group_name")
-        or custom_data.get("name")
-    )
+    return model_name_from_prim(prim)
 
 
 # Controller names in plant notation: alpha prefix + station digits + robot
@@ -207,7 +228,7 @@ def list_motion_group_prim_suggestions(
         norm_model = _normalize_model_name(motion_group_model_name)
         model_matches: list[str] = []
         for prim_path in scene_articulations:
-            prim_model = _get_prim_model_name(prim_path)
+            prim_model = get_prim_model_name(prim_path)
             if prim_model and _normalize_model_name(prim_model) == norm_model:
                 model_matches.append(prim_path)
         if len(model_matches) == 1:

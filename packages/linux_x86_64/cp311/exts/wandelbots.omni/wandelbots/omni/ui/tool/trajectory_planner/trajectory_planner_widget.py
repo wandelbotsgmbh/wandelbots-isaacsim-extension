@@ -307,6 +307,7 @@ class TrajectoryPlannerWidget:
                 locations=jt.locations,
                 times=jt.times or [],
                 collision_free=self._mg_setup.selected_collision_setup is not None,
+                via_joint_positions=self._planner.planned_via_joint_positions,
             )
         return TrajectoryPlannerConfig(
             name=self._name,
@@ -330,8 +331,8 @@ class TrajectoryPlannerWidget:
             global_limits_override=self._settings.global_limits_override,
             payload_name=self._settings.payload_name,
             payload_mass=self._settings.payload_mass,
-            cf_algorithm=self._settings.cf_algorithm,
             cf_max_iterations=self._settings.cf_max_iterations,
+            cf_step_size=self._settings.cf_step_size,
             plan_collision_free=self._settings.plan_collision_free,
             move_to_start=self._settings.move_to_start,
             collapsed=self._collapsed,
@@ -361,8 +362,8 @@ class TrajectoryPlannerWidget:
         self._settings.global_limits_override = config.global_limits_override
         self._settings.payload_name = config.payload_name
         self._settings.payload_mass = config.payload_mass
-        self._settings.cf_algorithm = config.cf_algorithm
         self._settings.cf_max_iterations = config.cf_max_iterations
+        self._settings.cf_step_size = config.cf_step_size
         self._settings.plan_collision_free = config.plan_collision_free
         self._settings.move_to_start = config.move_to_start
 
@@ -437,7 +438,8 @@ class TrajectoryPlannerWidget:
                     joint_positions=pt.joint_positions,
                     locations=pt.locations,
                     times=pt.times if pt.times else None,
-                )
+                ),
+                via_joint_positions=pt.via_joint_positions,
             )
 
         self._mg_setup.set_pending_tcp(config.tcp_name)
@@ -729,8 +731,8 @@ class TrajectoryPlannerWidget:
             "payload_mass": self._settings.payload_mass
             if self._settings.payload_mass > 0
             else None,
-            "cf_algorithm": self._settings.cf_algorithm,
             "cf_max_iterations": self._settings.cf_max_iterations,
+            "cf_step_size": self._settings.cf_step_size,
             "plan_collision_free": self._settings.plan_collision_free,
             "velocity_coloring": self._rendering_settings.velocity_coloring,
         }

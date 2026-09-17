@@ -30,14 +30,11 @@ class SchemaUtils:
             )
             return None
 
-        stage: Usd.Stage = motion_group.GetStage()
-
+        # Walk the motion group's subtree only. Walking the whole stage and
+        # filtering by path visits every prim in the scene on every call, and
+        # the path test also matched siblings: /World/FooBar for /World/Foo.
         child_prim: Usd.Prim
-        for child_prim in stage.Traverse():
-            if not child_prim.GetPath().pathString.startswith(
-                motion_group.GetPath().pathString
-            ):
-                continue
+        for child_prim in Usd.PrimRange(motion_group):
             if TcpUtils.is_tcp(child_prim):
                 return child_prim
         return None

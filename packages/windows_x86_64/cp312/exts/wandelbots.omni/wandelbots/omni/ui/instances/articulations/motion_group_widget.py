@@ -1,5 +1,7 @@
 import carb
 import omni.ui as ui
+import weakref
+from omni.kit.async_engine import run_coroutine
 from typing import Callable, Optional
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
 from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
@@ -22,6 +24,9 @@ from wandelbots.omni.ui.instances.models.motion_group_enabled_model import (
 )
 from wandelbots.omni.ui.widgets.switch import Switch, WARNING_SWITCH_STYLE
 from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
+from wandelbots.omni.ui.colors import NOVAColor
+from wandelbots.omni.ui.utils import get_icon
+from wandelbots.omni.manipulators.geometry_check import check_motion_group_geometry
 
 
 class MotionGroupWidget(ui.VStack):
@@ -41,6 +46,7 @@ class MotionGroupWidget(ui.VStack):
         on_connection_changed: Optional[Callable] = None,
         matched_prim_path: Optional[str] = None,
         fixed_prim_path: Optional[str] = None,
+        on_geometry_mismatch: Optional[Callable[[str], None]] = None,
         **kwargs,
     ):
         kwargs.setdefault("spacing", 10)
@@ -51,6 +57,9 @@ class MotionGroupWidget(ui.VStack):
         self._controller = controller
         self._motion_group = motion_group
         self._on_connection_changed = on_connection_changed
+        # Called with the warning text when the geometry check fails, so the
+        # owner can mark the collapsed row as well.
+        self._on_geometry_mismatch = on_geometry_mismatch
         self._matched_prim_path = matched_prim_path
         # When set, the articulation is fixed to this prim (e.g. an unassigned row
         # connecting to an existing controller): the selector is locked read-only.
@@ -59,6 +68,7 @@ class MotionGroupWidget(ui.VStack):
         self._selector: Optional[ArticulationSelector] = None
         self._connect_btn: Optional[ConnectButton] = None
         self._joint_stream_cb: Optional[ExternalJointStreamCheckbox] = None
+        self._geometry_warning: Optional[ui.Frame] = None
 
         self._build()
 
@@ -118,6 +128,11 @@ class MotionGroupWidget(ui.VStack):
                         self._connect_btn = self._create_connect_button(
                             config, local_connection
                         )
+                    # Hidden, not zero-height: an empty frame expands to fill
+                    # the stack and a pinned height clips a wrapped message.
+                    self._geometry_warning = ui.Frame(visible=False)
+                    if local_connection and config:
+                        self._start_geometry_check(config)
                 else:
                     with ui.HStack(height=25):
                         ui.Spacer(width=15)
@@ -129,6 +144,52 @@ class MotionGroupWidget(ui.VStack):
                         )
                         ui.Spacer()
                 ui.Spacer(height=5)
+
+    def _start_geometry_check(self, config: MotionGroupConfiguration) -> None:
+        """Warn when the scene robot is not the robot NOVA has configured.
+
+        Runs in the background: the panel must not wait on a round trip. The
+        frame is pinned and self held weakly, because the panel is rebuilt on
+        every connection change and a late result describes the old config.
+        """
+        widget_ref = weakref.ref(self)
+        frame = self._geometry_warning
+
+        async def _check():
+            try:
+                result = await check_motion_group_geometry(config)
+                if result is None or result.matches:
+                    return
+                carb.log_warn(result.warning())
+                widget = widget_ref()
+                if widget is not None and widget._geometry_warning is frame:
+                    widget._show_geometry_warning(frame, result.warning())
+                    if widget._on_geometry_mismatch:
+                        widget._on_geometry_mismatch(result.warning())
+            except Exception as exc:
+                # A background task, so a failure here has nowhere to surface.
+                carb.log_warn(f"Robot geometry check failed: {exc}")
+
+        run_coroutine(_check())
+
+    def _show_geometry_warning(self, frame: ui.Frame, message: str) -> None:
+        frame.clear()
+        with frame:
+            # Same 15 px indent and 10 px right margin as the rows above. The
+            # icon hangs from the first line because the message can wrap.
+            with ui.HStack(height=0, spacing=6):
+                ui.Spacer(width=15)
+                with ui.VStack(width=16, height=0):
+                    ui.Image(get_icon("warning.svg"), width=16, height=16)
+                    ui.Spacer()
+                ui.Label(
+                    message,
+                    style={"color": NOVAColor.WARNING_LIGHT.color},
+                    word_wrap=True,
+                    alignment=ui.Alignment.LEFT_TOP,
+                )
+                ui.Spacer(width=10)
+        frame.visible = True
 
     def _is_local_connection(self, config: Optional[MotionGroupConfiguration]) -> bool:
         # Same check as the collapsed header, so the two cannot disagree.

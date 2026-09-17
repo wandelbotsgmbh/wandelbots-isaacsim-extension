@@ -1,4 +1,12 @@
+import asyncio
+import os
+import tempfile
+import time
+from pathlib import Path
+
+import carb
 import omni.usd
+from omni.kit.async_engine import run_coroutine
 from pxr import Usd
 from pxr import UsdGeom
 from pxr import Vt, Gf
@@ -6,14 +14,265 @@ import numpy as np
 from numpy.typing import NDArray
 from pyhull.convex_hull import ConvexHull
 
+from wandelbots.omni.utils import watertight_mesh
+from wandelbots.omni.utils.base import get_extension_root, get_kit_python_executable
+from wandelbots.omni.utils.watertight_mesh import SubMesh
+
 # Type aliases for mesh geometry
 Vertex = tuple[float, float, float]
 Edge = tuple[Vertex, Vertex]
 Triangle = tuple[Vertex, Vertex, Vertex]
 Face = list[Vertex]
 
+# Each worker subprocess spawns its own CoACD process pool sized to nearly
+# all cores (see watertight_mesh._decompose_concave_shells), so two builds
+# running at once oversubscribe the CPU and are both slower than queued -
+# this serializes every ghost mesh build (preview and refine alike) across
+# the whole extension, one worker subprocess at a time.
+_mesh_build_slot = asyncio.Semaphore(1)
+
+
+async def _build_watertight_in_subprocess(
+    submeshes: list[SubMesh], decompose: bool = True
+) -> SubMesh | None:
+    """Run build_watertight_mesh in a separate process.
+
+    Its native deps (manifold3d, coacd) are nanobind/ctypes libraries that
+    must never load into the Kit process: a Kit extension hot reload purges
+    their sys.modules entries and the following re-import re-initializes
+    nanobind, which aborts the whole app. In a short-lived worker process
+    they load freshly every time, and a native crash cannot take Kit down.
+    """
+    dependency_path = str(get_extension_root() / "pip_prebundle")
+    worker_script = Path(__file__).with_name("watertight_mesh.py")
+    with tempfile.TemporaryDirectory(prefix="wb_ghost_mesh_") as exchange_dir:
+        input_path = str(Path(exchange_dir) / "input.npz")
+        output_path = str(Path(exchange_dir) / "output.npz")
+        watertight_mesh.write_submeshes(input_path, submeshes, decompose=decompose)
+
+        async with _mesh_build_slot:
+            process = await asyncio.create_subprocess_exec(
+                get_kit_python_executable(),
+                # -P: do not prepend the script dir to sys.path - this package
+                # has modules shadowing the stdlib (math.py), which would break
+                # numpy inside the worker.
+                "-P",
+                str(worker_script),
+                # The dependency path travels as an argument AND a dedicated
+                # env var (see _prepare_worker_environment): debugger
+                # subprocess injection (pydevd) rewrites PYTHONPATH and argv,
+                # so the worker needs redundant channels.
+                dependency_path,
+                input_path,
+                output_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                # Kit's process env carries interpreter-affecting variables
+                # (the Isaac launcher exports PYTHONPATH; LD_LIBRARY_PATH
+                # points at Kit's libs) that break the worker's numpy native
+                # modules. Strip those; the worker resolves its deps itself.
+                env={
+                    key: value
+                    for key, value in os.environ.items()
+                    if key not in ("PYTHONPATH", "PYTHONHOME", "LD_LIBRARY_PATH")
+                }
+                | {"WANDELBOTS_MESH_WORKER_DEPS": dependency_path},
+            )
+            _, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"mesh worker exited with {process.returncode}: "
+                f"{stderr.decode(errors='replace')[-1500:]}"
+            )
+
+        with np.load(output_path) as result:
+            if "empty" in result:
+                return None
+            return result["vertices"], result["triangles"]
+
 
 class MeshUtils:
+    @staticmethod
+    def iter_source_meshes(source_prim: Usd.Prim):
+        """Yield (prim, points, indices, counts) for every UsdGeom.Mesh with
+        valid geometry under source_prim.
+
+        The one traversal shared by every ghost-mesh consumer that needs raw
+        mesh data: the submesh collector below and the cache's geometry
+        stamp (GhostMeshCache.compute_source_stamp) both walk this same set,
+        so a mesh that would not affect the built geometry (missing/empty
+        attributes) does not affect the cache key either.
+        """
+        for prim in Usd.PrimRange(source_prim):
+            if not prim.IsA(UsdGeom.Mesh):
+                continue
+            mesh = UsdGeom.Mesh(prim)
+            points = mesh.GetPointsAttr().Get()
+            counts = mesh.GetFaceVertexCountsAttr().Get()
+            indices = mesh.GetFaceVertexIndicesAttr().Get()
+            if not points or not counts or not indices:
+                continue
+            yield prim, points, indices, counts
+
+    @staticmethod
+    def _collect_triangulated_submeshes(
+        source_prim: Usd.Prim,
+        mesh_offset_transform: Gf.Matrix4d,
+    ) -> list[SubMesh]:
+        """Collect every mesh under source_prim as world-transformed triangles."""
+        submeshes: list[SubMesh] = []
+        for prim, points, indices, counts in MeshUtils.iter_source_meshes(source_prim):
+            transform = (
+                omni.usd.get_world_transform_matrix(prim) * mesh_offset_transform
+            )
+            # Gf matrices are row-major with row vectors: transformed = p * M
+            vertices = np.asarray(points, dtype=np.float64)
+            matrix = np.asarray(transform, dtype=np.float64)
+            vertices = vertices @ matrix[:3, :3] + matrix[3, :3]
+
+            # Fan-triangulate polygonal faces (quads/ngons) into triangles
+            counts_array = np.asarray(counts, dtype=np.int64)
+            indices_array = np.asarray(indices, dtype=np.int32)
+            if np.all(counts_array == 3):
+                triangles = indices_array.reshape(-1, 3)
+            else:
+                triangles_per_face = np.maximum(counts_array - 2, 0)
+                face_starts = np.concatenate(([0], np.cumsum(counts_array[:-1])))
+                face_start_per_triangle = np.repeat(face_starts, triangles_per_face)
+                fan_starts = np.concatenate(([0], np.cumsum(triangles_per_face[:-1])))
+                index_in_fan = np.arange(triangles_per_face.sum()) - np.repeat(
+                    fan_starts, triangles_per_face
+                )
+                triangles = np.stack(
+                    (
+                        indices_array[face_start_per_triangle],
+                        indices_array[face_start_per_triangle + index_in_fan + 1],
+                        indices_array[face_start_per_triangle + index_in_fan + 2],
+                    ),
+                    axis=1,
+                )
+            if len(triangles):
+                submeshes.append((vertices, triangles))
+        return submeshes
+
+    @staticmethod
+    def fill_ghost_mesh_progressively(
+        source_prim: Usd.Prim,
+        target_path: str,
+        mesh_offset_transform: Gf.Matrix4d = Gf.Matrix4d().SetIdentity(),
+    ) -> asyncio.Task:
+        """Fill the mesh prim at target_path in two background passes.
+
+        A hull-only preview (concave openings temporarily filled) lands
+        within seconds; the full CoACD build then replaces it in place, both
+        in worker processes (see _build_watertight_in_subprocess). Geometry
+        is collected synchronously here, paired with the offset transform
+        computed from the same frame's world transforms - so the baked
+        result is immune to the robot moving while the builds run.
+
+        The returned task resolves to the refined UsdGeom.Mesh, or None when
+        the scene changed, the preview fell back to the verbatim merge, or
+        the refinement failed (the preview then stays).
+        """
+        submeshes = MeshUtils._collect_triangulated_submeshes(
+            source_prim, mesh_offset_transform
+        )
+        return run_coroutine(
+            MeshUtils._fill_ghost_mesh(
+                source_prim, target_path, mesh_offset_transform, submeshes
+            )
+        )
+
+    @staticmethod
+    async def _fill_ghost_mesh(
+        source_prim: Usd.Prim,
+        target_path: str,
+        mesh_offset_transform: Gf.Matrix4d,
+        submeshes: list[SubMesh],
+    ) -> UsdGeom.Mesh | None:
+        stage = source_prim.GetStage()
+        if not submeshes:
+            carb.log_warn(
+                f"No mesh geometry found under {source_prim.GetPath()}; "
+                f"filling {target_path} with the verbatim merge."
+            )
+            MeshUtils.merge_prim_meshes(source_prim, target_path, mesh_offset_transform)
+            return None
+
+        source_vertex_count = sum(len(vertices) for vertices, _ in submeshes)
+
+        def scene_changed() -> bool:
+            return stage.expired or not stage.GetPrimAtPath(target_path)
+
+        # Preview pass: hulls only, so the ghost has a body within seconds.
+        started = time.monotonic()
+        try:
+            preview = await _build_watertight_in_subprocess(submeshes, decompose=False)
+        except Exception as error:  # includes worker startup failures
+            carb.log_warn(f"Ghost mesh preview for {target_path} failed: {error}")
+            preview = None
+        if scene_changed():
+            carb.log_verbose(f"Scene changed while building {target_path}; aborting.")
+            return None
+        if preview is None:
+            if source_prim:
+                MeshUtils.merge_prim_meshes(
+                    source_prim, target_path, mesh_offset_transform
+                )
+            return None
+        MeshUtils._write_triangle_mesh(stage, target_path, *preview)
+        carb.log_info(
+            f"Ghost mesh preview for {target_path}: "
+            f"{source_vertex_count} -> {len(preview[0])} vertices "
+            f"in {time.monotonic() - started:.1f}s"
+        )
+
+        # Refinement pass: the full CoACD build replaces the preview.
+        started = time.monotonic()
+        try:
+            refined = await _build_watertight_in_subprocess(submeshes, decompose=True)
+        except Exception as error:
+            carb.log_warn(
+                f"Ghost mesh refinement for {target_path} failed: {error}; "
+                f"keeping the preview mesh."
+            )
+            return None
+        if scene_changed():
+            carb.log_verbose(f"Scene changed while refining {target_path}; aborting.")
+            return None
+        if refined is None:
+            carb.log_warn(
+                f"Ghost mesh refinement for {target_path} produced no valid mesh; "
+                f"keeping the preview mesh."
+            )
+            return None
+        target_mesh = MeshUtils._write_triangle_mesh(stage, target_path, *refined)
+        carb.log_info(
+            f"Ghost mesh refined for {target_path}: "
+            f"{source_vertex_count} -> {len(refined[0])} vertices "
+            f"({100 * len(refined[0]) / max(source_vertex_count, 1):.1f}%) "
+            f"in {time.monotonic() - started:.1f}s"
+        )
+        return target_mesh
+
+    @staticmethod
+    def _write_triangle_mesh(
+        stage: Usd.Stage,
+        target_path: str,
+        vertices: NDArray,
+        triangles: NDArray,
+    ) -> UsdGeom.Mesh:
+        target_mesh = UsdGeom.Mesh.Define(stage, target_path)
+        target_mesh.CreatePointsAttr().Set(Vt.Vec3fArray.FromNumpy(vertices))
+        target_mesh.CreateFaceVertexIndicesAttr().Set(
+            Vt.IntArray.FromNumpy(triangles.reshape(-1))
+        )
+        target_mesh.CreateFaceVertexCountsAttr().Set(
+            Vt.IntArray.FromNumpy(np.full(len(triangles), 3, dtype=np.int32))
+        )
+        return target_mesh
+
     @staticmethod
     def merge_prim_meshes(
         source_prim: Usd.Prim,
@@ -29,13 +288,19 @@ class MeshUtils:
         all_indices = []
         all_face_vertex_counts = []
 
+        def children_of(prim: Usd.Prim):
+            # Instance proxies, because GetChildren stops at an instance and the
+            # meshes of an instanced tool live in its prototype. Without this an
+            # instanced tool merges to an empty mesh.
+            return prim.GetFilteredChildren(Usd.TraverseInstanceProxies())
+
         def collect_mesh_data(prim: Usd.Prim, vertex_offset: int) -> int:
             """Recursively collect mesh data and return updated vertex offset"""
 
             # Early return if not a mesh - process children with current offset
             if not prim.IsA(UsdGeom.Mesh):
                 current_offset = vertex_offset
-                for child in prim.GetChildren():
+                for child in children_of(prim):
                     current_offset = collect_mesh_data(child, current_offset)
                 return current_offset
 
@@ -88,7 +353,7 @@ class MeshUtils:
             current_offset = vertex_offset + vertex_count
 
             # Recursively process children
-            for child in prim.GetChildren():
+            for child in children_of(prim):
                 current_offset = collect_mesh_data(child, current_offset)
 
             return current_offset
@@ -118,6 +383,13 @@ class MeshUtils:
                 face_counts = [3] * face_count
                 counts_attr = target_mesh.CreateFaceVertexCountsAttr()
                 counts_attr.Set(Vt.IntArray(face_counts))
+        else:
+            # An empty result is never what the caller wanted, and it used to be
+            # returned silently - a ghost object then appeared with no geometry.
+            carb.log_warn(
+                f"No mesh geometry found under {source_prim.GetPath()}, so "
+                f"{target_path} is empty."
+            )
         return target_prim
 
     @staticmethod

@@ -24,6 +24,7 @@ from wandelbots.omni.datatypes import (
     TCPSource,
 )
 from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
+from wandelbots.omni.utils.kinematics import build_collision_free_algorithm
 from wandelbots.omni.utils.prims import PrimUtils
 
 
@@ -124,12 +125,14 @@ async def create_ghost_object(ghost_object_data: CreateGhostObject) -> None:
         raise HTTPException(404, detail=f"Invalid TCP prim path: {tcp_prim_path}")
 
     try:
-        GhostObjectUtils.add_ghost_object(
+        await GhostObjectUtils.add_ghost_object(
             prims_utils.get_prim_at_path(ghost_object_data.prim_path),
             ghost_object_data.ref_pose,
             tcp_prim=prims_utils.get_prim_at_path(tcp_prim_path)
             if tcp_prim_path
             else None,
+            # REST contract: the ghost is complete when the endpoint returns.
+            wait_for_mesh=True,
         )
     except ValueError as e:
         raise HTTPException(422, str(e))
@@ -724,23 +727,10 @@ async def _build_normal_skill(config, stage) -> ExportedSkill:
 
 
 async def _build_collision_free_skill(config, stage) -> ExportedSkill:
-    cf_algorithm = getattr(config, "cf_algorithm", "RRTConnectAlgorithm")
     cf_max_iterations = getattr(config, "cf_max_iterations", 10000)
-
-    if cf_algorithm == "MidpointInsertionAlgorithm":
-        algorithm = wb_v2_models.CollisionFreeAlgorithm(
-            wb_v2_models.MidpointInsertionAlgorithm(
-                max_iterations=cf_max_iterations,
-                algorithm_name="MidpointInsertionAlgorithm",
-            )
-        )
-    else:
-        algorithm = wb_v2_models.CollisionFreeAlgorithm(
-            wb_v2_models.RRTConnectAlgorithm(
-                max_iterations=cf_max_iterations,
-                algorithm_name="RRTConnectAlgorithm",
-            )
-        )
+    cf_step_size = getattr(config, "cf_step_size", None)
+    # Same algorithm the planner uses; see plan_collision_free.
+    algorithm = build_collision_free_algorithm(cf_max_iterations, cf_step_size)
 
     # Collision-free planning operates in joint space and uses the skill's single
     # default TCP for the whole motion.

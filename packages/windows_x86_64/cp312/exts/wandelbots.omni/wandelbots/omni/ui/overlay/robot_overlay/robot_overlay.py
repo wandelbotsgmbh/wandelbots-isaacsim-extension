@@ -143,7 +143,7 @@ class RobotOverlay(ViewportOverlay):
             return
 
         stage_units = SceneUtils.get_stage_units()
-        unit_factor = stage_units / 1000.0
+        unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
         dh_parameters = mesh.motion_group_description.dh_parameters
 
         fk_chain = [

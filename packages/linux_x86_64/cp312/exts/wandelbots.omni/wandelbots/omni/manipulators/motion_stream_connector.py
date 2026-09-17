@@ -65,9 +65,11 @@ class MotionStreamConnector:
         self._joint_indices_tensor: torch.Tensor | None = None
         self._has_prismatic_joints: bool = False
         self._stream_zeros: list[float] | None = None
-        # CACHE, derived on first sleep/wake call (needs the live articulation).
+        # CACHE, derived on first sleep/wake call (needs the live articulation)
+        # and re-derived whenever PhysX rebuilds the simulation view.
         self._sleep_body_ids: list[int] | None = None
         self._sleep_paths: list[str] | None = None
+        self._sleep_physics_view = None
 
         # Per-frame joint flow: newest unapplied target, last applied target
         # (dedupe), last known state (echoed as feedback while paused).
@@ -101,6 +103,7 @@ class MotionStreamConnector:
         # the cycle repeats.
         self._idle_frames = 0
         self._sleep_unavailable = False
+        self._sleep_failure_logged = False
 
     @property
     def configuration(self) -> MotionStreamConfiguration:
@@ -393,7 +396,7 @@ class MotionStreamConnector:
         SingleArticulation was resolved to) plus the link_0 satellite body,
         which is welded on via an excludeFromArticulation fixed joint and
         would otherwise stay awake and keep re-waking its neighbor. The prim
-        lookups and path encoding run once per connection."""
+        lookups and path encoding run once per simulation view."""
         if self._sleep_body_ids is None:
             paths = [self.motion_group.articulation.prim_path]
             link_0 = f"{self.motion_group.identifier}/link_0"
@@ -424,27 +427,85 @@ class MotionStreamConnector:
                 return False
         return True
 
-    def _set_articulation_sleep(self, sleep: bool):
-        """Idempotent PhysX sleep/wake; safe to re-issue in any state."""
+    def _drop_sleep_targets(self) -> None:
+        """Force the next sleep/wake to re-resolve paths and body ids."""
+        self._sleep_body_ids = None
+        self._sleep_paths = None
+
+    def _set_articulation_sleep(self, sleep: bool) -> bool:
+        """Idempotent PhysX sleep/wake; safe to re-issue in any state.
+
+        False when nothing was issued, so a caller can retry rather than
+        record a state the articulation is not in.
+        """
         if self._sleep_unavailable:
-            return
+            return False
         try:
+            # The ids address the simulation the paths were encoded against.
+            # A stage change while the timeline plays makes PhysX rebuild the
+            # simulation view, so re-resolve when the view moved rather than
+            # addressing bodies of the previous one, exactly as
+            # _try_direct_physics_write re-inits its cached view.
+            live_view = self._live_physics_view(self.motion_group.articulation)
+            if live_view is not self._sleep_physics_view:
+                self._sleep_physics_view = live_view
+                self._drop_sleep_targets()
+
             physx = get_physx_simulation_interface()
             stage_id = omni.usd.get_context().get_stage_id()
             body_ids = self._encoded_sleep_body_ids()
             if not self._sleep_targets_are_live():
-                self._sleep_unavailable = True
-                return
+                # Transient: a playback merge disables the bodies and a reload
+                # replaces them. Retry on a later idle window instead of
+                # latching idle-sleep off for the connection's lifetime.
+                self._drop_sleep_targets()
+                return False
             for body_id in body_ids:
                 if sleep:
                     physx.put_to_sleep(stage_id, body_id)
                 else:
                     physx.wake_up(stage_id, body_id)
-        except Exception as error:
+            # Sleeping works again, so a later failure is new information.
+            self._sleep_failure_logged = False
+            return True
+        except AttributeError as error:
+            # The interface or the isaacsim internals are not the shape this
+            # relies on, which no later frame changes, so stop trying. Same
+            # reading of AttributeError as _live_physics_view.
             self._sleep_unavailable = True
             carb.log_warn(
                 f"Idle-sleep unavailable for {self.motion_group.identifier}: {error}"
             )
+            return False
+        except Exception as error:
+            # Broad on purpose: this wraps a native binding and runs from the
+            # per-frame hub, where an escaping exception would spam every
+            # frame. A rebuilt simulation view can still restore sleeping, so
+            # only the message is one-shot and the next idle window retries.
+            self._drop_sleep_targets()
+            if not self._sleep_failure_logged:
+                self._sleep_failure_logged = True
+                carb.log_warn(
+                    f"Idle-sleep failed for {self.motion_group.identifier}, "
+                    f"retrying on later idle windows: {error}"
+                )
+            return False
+
+    def wake_for_reset(self):
+        """Wake the articulation so a timeline STOP can write its reset back.
+
+        Idle-sleep exists to stop PhysX's per-frame transform writeback for a
+        robot at rest. That writeback is also what carries the reset-on-stop
+        state out to USD and Fabric, so an articulation still asleep when the
+        timeline stops keeps the last simulated joint values in both - the
+        robot looks frozen mid-pose instead of returning to its authored one.
+
+        The counter is cleared only once the wake was issued. Clearing it
+        first would drop the retry in apply_pending_joints on the paths where
+        the wake does nothing, leaving the articulation asleep for good.
+        """
+        if self._set_articulation_sleep(False):
+            self._idle_frames = 0
 
     def maybe_sleep_when_idle(self):
         """Called once per frame by the hub: after _IDLE_SLEEP_FRAMES frames

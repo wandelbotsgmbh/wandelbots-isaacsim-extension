@@ -5,6 +5,7 @@ from __future__ import annotations
 import omni.kit.test
 
 from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
+    CF_STEP_SIZE_MIN,
     PlannedTrajectoryConfig,
     PoseConfig,
     TrajectoryPlannerConfig,
@@ -67,6 +68,7 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         self.assertEqual(config.locations, [])
         self.assertEqual(config.times, [])
         self.assertFalse(config.collision_free)
+        self.assertIsNone(config.via_joint_positions)
 
     async def test_planned_trajectory_config_with_data(self):
         config = PlannedTrajectoryConfig(
@@ -96,8 +98,8 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         self.assertEqual(config.blending_min_velocity_percent, 50)
         self.assertEqual(config.payload_name, "")
         self.assertAlmostEqual(config.payload_mass, 0.0)
-        self.assertEqual(config.cf_algorithm, "RRTConnectAlgorithm")
         self.assertEqual(config.cf_max_iterations, 10000)
+        self.assertIsNone(config.cf_step_size)
         self.assertFalse(config.plan_collision_free)
         self.assertFalse(config.collapsed)
         self.assertFalse(config.poses_collapsed)
@@ -158,6 +160,27 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         restored = TrajectoryPlannerConfig(**config.model_dump())
         self.assertTrue(restored.plan_collision_free)
         self.assertEqual(config, restored)
+
+    async def test_cf_step_size_defaults_to_leaving_it_to_the_algorithm(self):
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=None)
+
+        self.assertIsNone(config.cf_step_size)
+
+    async def test_cf_step_size_keeps_a_value_the_settings_field_allows(self):
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=0.05)
+
+        self.assertAlmostEqual(0.05, config.cf_step_size)
+
+    async def test_cf_step_size_zero_is_clamped_when_a_config_is_loaded(self):
+        """A zero step would leave the search extending by nothing."""
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=0.0)
+
+        self.assertAlmostEqual(CF_STEP_SIZE_MIN, config.cf_step_size)
+
+    async def test_cf_step_size_negative_is_clamped_when_a_config_is_loaded(self):
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=-1.0)
+
+        self.assertAlmostEqual(CF_STEP_SIZE_MIN, config.cf_step_size)
 
     async def test_trajectory_planner_config_ignores_unknown_fields(self):
         data = {"name": "test", "unknown_field": "should_be_ignored"}

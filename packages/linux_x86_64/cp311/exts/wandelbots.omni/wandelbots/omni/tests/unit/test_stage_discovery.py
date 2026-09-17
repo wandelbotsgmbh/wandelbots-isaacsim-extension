@@ -18,8 +18,11 @@ from wandelbots.omni.manipulators import (
 )
 from wandelbots.omni.instances.stage_discovery import (
     filter_unknown_host_instances,
+    find_robot_prim,
+    get_prim_model_name,
     list_cells_for_host,
     list_motion_group_prim_suggestions,
+    model_name_from_prim,
 )
 
 NOVA_HOST_1 = "nova-1.example.com"
@@ -520,6 +523,63 @@ class TestStageDiscovery(omni.kit.test.AsyncTestCase):
                     include_prims_without_api=False
                 )
                 self.assertEqual(paths, [f"/World/Robot_{index}"])
+
+
+class TestRobotPrimResolution(omni.kit.test.AsyncTestCase):
+    """A connected motion group can sit on a descendant of the robot prim."""
+
+    @contextmanager
+    def _create_stage(self):
+        stage = Usd.Stage.CreateInMemory("TestRobotPrimResolution")
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        with use_stage(stage):
+            yield stage
+
+    async def test_model_name_comes_from_the_robot_ancestor(self):
+        with self._create_stage() as stage:
+            robot = UsdGeom.Xform.Define(stage, "/World/UR10e").GetPrim()
+            robot.SetCustomData({"motionGroupModel": "UR10e"})
+            joint = UsdGeom.Xform.Define(stage, "/World/UR10e/root_joint").GetPrim()
+
+            self.assertEqual(robot, find_robot_prim(joint))
+            self.assertEqual("UR10e", model_name_from_prim(joint))
+            self.assertEqual("UR10e", get_prim_model_name("/World/UR10e/root_joint"))
+
+    async def test_prim_with_own_custom_data_wins(self):
+        with self._create_stage() as stage:
+            robot = UsdGeom.Xform.Define(stage, "/World/UR10e").GetPrim()
+            robot.SetCustomData({"motionGroupModel": "UR10e"})
+            nested = UsdGeom.Xform.Define(stage, "/World/UR10e/UR5e").GetPrim()
+            nested.SetCustomData({"motion_group_name": "UR5e"})
+
+            self.assertEqual(nested, find_robot_prim(nested))
+            self.assertEqual("UR5e", model_name_from_prim(nested))
+
+    async def test_model_name_comes_from_a_v2_robot_ancestor(self):
+        # Downloaded robots carry the model under name, next to
+        # robot-configuration, instead of motionGroupModel.
+        with self._create_stage() as stage:
+            robot = UsdGeom.Xform.Define(stage, "/World/abb").GetPrim()
+            robot.SetCustomData(
+                {
+                    "name": "ABB_4600_255_40",
+                    "robot-configuration": {"id": 0, "name": "abb-irb4600_255_40"},
+                }
+            )
+            joint = UsdGeom.Xform.Define(stage, "/World/abb/root_joint").GetPrim()
+
+            self.assertEqual(robot, find_robot_prim(joint))
+            self.assertEqual("ABB_4600_255_40", model_name_from_prim(joint))
+            self.assertEqual(
+                "ABB_4600_255_40", get_prim_model_name("/World/abb/root_joint")
+            )
+
+    async def test_prim_without_robot_data_anywhere_keeps_itself(self):
+        with self._create_stage() as stage:
+            joint = UsdGeom.Xform.Define(stage, "/World/Rig/root_joint").GetPrim()
+
+            self.assertEqual(joint, find_robot_prim(joint))
+            self.assertIsNone(model_name_from_prim(joint))
 
 
 class TestStalePrimPaths(omni.kit.test.AsyncTestCase):

@@ -25,6 +25,7 @@ from .articulation_cache import (
     ArticulationCache,
     ArticulationCacheHandle,
     get_articulation_cache,
+    release_articulation_cache,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "ArticulationCache",
     "ArticulationCacheHandle",
     "get_articulation_cache",
+    "release_articulation_cache",
 ]

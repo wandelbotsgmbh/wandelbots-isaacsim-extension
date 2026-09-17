@@ -231,8 +231,10 @@ class InstanceWidget(ui.VStack):
         )
 
     def _on_assigned_connection_changed(self):
-        # Refresh this instance's list and count, then bubble up so the global
-        # unassigned section re-derives a just-freed (or newly-claimed) articulation.
+        # A connect can also have created a controller, so refetch the cells; the
+        # fetch rebuilds this widget again once they arrive. Bubble up right away
+        # so the global unassigned section re-derives a just-freed articulation.
+        self._fetch_cells()
         self.rebuild()
         if self._on_connection_changed:
             self._on_connection_changed()

@@ -10,6 +10,11 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 _RECOVERY_KEY = "wandelbotsGripperRecovery"
 _RELEASE_GRACE_S = 0.2
+_BOUNDS_PURPOSES = [
+    UsdGeom.Tokens.default_,
+    UsdGeom.Tokens.render,
+    UsdGeom.Tokens.proxy,
+]
 
 
 class ContactGripperModel:
@@ -392,7 +397,15 @@ class ContactGripperModel:
         candidate_paths: list[str],
         exclude_paths: list[str],
     ):
-        helper_bounds = self._compute_world_aligned_bounds(helper_prim)
+        # Two caches for the whole scan, instead of a new one per prim, which
+        # caches nothing. The candidate cache answers "does this prim touch the
+        # helper", the pruning cache "can anything below this prim touch it".
+        candidate_bbox_cache = self._make_bbox_cache()
+        pruning_bbox_cache = self._make_pruning_bbox_cache()
+
+        helper_bounds = self._compute_world_aligned_bounds(
+            helper_prim, candidate_bbox_cache
+        )
         if helper_bounds.IsEmpty():
             carb.log_error(
                 "Contact Gripper: helper prim has no world bounds. Use a helper prim with "
@@ -401,38 +414,64 @@ class ContactGripperModel:
             return None
 
         helper_path = helper_prim.GetPath()
+        exclude_patterns = self._normalize_patterns(exclude_paths)
+        candidate_patterns = self._normalize_patterns(candidate_paths)
 
-        if candidate_paths:
-            for candidate_prim in stage.Traverse():
-                if self._matches_filter(candidate_prim, exclude_paths):
-                    continue
-                if not self._matches_filter(candidate_prim, candidate_paths):
-                    continue
-                if self._is_attachable_candidate(
-                    helper_path, candidate_prim, helper_bounds
-                ):
-                    return candidate_prim
-            return None
+        # The pruning bound covers a prim's whole subtree, so if it does not
+        # touch the helper, nothing inside it can either and the scan skips it,
+        # see _make_pruning_bbox_cache. Prims are still visited in the same
+        # order, so the same one gets returned. A subtree with no bound of its
+        # own, such as a Scope, is never skipped.
+        it = iter(Usd.PrimRange.Stage(stage))
+        for candidate_prim in it:
+            candidate_path = candidate_prim.GetPath()
 
-        for candidate_prim in stage.Traverse():
-            if self._matches_filter(candidate_prim, exclude_paths):
+            # Ancestors of the helper are never candidates, and their bounds
+            # enclose the whole branch (computing /World's bound means unioning
+            # the entire stage), so reject them before touching bounds.
+            if helper_path.HasPrefix(candidate_path):
+                continue
+            # The helper's own subtree is excluded wholesale.
+            if candidate_path.HasPrefix(helper_path):
+                it.PruneChildren()
+                continue
+
+            if exclude_patterns and self._matches_patterns(
+                candidate_prim, exclude_patterns
+            ):
+                continue
+
+            subtree_bounds = self._compute_world_aligned_bounds(
+                candidate_prim, pruning_bbox_cache
+            )
+            if not subtree_bounds.IsEmpty() and not self._ranges_intersect(
+                helper_bounds, subtree_bounds
+            ):
+                it.PruneChildren()
+                continue
+
+            if candidate_patterns and not self._matches_patterns(
+                candidate_prim, candidate_patterns
+            ):
                 continue
             if self._is_attachable_candidate(
-                helper_path, candidate_prim, helper_bounds
+                helper_path, candidate_prim, helper_bounds, candidate_bbox_cache
             ):
                 return candidate_prim
 
         return None
 
     @staticmethod
-    def _matches_filter(candidate_prim, filters: list[str]) -> bool:
+    def _normalize_patterns(filters: list[str]) -> list[str]:
+        """Strip and drop empty patterns once, instead of per candidate prim."""
+        return [p for p in (f.strip() for f in filters or []) if p]
+
+    @staticmethod
+    def _matches_patterns(candidate_prim, normalized_patterns: list[str]) -> bool:
         candidate_path = candidate_prim.GetPath().pathString
         candidate_path_without_root = candidate_path.lstrip("/")
 
-        for pattern in filters:
-            normalized = pattern.strip()
-            if not normalized:
-                continue
+        for normalized in normalized_patterns:
             if (
                 candidate_path == normalized
                 or candidate_path_without_root == normalized
@@ -446,7 +485,9 @@ class ContactGripperModel:
         return False
 
     @staticmethod
-    def _is_attachable_candidate(helper_path, candidate_prim, helper_bounds) -> bool:
+    def _is_attachable_candidate(
+        helper_path, candidate_prim, helper_bounds, bbox_cache
+    ) -> bool:
         if not candidate_prim.IsValid():
             return False
         if not candidate_prim.IsActive():
@@ -468,7 +509,7 @@ class ContactGripperModel:
             return False
 
         candidate_bounds = ContactGripperModel._compute_world_aligned_bounds(
-            candidate_prim
+            candidate_prim, bbox_cache
         )
         if candidate_bounds.IsEmpty():
             return False
@@ -476,16 +517,33 @@ class ContactGripperModel:
         return ContactGripperModel._ranges_intersect(helper_bounds, candidate_bounds)
 
     @staticmethod
-    def _compute_world_aligned_bounds(prim) -> Gf.Range3d:
-        bbox_cache = UsdGeom.BBoxCache(
+    def _make_bbox_cache() -> UsdGeom.BBoxCache:
+        # Extents hints stay off in both caches. A model prim reports its
+        # authored extentsHint as its bound, and an out-of-date hint can be
+        # smaller than the geometry below it, so the scan would skip prims it
+        # should have found.
+        return UsdGeom.BBoxCache(
             Usd.TimeCode.Default(),
-            includedPurposes=[
-                UsdGeom.Tokens.default_,
-                UsdGeom.Tokens.render,
-                UsdGeom.Tokens.proxy,
-            ],
-            useExtentsHint=True,
+            includedPurposes=_BOUNDS_PURPOSES,
+            useExtentsHint=False,
         )
+
+    @staticmethod
+    def _make_pruning_bbox_cache() -> UsdGeom.BBoxCache:
+        # A bound leaves invisible descendants out, while an invisible prim
+        # asked on its own still reports its geometry, so pruning on a normal
+        # bound would skip prims the scan can attach to. Guide prims report an
+        # empty bound either way and are never candidates, so they need no
+        # such treatment.
+        return UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            includedPurposes=_BOUNDS_PURPOSES,
+            useExtentsHint=False,
+            ignoreVisibility=True,
+        )
+
+    @staticmethod
+    def _compute_world_aligned_bounds(prim, bbox_cache) -> Gf.Range3d:
         return bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
 
     @staticmethod

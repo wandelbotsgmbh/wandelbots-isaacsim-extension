@@ -1,6 +1,8 @@
 from unittest import mock
 
 import omni.kit.test
+import omni.usd
+from pxr import PhysicsSchemaTools, UsdGeom, UsdPhysics
 from wandelbots_api_client.v2.models import JointTypeEnum
 
 import wandelbots.omni.manipulators.motion_stream_connector as msc
@@ -47,6 +49,9 @@ def _bare_connector() -> MotionStreamConnector:
     # Idle-sleep talks to the omni.physx interface; disabled for unit tests.
     connector._sleep_unavailable = True
     connector._sleep_body_ids = None
+    connector._sleep_paths = None
+    connector._sleep_physics_view = None
+    connector._sleep_failure_logged = False
     connector._idle_frames = 0
     connector._apply_rejection_logged = False
     return connector
@@ -291,3 +296,256 @@ class TestExternalStreamPhysicsFeedback(omni.kit.test.AsyncTestCase):
         connector.apply_pending_joints()
 
         connector._refresh_measured_state.assert_not_called()
+
+
+ROBOT_PATH = "/World/SleepRobot"
+LINK_0_PATH = f"{ROBOT_PATH}/link_0"
+
+
+class TestIdleSleepTargets(omni.kit.test.AsyncTestCase):
+    """Sleep targets must follow a rebuilt simulation view, and a target that
+    is only temporarily gone must not disable idle-sleep for good.
+
+    Runs against the context stage because that is what the encoding reads.
+    """
+
+    async def setUp(self):
+        await omni.usd.get_context().new_stage_async()
+        self.stage = omni.usd.get_context().get_stage()
+        UsdGeom.Xform.Define(self.stage, "/World")
+        for path in (ROBOT_PATH, LINK_0_PATH):
+            UsdPhysics.RigidBodyAPI.Apply(
+                UsdGeom.Xform.Define(self.stage, path).GetPrim()
+            )
+
+    async def tearDown(self):
+        await omni.usd.get_context().new_stage_async()
+
+    def _connector(self, live_view: object) -> MotionStreamConnector:
+        """Idle-sleep enabled, targets already resolved against another view."""
+        connector = _bare_connector()
+        connector.motion_group.identifier = ROBOT_PATH
+        connector.motion_group.articulation.prim_path = ROBOT_PATH
+        connector.motion_group.articulation._articulation_view._physics_view = live_view
+        connector._sleep_unavailable = False
+        connector._sleep_physics_view = object()
+        # Live paths, but ids that no real encoding produces: that is what a
+        # rebuilt simulation view has to replace.
+        connector._sleep_paths = [ROBOT_PATH, LINK_0_PATH]
+        connector._sleep_body_ids = [1234, 5678]
+        return connector
+
+    async def test_rebuilt_physics_view_re_resolves_targets(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        expected = [
+            PhysicsSchemaTools.sdfPathToInt(ROBOT_PATH),
+            PhysicsSchemaTools.sdfPathToInt(LINK_0_PATH),
+        ]
+
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector._set_articulation_sleep(True)
+
+        self.assertIs(live_view, connector._sleep_physics_view)
+        self.assertEqual([ROBOT_PATH, LINK_0_PATH], connector._sleep_paths)
+        self.assertEqual(expected, connector._sleep_body_ids)
+        slept = [
+            call.args[1] for call in physx.return_value.put_to_sleep.call_args_list
+        ]
+        self.assertEqual(expected, slept)
+        self.assertNotIn(1234, slept)
+
+    async def test_unchanged_physics_view_keeps_resolved_targets(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        connector._sleep_physics_view = live_view
+
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector._set_articulation_sleep(True)
+
+        # No rebuild, so the cached encoding is reused untouched.
+        self.assertEqual([1234, 5678], connector._sleep_body_ids)
+        slept = [
+            call.args[1] for call in physx.return_value.put_to_sleep.call_args_list
+        ]
+        self.assertEqual([1234, 5678], slept)
+
+    async def test_disabled_body_does_not_disable_idle_sleep(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        self.stage.GetPrimAtPath(LINK_0_PATH).GetAttribute(
+            "physics:rigidBodyEnabled"
+        ).Set(False)
+        self.assertIn(LINK_0_PATH, connector._sleep_paths)
+
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector._set_articulation_sleep(True)
+
+        self.assertFalse(connector._sleep_unavailable)
+        self.assertIsNone(connector._sleep_body_ids)
+        physx.return_value.put_to_sleep.assert_not_called()
+
+    async def test_interface_failure_logs_once_and_keeps_retrying(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        connector._sleep_physics_view = live_view
+
+        with (
+            mock.patch.object(msc, "get_physx_simulation_interface") as physx,
+            mock.patch.object(msc.carb, "log_warn") as log_warn,
+        ):
+            physx.return_value.put_to_sleep.side_effect = RuntimeError("no such body")
+            connector._set_articulation_sleep(True)
+            connector._set_articulation_sleep(True)
+
+        # Still retrying rather than latched off after the first failure. The
+        # first pass raises on its first body, the second re-resolves and
+        # raises again, and only the first one is logged.
+        self.assertEqual(2, physx.return_value.put_to_sleep.call_count)
+        self.assertEqual(1, log_warn.call_count)
+        self.assertFalse(connector._sleep_unavailable)
+
+    async def test_recovered_sleep_allows_the_next_failure_to_log(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        connector._sleep_physics_view = live_view
+
+        with (
+            mock.patch.object(msc, "get_physx_simulation_interface") as physx,
+            mock.patch.object(msc.carb, "log_warn") as log_warn,
+        ):
+            physx.return_value.put_to_sleep.side_effect = [
+                RuntimeError("no such body"),
+                None,
+                None,
+                RuntimeError("no such body"),
+            ]
+            connector._set_articulation_sleep(True)
+            connector._set_articulation_sleep(True)
+            connector._set_articulation_sleep(True)
+
+        # The middle pass worked, so the later failure is reported again.
+        self.assertEqual(2, log_warn.call_count)
+
+    async def test_missing_interface_disables_idle_sleep(self):
+        live_view = object()
+        connector = self._connector(live_view)
+        connector._sleep_physics_view = live_view
+
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            physx.return_value.put_to_sleep.side_effect = AttributeError("gone")
+            connector._set_articulation_sleep(True)
+
+        # A changed interface shape never recovers, so this one does latch.
+        self.assertTrue(connector._sleep_unavailable)
+
+
+class TestWakeForReset(omni.kit.test.AsyncTestCase):
+    """A STOP has to wake the articulation or its reset never reaches the stage.
+
+    Idle-sleep suppresses PhysX's per-frame transform writeback, which is the
+    same path reset-on-stop uses to publish the restored joint values to USD
+    and Fabric alike.
+    """
+
+    async def setUp(self):
+        await omni.usd.get_context().new_stage_async()
+        self.stage = omni.usd.get_context().get_stage()
+        UsdGeom.Xform.Define(self.stage, "/World")
+        for path in (ROBOT_PATH, LINK_0_PATH):
+            UsdPhysics.RigidBodyAPI.Apply(
+                UsdGeom.Xform.Define(self.stage, path).GetPrim()
+            )
+
+    async def tearDown(self):
+        await omni.usd.get_context().new_stage_async()
+
+    def _slept_connector(self) -> MotionStreamConnector:
+        """Asleep, with targets already resolved against the live view."""
+        connector = _bare_connector()
+        live_view = object()
+        connector.motion_group.identifier = ROBOT_PATH
+        connector.motion_group.articulation.prim_path = ROBOT_PATH
+        connector.motion_group.articulation._articulation_view._physics_view = live_view
+        connector._sleep_unavailable = False
+        connector._sleep_physics_view = live_view
+        connector._sleep_paths = [ROBOT_PATH, LINK_0_PATH]
+        connector._sleep_body_ids = [1234, 5678]
+        connector._idle_frames = msc._IDLE_SLEEP_FRAMES
+        return connector
+
+    async def test_the_articulation_is_woken(self):
+        connector = self._slept_connector()
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector.wake_for_reset()
+        self.assertEqual(
+            [1234, 5678], [call.args[1] for call in physx().wake_up.call_args_list]
+        )
+        physx().put_to_sleep.assert_not_called()
+
+    async def test_the_idle_counter_is_cleared(self):
+        """Left set, the connector believes it slept and the next target after
+        play would skip its own wake."""
+        connector = self._slept_connector()
+        with mock.patch.object(msc, "get_physx_simulation_interface"):
+            connector.wake_for_reset()
+        self.assertEqual(0, connector._idle_frames)
+
+    async def test_a_wake_that_did_not_happen_keeps_the_retry(self):
+        """The counter is what makes the next target retry the wake, so a wake
+        that issued nothing must not look like one that worked."""
+        connector = self._slept_connector()
+        # Targets no longer live: the documented playback-merge case.
+        self.stage.GetPrimAtPath(LINK_0_PATH).GetAttribute(
+            "physics:rigidBodyEnabled"
+        ).Set(False)
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector.wake_for_reset()
+        physx().wake_up.assert_not_called()
+        self.assertEqual(msc._IDLE_SLEEP_FRAMES, connector._idle_frames)
+
+    async def test_waking_does_not_need_a_playing_timeline(self):
+        connector = self._slept_connector()
+        connector.timeline.is_playing.return_value = False
+        connector.timeline.is_stopped.return_value = True
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector.wake_for_reset()
+        self.assertEqual(
+            [1234, 5678], [call.args[1] for call in physx().wake_up.call_args_list]
+        )
+
+    async def test_an_unavailable_sleep_interface_is_not_an_error(self):
+        connector = self._slept_connector()
+        connector._sleep_unavailable = True
+        with mock.patch.object(msc, "get_physx_simulation_interface") as physx:
+            connector.wake_for_reset()
+        physx.assert_not_called()
+        # Same rule as the case above: nothing was issued, so the counter must
+        # not read as a wake that worked.
+        self.assertEqual(msc._IDLE_SLEEP_FRAMES, connector._idle_frames)
+
+
+class TestOnTimelineStop(omni.kit.test.AsyncTestCase):
+    """The STOP reaches every stream, and one bad stream must not stop it."""
+
+    def _service(self, *streams):
+        from wandelbots.omni.manipulators.motion_group_service import MotionGroupService
+
+        service = MotionGroupService.__new__(MotionGroupService)
+        service._streams = {f"/World/mg_{i}": s for i, s in enumerate(streams)}
+        return service
+
+    async def test_every_stream_is_woken(self):
+        first, second = mock.MagicMock(), mock.MagicMock()
+        self._service(first, second).on_timeline_stop()
+        first.wake_for_reset.assert_called_once_with()
+        second.wake_for_reset.assert_called_once_with()
+
+    async def test_a_failing_stream_does_not_block_the_others(self):
+        broken, healthy = mock.MagicMock(), mock.MagicMock()
+        broken.wake_for_reset.side_effect = RuntimeError("no physics view")
+        self._service(broken, healthy).on_timeline_stop()
+        healthy.wake_for_reset.assert_called_once_with()
+
+    async def test_no_streams_is_not_an_error(self):
+        self._service().on_timeline_stop()

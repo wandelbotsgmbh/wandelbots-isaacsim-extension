@@ -109,8 +109,7 @@ class MountingPreview:
         if not self._candidates:
             return
 
-        stage_units = SceneUtils.get_stage_units()
-        unit_factor = stage_units / 1000.0
+        unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
 
         with self._scene_view.scene:
             for idx, (pos_mm, status) in enumerate(self._candidates):

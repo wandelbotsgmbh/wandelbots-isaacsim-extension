@@ -4,7 +4,6 @@ import asyncio
 import weakref
 from typing import Callable, Optional
 
-import carb
 import omni.kit.notification_manager as nm
 import omni.ui as ui
 from omni.kit.async_engine import run_coroutine
@@ -17,6 +16,7 @@ from wandelbots.omni.instances.models import (
     NOVAInstance,
     NOVAMotionGroupData,
 )
+from wandelbots.omni.instances.stage_discovery import model_name_from_prim
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.manufacturers import manufacturers_from_controller_types
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
@@ -32,32 +32,21 @@ from wandelbots.omni.ui.wb_theme import (
     TOOLTIP_RESET,
     build_tooltip,
 )
-from wandelbots.omni.usd.schema_utils import SchemaUtils
-from wandelbots.omni.utils.prims import PrimUtils
-
 from wandelbots.omni.ui.instances.articulations.motion_group_widget import (
     MotionGroupWidget,
 )
 from wandelbots.omni.ui.widgets.type_icon import TypeIcon
 from wandelbots.omni.ui.instances.articulations.virtual_controller_service import (
-    ControllerAlreadyExistsError,
-    collect_tcps_from_prim,
-    create_virtual_controller,
+    create_and_connect_virtual_controller,
     fetch_cells,
     fetch_configuration_for_motion_group,
     fetch_robot_configurations,
     normalize_name,
+    preset_configuration_from_prim,
+    preset_manufacturer_from_prim,
 )
 
 _LABEL_WIDTH = 150
-
-# Virtual controller creation can involve several sequential NOVA API calls, so
-# cap the whole flow rather than letting it hang on a stalled backend.
-_CREATE_TIMEOUT_S = 60.0
-# The motion group only appears a moment after the controller is created, so the
-# first connect attempts can legitimately fail; retry a few times before giving up.
-_CONNECT_RETRIES = 5
-_CONNECT_RETRY_DELAY_S = 2.0
 
 
 class UnassignedArticulationRow(ui.VStack):
@@ -95,32 +84,25 @@ class UnassignedArticulationRow(ui.VStack):
         self._on_expand = on_expand
         self._on_created = on_created
 
-        custom_data = prim.GetCustomData()
-        # Same key chain as stage_discovery._get_prim_model_name: downloaded
-        # robots store their model under motionGroupModel, older prims used
-        # motion_group_name, and the prim name is the last resort. Reading the
-        # wrong key here sends the prim name into the configuration lookup and
-        # the kinematics (type icon) request, both of which then miss.
-        self._model_name = (
-            custom_data.get("motionGroupModel")
-            or custom_data.get("motion_group_name")
-            or prim.GetName()
-        )
+        # The prim name is the last resort: a wrong model name goes into the
+        # configuration lookup and the kinematics (type icon) request, and both
+        # then miss.
+        self._model_name = model_name_from_prim(prim) or prim.GetName()
         self._prim_path = prim.GetPrimPath().pathString
 
-        # Manufacturer/type can be provided via prim custom data. When both are
-        # present the controller can be created without user input, so the combos
-        # are hidden; otherwise the user must pick them before creating.
-        self._preset_manufacturer = custom_data.get("manufacturer")
-        self._preset_type = custom_data.get("robot_configuration_name")
-        self._has_presets = bool(self._preset_manufacturer and self._preset_type)
+        # Manufacturer and robot configuration can be provided via prim custom
+        # data. With both the controller can be created without user input, so
+        # the combos are hidden; otherwise the user must pick them before
+        # creating. The manufacturer alone still preselects its combo.
+        self._preset_configuration = preset_configuration_from_prim(prim)
+        self._has_presets = self._preset_configuration is not None
+        self._preset_manufacturer = preset_manufacturer_from_prim(prim)
 
         self._cells: list[str] = []
         self._selected_cell_idx = 0
         self._controller_name = self._model_name.lower().replace("_", "-")
         self._cells_task: Optional[asyncio.Task] = None
         self._create_task: Optional[asyncio.Task] = None
-        self._connect_task: Optional[asyncio.Task] = None
         self._type_icon: Optional[TypeIcon] = None
 
         # All robot configuration type strings fetched from NOVA (e.g.
@@ -195,6 +177,8 @@ class UnassignedArticulationRow(ui.VStack):
         with self:
             self._section = CollapsibleSection(
                 title=self._model_name,
+                # Several robots of the same model only differ by their prim path.
+                subtitle=self._prim_path,
                 collapsed=True,
                 title_color=NOVAColor.TEXT_PRIMARY_CONTRAST,
                 build_leading_fn=lambda sec, _self=self: _self._build_type_icon(),
@@ -724,192 +708,72 @@ class UnassignedArticulationRow(ui.VStack):
 
     async def _do_create(self):
         push_ui_busy_changed(True, "Creating virtual controller in NOVA...")
+        created = False
         try:
-            await asyncio.wait_for(
-                self._create_virtual_controller(), timeout=_CREATE_TIMEOUT_S
-            )
-            # _create_virtual_controller only schedules _connect_task; hold the busy
-            # gate until it finishes, or the panel rebuild tears this row down
-            # mid-retry. shield: cancellation must not abort the server-side connect.
-            if self._connect_task is not None:
-                await asyncio.shield(self._connect_task)
-        except asyncio.TimeoutError:
-            carb.log_error(
-                f"Virtual controller creation timed out after {_CREATE_TIMEOUT_S:.0f}s."
-            )
-            nm.post_notification(
-                "Virtual controller creation timed out.",
-                duration=5.0,
-                status=nm.NotificationStatus.WARNING,
-            )
-        except Exception as e:
-            carb.log_error(f"Virtual controller creation failed: {e}")
-            nm.post_notification(
-                f"Virtual controller creation failed: {e}",
-                duration=5.0,
-                status=nm.NotificationStatus.WARNING,
-            )
+            configuration = self._selected_configuration()
+            if configuration is not None:
+                manufacturer_str, robot_configuration = configuration
+                created = await create_and_connect_virtual_controller(
+                    instances_service=self._instances_service,
+                    instance=self._instance,
+                    prim=self._prim,
+                    cell=self._cells[self._selected_cell_idx],
+                    controller_name=self._controller_name,
+                    robot_configuration=robot_configuration,
+                    manufacturer_str=manufacturer_str,
+                    define_mounting=self._mounting_in_nova,
+                    on_progress=self._on_progress,
+                )
         finally:
             push_ui_busy_changed(False)
             self._form_stack.visible = True
             self._progress_container.visible = False
             self._progress.hide()
-
-    async def _create_virtual_controller(self):
-        prim = self._prim
-        if not prim or not prim.IsValid():
-            nm.post_notification(
-                "Selected motion group prim is no longer valid.",
-                duration=5.0,
-                status=nm.NotificationStatus.WARNING,
-            )
-            return
-
-        if self._has_presets:
-            manufacturer_str = self._preset_manufacturer
-            model_name = self._preset_type
-        elif self._auto_resolved_config:
-            manufacturer_str = self._auto_resolved_config.split("-", 1)[0]
-            model_name = self._auto_resolved_config
-        else:
-            if self._auto_resolve_pending:
-                nm.post_notification(
-                    "Still resolving robot configuration, please wait...",
-                    duration=4.0,
-                    status=nm.NotificationStatus.WARNING,
-                )
-                return
-            options = self._manufacturer_options()
-            manufacturers = list(options)
-            types = self._filtered_types()
-            if (
-                self._selected_manufacturer_idx <= 0
-                or self._selected_type_idx <= 0
-                or not types
-            ):
-                nm.post_notification(
-                    "Select a manufacturer and controller type first.",
-                    duration=5.0,
-                    status=nm.NotificationStatus.WARNING,
-                )
-                return
-            manufacturer_label = manufacturers[
-                min(self._selected_manufacturer_idx - 1, len(manufacturers) - 1)
-            ]
-            manufacturer_str = options[manufacturer_label]
-            model_name = types[min(self._selected_type_idx - 1, len(types) - 1)]
-
-        # Unassigned articulations are discovered via ArticulationRootAPI and only
-        # carry MotionGroupAPI once configured, so apply it now to make the TCP
-        # lookup (which requires the schema) succeed.
-        SchemaUtils.ensure_motion_group_api(prim)
-
-        robot_tcp = SchemaUtils.find_motion_group_tcp(prim)
-        tcps = []
-        if robot_tcp:
-            flange_path = robot_tcp.GetPath().pathString
-            tcps = collect_tcps_from_prim(prim, flange_path)
-        else:
-            carb.log_warn("No TCP found. Skipping TCP creation.")
-
-        prim_pose_world = PrimUtils.get_prim_pose(prim.GetPath())
-        cell = self._cells[self._selected_cell_idx]
-
-        try:
-            new_motion_group_id = await create_virtual_controller(
-                instance=self._instance,
-                cell=cell,
-                controller_name=self._controller_name,
-                model_name=model_name,
-                manufacturer_str=manufacturer_str,
-                mounting_position=list(prim_pose_world.pose[:3]),
-                mounting_orientation=list(prim_pose_world.pose[3:]),
-                mounting_coordinate_system=prim.GetPath().pathString,
-                define_mounting=self._mounting_in_nova,
-                tcps=tcps,
-                on_progress=self._on_progress,
-            )
-        except ControllerAlreadyExistsError as e:
-            carb.log_warn(str(e))
-            nm.post_notification(
-                f"A controller named '{self._controller_name}' already exists. "
-                "Choose a different name.",
-                duration=5.0,
-                status=nm.NotificationStatus.WARNING,
-            )
-            return
-        except Exception as e:
-            carb.log_error(f"Failed to create virtual controller: {e}")
-            nm.post_notification(
-                f"Failed to create virtual controller: {e}",
-                duration=5.0,
-                status=nm.NotificationStatus.WARNING,
-            )
-            return
-
-        nm.post_notification(
-            f"Virtual controller '{self._controller_name}' created successfully.",
-            duration=3.0,
-            status=nm.NotificationStatus.INFO,
-        )
-
-        self._connect_motion_group(cell, new_motion_group_id)
-
-    def _connect_motion_group(self, cell: str, motion_group_name: str):
-        self._connect_task = run_coroutine(
-            self._connect_with_retry(cell, motion_group_name)
-        )
-
-    async def _connect_with_retry(
-        self,
-        cell: str,
-        motion_group_name: str,
-        attempts: int = _CONNECT_RETRIES,
-        delay: float = _CONNECT_RETRY_DELAY_S,
-    ):
-        controller_data = NOVAControllerData(name=self._controller_name, cell_name=cell)
-        last_message = ""
-
-        for attempt in range(attempts):
-            loop = asyncio.get_event_loop()
-            future: asyncio.Future = loop.create_future()
-
-            def _cb(success: bool, message: str = "", _future=future):
-                if not _future.done():
-                    _future.set_result((success, message))
-
-            self._instances_service.create_motion_group_from_nova(
-                instance=self._instance,
-                controller=controller_data,
-                motion_group_name=motion_group_name,
-                prim_path=self._prim_path,
-                use_external_joint_stream=False,
-                callback=_cb,
-            )
-
-            success, last_message = await future
-            if success:
-                if self._on_created:
-                    self._on_created()
-                return
-
-            if attempt < attempts - 1:
-                await asyncio.sleep(delay)
-
-        nm.post_notification(
-            last_message or "Failed to connect motion group.",
-            duration=5.0,
-            status=nm.NotificationStatus.WARNING,
-        )
-        if self._on_created:
+        if created and self._on_created:
             self._on_created()
+
+    def _selected_configuration(self) -> Optional[tuple[str, str]]:
+        """(manufacturer, robot configuration) from the presets, the automatic
+        lookup or the manual combos; None, after a notification, when unresolved."""
+        if self._preset_configuration:
+            return self._preset_configuration
+        if self._auto_resolved_config:
+            return self._auto_resolved_config.split("-", 1)[
+                0
+            ], self._auto_resolved_config
+        if self._auto_resolve_pending:
+            nm.post_notification(
+                "Still resolving robot configuration, please wait...",
+                duration=4.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return None
+        options = self._manufacturer_options()
+        manufacturers = list(options)
+        types = self._filtered_types()
+        if (
+            self._selected_manufacturer_idx <= 0
+            or self._selected_type_idx <= 0
+            or not types
+        ):
+            nm.post_notification(
+                "Select a manufacturer and controller type first.",
+                duration=5.0,
+                status=nm.NotificationStatus.WARNING,
+            )
+            return None
+        manufacturer_label = manufacturers[
+            min(self._selected_manufacturer_idx - 1, len(manufacturers) - 1)
+        ]
+        robot_configuration = types[min(self._selected_type_idx - 1, len(types) - 1)]
+        return options[manufacturer_label], robot_configuration
 
     def _cancel_ui_tasks(self):
         """Cancel the lookups that only feed this row's widgets.
 
-        Leaves ``_create_task`` / ``_connect_task`` running: unrelated events
-        rebuild this row while they are in flight, and cancelling them left the
-        virtual controller created server-side but the prim unconfigured.
+        Leaves ``_create_task`` running: unrelated events rebuild this row while
+        it is in flight, and cancelling it left the virtual controller created
+        server-side but the prim unconfigured.
         """
         if self._cells_task is not None:
             self._cells_task.cancel()
@@ -924,9 +788,6 @@ class UnassignedArticulationRow(ui.VStack):
         if self._create_task is not None:
             self._create_task.cancel()
             self._create_task = None
-        if self._connect_task is not None:
-            self._connect_task.cancel()
-            self._connect_task = None
 
     def destroy(self):
         # The type icon keeps running its kinematics lookup independently, so

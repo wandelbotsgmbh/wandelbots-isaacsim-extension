@@ -106,12 +106,12 @@ def convert_prims_to_poses(prim_paths: list[str]) -> int:
             continue
         try:
             # Keep the prim where it is: capture its local pose before the gizmo
-            # spec replaces the prim's content.
+            # replaces the prim's content.
             local_pose = PrimUtils.get_prim_pose(
                 path, coordinate_system="local", stage=stage
             )
-            # Override the prim with the gizmo (Sdf.CopySpec replaces the spec, so
-            # it must run before the xformOps are (re)added below).
+            # Override the prim with the gizmo (this clears the spec, so it must
+            # run before the xformOps are (re)added below).
             embed_gizmo(stage, path)
             xform = UsdGeom.Xform.Get(stage, path) or UsdGeom.Xform.Define(stage, path)
             prim = xform.GetPrim()
@@ -223,7 +223,7 @@ class ConvertPoseService:
         )
 
     @staticmethod
-    def create_ghost_override(
+    async def create_ghost_override(
         stage: Usd.Stage,
         pose_path: str,
         tcp_prim: Usd.Prim,
@@ -255,11 +255,14 @@ class ConvertPoseService:
 
             # Build the ghost at a scratch path first — a failure here (e.g. no
             # TCP source found) must not delete the pose it would have replaced.
-            GhostObjectUtils.add_ghost_object(
+            await GhostObjectUtils.add_ghost_object(
                 source_prim=tool_prim,
                 tcp_world_pose=world_pose,
                 target_path=tmp_path,
                 tcp_prim=tcp_prim,
+                # The ghost is CopySpec'd as the template right below, so its
+                # geometry must be finished, not just the prim structure.
+                wait_for_mesh=True,
             )
             tmp_prim = stage.GetPrimAtPath(tmp_path)
             if not tmp_prim or not GhostObjectUtils.is_ghost_object(tmp_prim):

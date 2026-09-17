@@ -110,9 +110,9 @@ class PrimUtils:
             w, (x, y, z) = orientation.GetReal(), orientation.GetImaginary()
             rotation = [w, x, y, z]
 
-        pose = (
-            (position / SceneUtils.get_stage_units(stage)) * 1000
-        ).tolist() + rotation
+        pose = [
+            SceneUtils.value_to_millimeters(value, stage) for value in position
+        ] + rotation
 
         return (
             WSPose(pose=pose) if rotation_type == "cartesian" else QuatPose(pose=pose)
@@ -192,7 +192,10 @@ class PrimUtils:
             if rotation_type == "cartesian"
             else quat.tolist()
         )
-        pose = ((position / SceneUtils.get_stage_units(stage)) * 1000).tolist() + (
+        # Stage units to millimetres is a multiplication by metersPerUnit, not a
+        # division: dividing only happens to agree on a metre stage, and reads a
+        # 200 mm offset as 2 million mm on a centimetre one.
+        pose = [SceneUtils.value_to_millimeters(value, stage) for value in position] + (
             rotation if isinstance(rotation, list) else rotation.tolist()
         )
 
@@ -203,7 +206,12 @@ class PrimUtils:
     def set_prim_pose(
         prim_path: str, input_pose: WSPose, stage: Usd.Stage = None
     ) -> None:
-        position = tuple(each / 1000 for each in input_pose.pose[:3])
+        # The inverse of the conversion in get_prim_pose, so a pose read back
+        # lands where it was written on any stage, not only a metre one.
+        position = tuple(
+            SceneUtils.millimeters_to_stage_value(each, stage)
+            for each in input_pose.pose[:3]
+        )
         rot = tuple(input_pose.pose[3:])
         # Convert rotation vector to quaternion [x, y, z, w]
         quat_xyzw = rotvec_to_quat(*rot)
@@ -381,6 +389,18 @@ class PrimUtils:
         return translation, rotation, scale
 
 
+def is_pose_xform_op(path: Sdf.Path) -> bool:
+    """Whether a changed property path is an xform op that moves the prim.
+
+    Matching whole op names missed xformOp:rotateXYZ, the op the viewport
+    gizmo writes when a prim uses Euler rotation, and xformOp:scale, which
+    moves every descendant. Both left consumers holding a stale pose.
+    """
+    if path is None or not path.IsPropertyPath():
+        return False
+    return path.name.startswith("xformOp:") or path.name == "xformOpOrder"
+
+
 class PrimPoseWatcher:
     def __init__(
         self,
@@ -471,16 +491,19 @@ class PrimPoseWatcher:
         carb.log_verbose(f"Subscribing to {prim} prim changes.")
 
         def _on_prim_changed(path: Sdf.Path = None):
-            path_str: str = path.pathString
-            if not (
-                path_str.endswith(":translate")
-                or path_str.endswith(":rotate")
-                or path_str.endswith(":orient")
-            ):
+            if not is_pose_xform_op(path):
                 return
 
             instance = weak_self()
             if not instance:
+                return
+
+            # A parent transform notice still arrives after the prim was
+            # deleted, and current_pose raises on invalid prims. Raising from
+            # inside the USD watcher callback would spam an asyncio task
+            # exception on every later stage change; the timeline and stage
+            # handlers do the teardown.
+            if not instance._has_valid_prims():
                 return
 
             current_pose = instance.current_pose

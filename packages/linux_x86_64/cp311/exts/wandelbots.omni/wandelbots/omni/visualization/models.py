@@ -157,7 +157,15 @@ class CustomPrim(BaseModel):
     custom_prim_path: str = Field(..., description="Path to the custom USD prim")
 
 
-PrimUnion = Annotated[Union[GizmoPrim, CustomPrim], Field(discriminator="type")]
+class SpherePrim(BaseModel):
+    type: Literal["sphere"] = Field(..., description="Use a colored sphere as marker")
+    radius: float = Field(15.0, gt=0, description="Sphere radius in mm")
+    color: ColorRGB = Field((255, 191, 0), description="RGB color, 0-255 each")
+
+
+PrimUnion = Annotated[
+    Union[GizmoPrim, CustomPrim, SpherePrim], Field(discriminator="type")
+]
 
 
 class TrajectoryMarker(BaseModel):

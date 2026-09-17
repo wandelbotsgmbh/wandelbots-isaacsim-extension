@@ -1,3 +1,4 @@
+import asyncio
 import weakref
 from typing import Callable, cast
 
@@ -10,7 +11,7 @@ import omni.usd
 import omni.usd.commands
 from omni.kit.property.usd import prim_selection_payload
 from omni.usd.commands import DeletePrimsCommand
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
+from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 import wandelbots.usd as wb_schema  # type: ignore
 from wandelbots.omni.datatypes import (
@@ -25,7 +26,10 @@ from wandelbots.omni.datatypes import (
 )
 from wandelbots.omni.manipulators.utils import get_link_0_from_motion_group_prim
 from wandelbots.omni.usd import SchemaUtils, TcpUtils
-from wandelbots.omni.utils.mesh import MeshUtils
+from wandelbots.omni.utils.ghost_mesh_cache import (
+    GHOST_MESH_PENDING_KEY,
+    GhostMeshCache,
+)
 from wandelbots.omni.utils.prims import PrimPoseWatcher, PrimUtils, RelativePoseMode
 
 
@@ -35,6 +39,108 @@ PREFERRED_JOINT_VALUES_ATTR = "preferredJointValues"
 
 
 class GhostObjectUtils:
+    @staticmethod
+    def clear_ghost_mesh_cache():
+        """Drop all cached ghost meshes; see GhostMeshCache.clear."""
+        GhostMeshCache.clear()
+
+    @staticmethod
+    def repair_pending_ghost_meshes():
+        """Restart the build for any ghost-object mesh still marked pending
+        and not already tracked as in-flight.
+
+        A ghost stays pending until its background build finishes; if a Kit
+        Duplicate clones it (or a stage got saved) while that flag was still
+        set, the copy is stuck at whatever quality it had. This is meant to
+        run on stage HIERARCHY_CHANGED - cheap unless a pending ghost is
+        actually found, and a Duplicate is exactly a hierarchy change.
+        """
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return
+        for prim_path in GhostObjectUtils.get_ghost_object_prim_paths():
+            if GhostMeshCache.is_building(prim_path):
+                continue
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim or not GhostMeshCache.is_pending(prim):
+                continue
+            GhostObjectUtils._repair_ghost_mesh(prim)
+
+    @staticmethod
+    def _repair_ghost_mesh(ghost_prim: Usd.Prim) -> None:
+        target_path = ghost_prim.GetPath().pathString
+        ghost_object_api = wb_schema.GhostObjectAPI.Get(
+            ghost_prim.GetStage(), ghost_prim.GetPath()
+        )
+        tcp_targets = ghost_object_api.GetSourceTcpRel().GetForwardedTargets()
+        if not tcp_targets:
+            carb.log_warn(
+                f"Ghost object {target_path} has no linked TCP; cannot repair its mesh."
+            )
+            return
+        tcp_target_path = tcp_targets[0]
+        tcp_prim = ghost_prim.GetStage().GetPrimAtPath(tcp_target_path)
+        source_prim = SchemaUtils.find_parent_tool(tcp_prim)
+        if not source_prim:
+            carb.log_warn(
+                f"Could not resolve the source tool for ghost object {target_path}; "
+                f"cannot repair its mesh."
+            )
+            return
+
+        relative_tcp_transform, mesh_offset_transform = (
+            GhostMeshCache.compute_transforms(source_prim, tcp_target_path.pathString)
+        )
+        source_path = source_prim.GetPath().pathString
+        source_stamp = GhostMeshCache.compute_source_stamp(source_prim)
+        cached_mesh = GhostMeshCache.find_mesh(
+            source_path, relative_tcp_transform, source_stamp
+        )
+        if cached_mesh is not None:
+            points, face_indices, face_counts = cached_mesh
+            mesh = UsdGeom.Mesh(ghost_prim)
+            mesh.CreatePointsAttr().Set(points)
+            mesh.CreateFaceVertexIndicesAttr().Set(face_indices)
+            mesh.CreateFaceVertexCountsAttr().Set(face_counts)
+            ghost_prim.ClearCustomDataByKey(GHOST_MESH_PENDING_KEY)
+            carb.log_info(
+                f"Repaired ghost object mesh for {target_path} from the cache."
+            )
+            return
+
+        pending_task = GhostMeshCache.find_pending_build(
+            source_path, relative_tcp_transform, source_stamp
+        )
+        if pending_task is not None:
+            # Someone else - typically the ghost this one was duplicated
+            # from - is already building the exact same mesh. Piggyback
+            # instead of starting a redundant second build: once it lands in
+            # the cache, retry from there.
+            carb.log_info(
+                f"Ghost object mesh for {target_path} will reuse the "
+                f"in-flight build for {source_path}."
+            )
+
+            def _on_pending_build_done(_task: asyncio.Task) -> None:
+                if ghost_prim:
+                    GhostObjectUtils._repair_ghost_mesh(ghost_prim)
+
+            pending_task.add_done_callback(_on_pending_build_done)
+            return
+
+        carb.log_info(
+            f"Ghost object mesh for {target_path} is still pending (likely a "
+            f"duplicate made mid-build); restarting its build."
+        )
+        GhostMeshCache.start_build(
+            source_prim,
+            target_path,
+            mesh_offset_transform,
+            source_path,
+            source_stamp,
+            relative_tcp_transform,
+        )
+
     @staticmethod
     def refresh_all_ghost_objects_material():
         for prim_path in GhostObjectUtils.get_ghost_object_prim_paths():
@@ -119,12 +225,19 @@ class GhostObjectUtils:
             if prim.HasAPI(wb_schema.ToolAPI)
         ]
 
-    def add_ghost_object(
+    async def add_ghost_object(
         source_prim: Usd.Prim,
         tcp_world_pose: WSPose,
         target_path: str = None,
         tcp_prim: Usd.Prim = None,
+        wait_for_mesh: bool = False,
     ):
+        """Create a ghost object for source_prim at target_path.
+
+        The ghost prim is set up and posable immediately; its mesh is built
+        in the background. wait_for_mesh=True waits for that build - for
+        callers that copy or serve the geometry right after this returns.
+        """
         source_parent_prim = source_prim.GetParent()
 
         carb.log_info(
@@ -165,13 +278,12 @@ class GhostObjectUtils:
                 )
             tcp_source = tcp_sources[0]
 
-        ghost_prim: Usd.Prim = GhostObjectUtils._convert_prim_to_ghost_prim(
+        ghost_prim = await GhostObjectUtils._convert_prim_to_ghost_prim(
             source_prim=source_prim,
             tcp_prim_path=tcp_source.prim_path,
             target_path=target_path,
+            wait_for_mesh=wait_for_mesh,
         )
-
-        # set ghost object to active TCP pose
 
         if tcp_world_pose:
             parent = ghost_prim.GetParent()
@@ -194,6 +306,12 @@ class GhostObjectUtils:
         """
         Get the motion group linked to the ghost object prim.
         """
+        # The prim handle may have expired since the caller collected it
+        # (ghost conversion is async and replaces prims); bool() is the one
+        # safe check on an expired prim.
+        if not ghost_prim:
+            carb.log_verbose("Ghost prim handle expired; skipping.")
+            return None
         stage: Usd.Stage = ghost_prim.GetStage()
         if not GhostObjectUtils.is_ghost_object(ghost_prim):
             carb.log_error(
@@ -347,29 +465,49 @@ class GhostObjectUtils:
             )
         return tcp_sources
 
-    def _convert_prim_to_ghost_prim(
-        source_prim: Usd.Prim, tcp_prim_path: str, target_path: str
+    async def _convert_prim_to_ghost_prim(
+        source_prim: Usd.Prim,
+        tcp_prim_path: str,
+        target_path: str,
+        wait_for_mesh: bool,
     ) -> Usd.Prim:
         stage: Usd.Stage = source_prim.GetStage()
 
-        tcp_transform: Gf.Matrix4d = omni.usd.get_world_transform_matrix(
-            stage.GetPrimAtPath(tcp_prim_path)
-        ).GetOrthonormalized()
-        source_transform = omni.usd.get_world_transform_matrix(
-            source_prim
-        ).GetOrthonormalized()
-        relative_tcp_transform: Gf.Matrix4d = (
-            source_transform * tcp_transform.GetInverse()
-        )
-        relative_transform: Gf.Matrix4d = (
-            relative_tcp_transform.GetInverse() * source_transform
+        relative_tcp_transform, mesh_offset_transform = (
+            GhostMeshCache.compute_transforms(source_prim, tcp_prim_path)
         )
 
-        ghost_mesh_prim: UsdGeom.Mesh = MeshUtils.merge_prim_meshes(
-            source_prim=source_prim,
-            target_path=target_path,
-            mesh_offset_transform=relative_transform.GetInverse(),
+        # The source-to-TCP offset is world-pose independent and, for
+        # unchanged tool geometry (the stamp), fully determines the baked,
+        # TCP-centered mesh - together they form the cache key.
+        source_path = source_prim.GetPath().pathString
+        source_stamp = GhostMeshCache.compute_source_stamp(source_prim)
+        cached_mesh = GhostMeshCache.find_mesh(
+            source_path, relative_tcp_transform, source_stamp
         )
+        mesh_build_task: asyncio.Task | None = None
+        if cached_mesh is not None:
+            carb.log_info(f"Ghost mesh for {source_path}: reusing cached mesh.")
+            points, face_indices, face_counts = cached_mesh
+            ghost_mesh_prim = UsdGeom.Mesh.Define(stage, target_path)
+            ghost_mesh_prim.CreatePointsAttr().Set(points)
+            ghost_mesh_prim.CreateFaceVertexIndicesAttr().Set(face_indices)
+            ghost_mesh_prim.CreateFaceVertexCountsAttr().Set(face_counts)
+        else:
+            # Structure first: an empty mesh is a valid Xformable, so the
+            # setup and posing below need no geometry. The build started
+            # here fills the prim progressively in the background (hull
+            # preview, then the refined mesh) unless wait_for_mesh blocks on
+            # it below.
+            ghost_mesh_prim = UsdGeom.Mesh.Define(stage, target_path)
+            mesh_build_task = GhostMeshCache.start_build(
+                source_prim,
+                target_path,
+                mesh_offset_transform,
+                source_path,
+                source_stamp,
+                relative_tcp_transform,
+            )
 
         omni.kit.commands.execute(
             "AddXformOp",
@@ -386,13 +524,13 @@ class GhostObjectUtils:
             add_pivot_op=False,
         )
 
-        # add ghost material to object
         GhostObjectUtils.add_material_to_prim(ghost_mesh_prim.GetPrim())
 
-        # register prim
         tcp_prim = stage.GetPrimAtPath(tcp_prim_path)
         GhostObjectUtils.register_ghost_object(ghost_mesh_prim.GetPrim(), tcp_prim)
 
+        if wait_for_mesh and mesh_build_task is not None:
+            await mesh_build_task
         return ghost_mesh_prim.GetPrim()
 
     def get_ghost_object_tcp_offset(ghost_prim: Usd.Prim) -> WSPose | None:
@@ -589,6 +727,25 @@ class RefreshGhostMaterialsCommand(omni.kit.commands.Command):
 
     def do(self) -> None:
         GhostObjectUtils.refresh_all_ghost_objects_material()
+        return
+
+    def undo(self) -> None:
+        return
+
+
+class ClearGhostMeshCacheCommand(omni.kit.commands.Command):
+    """Drop all cached ghost object meshes.
+
+    Cache entries are invalidated automatically on stage changes and on
+    in-stage edits of a cached tool; this command is the manual fallback to
+    force the next ghost conversion to rebuild the mesh.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def do(self) -> None:
+        GhostObjectUtils.clear_ghost_mesh_cache()
         return
 
     def undo(self) -> None:

@@ -30,7 +30,7 @@ from wandelbots.omni.utils.prims import PrimUtils
 from wandelbots.omni.utils.teaching import GhostObjectUtils
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVAInstance
-from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
+from wandelbots.omni.manipulators.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.reachability.reachability_service import (
     ReachabilityResult,
     ReachabilityService,

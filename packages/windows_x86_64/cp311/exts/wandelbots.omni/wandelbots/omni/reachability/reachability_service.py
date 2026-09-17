@@ -20,10 +20,10 @@ from wandelbots.omni.core.collision.utils import to_nova_collider
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVAInstance
+from wandelbots.omni.manipulators.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.manipulators.motion_group import (
     get_motion_group_configuration_from_prim,
 )
-from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.utils.math import m_to_mm
 from wandelbots.omni.utils.prims import PrimUtils
 

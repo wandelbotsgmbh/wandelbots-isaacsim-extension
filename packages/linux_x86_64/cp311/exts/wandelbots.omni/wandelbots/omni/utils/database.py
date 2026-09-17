@@ -3,12 +3,8 @@ import os
 import time
 from dataclasses import dataclass, field
 from collections.abc import MutableMapping
-import omni.kit.app
 import carb
 from wandelbots.omni.instances.models import NOVACustomInstance
-
-manager = omni.kit.app.get_app().get_extension_manager()
-ext_path = manager.get_extension_path_by_module("wandelbots.omni")
 
 
 class BaseStore:

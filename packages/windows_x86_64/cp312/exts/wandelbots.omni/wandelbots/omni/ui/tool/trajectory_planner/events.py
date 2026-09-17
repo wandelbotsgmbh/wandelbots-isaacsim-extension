@@ -47,7 +47,8 @@ class TrajectoryPlannerEvents:
     plan_started: Signal = field(default_factory=Signal)
     plan_progress: Signal = field(default_factory=Signal)
     plan_complete: Signal = field(default_factory=Signal)
-    plan_failed: Signal = field(default_factory=Signal)
+    plan_failed: Signal = field(default_factory=Signal)  # emits a PlanFailure
+    plan_invalidated: Signal = field(default_factory=Signal)
     plan_stored: Signal = field(default_factory=Signal)  # emits the export version tag
 
     # Execution

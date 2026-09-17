@@ -49,6 +49,7 @@ class CollapsibleSection(ui.VStack):
         header_hover_color: NOVAColor = NOVAColor.SURFACE_OVERLAY_HOVER,
         title_color: Optional[NOVAColor] = None,
         title_icon: Optional[str] = None,
+        subtitle: Optional[str] = None,
         margin: int = 1,
         content_padding: int = 1,
         **kwargs,
@@ -57,6 +58,7 @@ class CollapsibleSection(ui.VStack):
         super().__init__(**kwargs)
 
         self._title = title
+        self._subtitle = subtitle
         self._collapsed = collapsed
         self._body: Optional[ui.VStack] = None
         self._body_container: Optional[ui.VStack] = None
@@ -183,10 +185,16 @@ class CollapsibleSection(ui.VStack):
                                         with ui.HStack(width=0, spacing=6):
                                             self._build_leading_fn(self)
                                         ui.Spacer(width=6)
+                                    # With a subtitle the title hugs its text and the
+                                    # subtitle takes the remaining width, so a long
+                                    # subtitle wraps instead of squeezing the title.
+                                    title_hugs_text = bool(
+                                        self._title_icon or self._subtitle
+                                    )
                                     self._title_label = ui.Label(
                                         self._title,
-                                        width=0 if self._title_icon else ui.Fraction(1),
-                                        word_wrap=not self._title_icon,
+                                        width=0 if title_hugs_text else ui.Fraction(1),
+                                        word_wrap=not title_hugs_text,
                                         style_type_name_override="CollapsableFrame.Header",
                                         style=(
                                             {"color": self._title_color.color}
@@ -197,6 +205,19 @@ class CollapsibleSection(ui.VStack):
                                             _self._toggle() if btn == 0 else None
                                         ),
                                     )
+                                    if self._subtitle:
+                                        ui.Spacer(width=8)
+                                        ui.Label(
+                                            self._subtitle,
+                                            width=ui.Fraction(1),
+                                            word_wrap=True,
+                                            style={
+                                                "color": NOVAColor.TEXT_SECONDARY.color
+                                            },
+                                            mouse_pressed_fn=lambda x, y, btn, _, _self=self: (
+                                                _self._toggle() if btn == 0 else None
+                                            ),
+                                        )
                                     if self._title_icon:
                                         ui.Spacer(width=6)
                                         with ui.VStack(width=16):

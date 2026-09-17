@@ -54,14 +54,14 @@ COLLISION_WORLD_OVERLAY_NAME = "CollisionWorldOverlay"
 _NOVA_REQUEST_ERRORS = (OpenApiException, aiohttp.ClientError, asyncio.TimeoutError)
 
 
-def _collider_transform(
+def collider_transform(
     anchor_transform: sc.Matrix44,
     collider: wb.models.Collider,
     stage_meters_per_unit: float,
 ) -> sc.Matrix44:
     """Place one collider in the anchor's frame. Collider poses and vertices are
     in millimeters, so they are scaled to stage units."""
-    unit_factor = stage_meters_per_unit / 1000.0
+    unit_factor = 0.001 / stage_meters_per_unit
     collider_pose = collider.pose.position + collider.pose.orientation
     return (
         anchor_transform
@@ -80,7 +80,7 @@ def _build_collider_manipulators(
     for collider_id, collider in colliders.items():
         mesh_manipulator = create_from_collider(
             collider,
-            _collider_transform(anchor_transform, collider, stage_meters_per_unit),
+            collider_transform(anchor_transform, collider, stage_meters_per_unit),
             color=color,
         )
         if not mesh_manipulator:
@@ -103,7 +103,7 @@ def _position_collider_manipulators(
 ) -> None:
     for collider_id, manipulator in manipulators.items():
         manipulator.set_transform(
-            _collider_transform(
+            collider_transform(
                 anchor_transform, colliders[collider_id], stage_meters_per_unit
             )
         )

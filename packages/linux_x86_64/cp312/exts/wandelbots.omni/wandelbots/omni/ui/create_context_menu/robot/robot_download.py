@@ -11,8 +11,7 @@ import wandelbots_api_client.v2 as wb_v2
 
 from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.instances.models import NOVACloudInstance, NOVAInstance
-
-from .model_base_offsets import MODEL_BASE_OFFSETS
+from wandelbots.omni.manipulators.model_base_offsets import MODEL_BASE_OFFSETS
 
 
 def _normalize_model_name(name: str) -> str:

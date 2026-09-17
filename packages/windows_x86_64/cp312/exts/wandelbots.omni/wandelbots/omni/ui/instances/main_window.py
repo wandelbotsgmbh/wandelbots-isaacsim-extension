@@ -76,8 +76,9 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         self._instances_divider: ui.VStack | None = None
         self._unassigned: UnassignedArticulations | None = None
         self._unassigned_refresh_task: asyncio.Task | None = None
-        # Rebuild skipped while the panel was busy; _on_ui_busy_changed retries.
+        # Rebuilds requested while the panel was busy; _on_ui_busy_changed retries.
         self._unassigned_refresh_pending = False
+        self._refresh_pending = False
         self._cloud_load_task: asyncio.Task | None = None
         # False while the async cloud load for the current refresh is pending.
         # The instance containers stay empty until it completes so every
@@ -171,7 +172,20 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         # consult the global busy gate set in ``push_ui_busy_changed``.
         if self._content_body:
             self._content_body.enabled = not busy
-        if was_busy and not busy and self._unassigned_refresh_pending:
+        if was_busy and not busy:
+            self._run_pending_refresh()
+
+    def _run_pending_refresh(self):
+        # A full refresh rebuilds the unassigned section as well, so it subsumes
+        # a pending unassigned-only rebuild.
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self._unassigned_refresh_pending = False
+            # Deferred: the busy gate drops inside the finishing row's coroutine,
+            # which still touches its own widgets afterwards.
+            defer_call(self._refresh_data)
+            return
+        if self._unassigned_refresh_pending:
             self._unassigned_refresh_pending = False
             self._on_connection_changed()
 
@@ -571,6 +585,9 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
 
     def _refresh_data(self):
         if self._busy:
+            # A row is mid create/connect and a rebuild would replace it. Its
+            # on_created callback lands here, so defer the refresh, do not drop it.
+            self._refresh_pending = True
             return
         self._load_instances_data()
         self._display_instances()
@@ -659,7 +676,14 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         orphan_instances = self._instances_service.list_stage_instances(known_hosts)
         self._stage_only_hosts = {inst.host for inst in orphan_instances}
         custom.extend(orphan_instances)
-        self._custom_instances = custom
+        # The store hands out new objects on every call. Only adopt them when the
+        # custom container is rebuilt with them below; otherwise the displayed
+        # InstanceWidgets keep loading cells into the old objects while the
+        # unassigned section judges liveness on new ones whose cells stay None,
+        # which hid every articulation assigned to a custom instance.
+        custom_changed = {inst.host for inst in custom} != previous_custom_hosts
+        if custom_changed:
+            self._custom_instances = custom
 
         carb.log_info(
             f"Loaded cloud instances "
@@ -674,7 +698,6 @@ class NOVAInstanceListUIBuilder(BaseUIBuilder):
         # set - a full _display_instances() here would rebuild every
         # InstanceWidget a second time and re-fire all their cell fetches
         # (measured at 12+ s of redundant main-thread work).
-        custom_changed = {inst.host for inst in custom} != previous_custom_hosts
         if self._cloud_instances_container is not None:
             self._display_cloud_instances()
         if custom_changed and self._custom_instances_container is not None:

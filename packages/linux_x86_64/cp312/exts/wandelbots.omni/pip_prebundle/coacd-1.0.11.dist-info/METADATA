@@ -1,0 +1,29 @@
+Metadata-Version: 2.1
+Name: coacd
+Version: 1.0.11
+Summary: Approximate Convex Decomposition for 3D Meshes with Collision-Aware Concavity and Tree Search
+Home-page: https://colin97.github.io/CoACD/
+Author-email: xiwei@ucsd.edu
+License: MIT
+Keywords: collision convex decomposition
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Education
+Classifier: Intended Audience :: Other Audience
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Natural Language :: English
+Classifier: Framework :: Robot Framework :: Tool
+Classifier: Programming Language :: C++
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Education
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Utilities
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: numpy
+

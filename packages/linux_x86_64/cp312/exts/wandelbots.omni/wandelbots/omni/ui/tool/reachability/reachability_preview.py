@@ -21,8 +21,8 @@ from wandelbots.omni.instances.instances_api import get_instances_api
 from wandelbots.omni.manipulators.motion_group import (
     get_motion_group_configuration_from_prim,
 )
+from wandelbots.omni.manipulators.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.manipulators.utils import compute_forward_kinematics_chain
-from wandelbots.omni.reachability.model_base_offsets import MODEL_BASE_OFFSETS
 from wandelbots.omni.reachability.reachability_service import ReachabilityResult
 from wandelbots.omni.ui.overlay.manipulators.manipulator_mesh import (
     ManipulatorMesh,
@@ -180,7 +180,7 @@ class ReachabilityPreview:
 
         try:
             stage_units = SceneUtils.get_stage_units()
-            unit_factor = stage_units / 1000.0
+            unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
 
             base_offset = MODEL_BASE_OFFSETS.get(result.model_name, 0.0)
             offset_transform = None
@@ -320,7 +320,7 @@ class ReachabilityPreview:
         if not joint_values:
             return
         stage_units = SceneUtils.get_stage_units()
-        unit_factor = stage_units / 1000.0
+        unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
         base_transform = sc.Matrix44()
         if self._last_mounting_pose:
             base_transform = nova_pose_to_scene_matrix(

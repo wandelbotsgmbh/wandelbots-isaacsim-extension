@@ -1,5 +1,89 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.69.5 (2026-09-17)
+
+### Bug Fixes
+
+* **manipulators:** Let motion groups share one articulation
+
+## 2.69.4 (2026-09-15)
+
+### Bug Fixes
+
+* **manipulators:** Wake idle articulations so a timeline stop resets the joints
+
+## 2.69.3 (2026-09-15)
+
+### Bug Fixes
+
+* **usd:** Convert millimetres to stage units with the shared scale helper
+
+## 2.69.2 (2026-09-14)
+
+### Bug Fixes
+
+* Add prim path to unassigned articulation section, refresh ui after virtual controller connection and provide button to recreate virtual controller
+
+## 2.69.1 (2026-09-14)
+
+### Bug Fixes
+
+* Regenerate model base offsets from NOVA data and provide script for repeated update
+
+## 2.69.0 (2026-09-11)
+
+### Features
+
+* **CSI-2861:** Optimized Ghost object mesh creation with simplification and caching by up to 99%
+
+## 2.68.1 (2026-09-11)
+
+### Bug Fixes
+
+* Replace full-stage traversals on paths with subtree walks
+
+## 2.68.0 (2026-09-11)
+
+### Features
+
+* **pose:** Attach the pose gizmo as a shared instance
+
+## 2.67.0 (2026-09-11)
+
+### Features
+
+* **CSI-2837:** Add CF Step Size setting for collision-free trajectory planning
+
+## 2.66.0 (2026-09-11)
+
+### Features
+
+* **instances:** Warn when robot geometry does not match NOVA's model or kinematics
+
+## 2.65.0 (2026-09-11)
+
+### Features
+
+* Report a release to Slack as soon as it is published
+
+## 2.64.2 (2026-09-11)
+
+### Bug Fixes
+
+* **usd:** Stop viewport transform edits from stalling the main thread
+
+## 2.64.1 (2026-09-09)
+
+### Bug Fixes
+
+* **CSI-2980:** Correct pose units and ghosts of instanced tools
+
+## 2.64.0 (2026-09-09)
+
+### Features
+
+* **trajectory-planner:** Concatenate collision-free motion commands instead of merging trajectories and visual feedback for failed motion planning
+
 ## 2.63.1 (2026-09-07)
 
 ### Bug Fixes

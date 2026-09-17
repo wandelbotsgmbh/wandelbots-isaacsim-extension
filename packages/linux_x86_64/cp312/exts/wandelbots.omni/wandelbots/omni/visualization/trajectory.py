@@ -5,8 +5,10 @@ import omni.usd
 from pxr import Tf, Usd, UsdGeom, Gf, Sdf
 from pydantic import conlist
 from wandelbots.omni.utils.prims import PrimUtils
+from wandelbots.omni.utils.scene import SceneUtils
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.visualization.models import (
+    SpherePrim,
     TrajectoryData,
     TrajectoryObject,
     TrajectoryOptions,
@@ -593,11 +595,8 @@ class TrajectoryBuilder:
 
             for i, pose in enumerate(marker_data.poses):
                 marker_path = f"{markers_base_path}/marker_{i}"
-                # Embed the gizmo first: Sdf.CopySpec replaces the prim spec, so it
-                # must run before the xformOps are added below. Embedding (rather
-                # than AddReference(GIZMO_USD_FILE)) keeps the marker self-contained
-                # so geometry/material survive reparenting and stage save, and no
-                # absolute file path is baked into the saved stage.
+                # Attach the gizmo first: it replaces the prim spec, so it must run
+                # before the xformOps are added below.
                 if marker_data.prim.type == "gizmo":
                     embed_gizmo(stage, marker_path)
 
@@ -615,6 +614,20 @@ class TrajectoryBuilder:
                     xform.GetPrim().GetReferences().AddInternalReference(
                         Sdf.Path(marker_data.prim.custom_prim_path)
                     )
+                if marker_data.prim.type == "sphere":
+                    self._define_marker_sphere(stage, marker_path, marker_data.prim)
+
+    def _define_marker_sphere(
+        self, stage: Usd.Stage, marker_path: str, sphere_prim: SpherePrim
+    ) -> None:
+        sphere = UsdGeom.Sphere.Define(stage, f"{marker_path}/sphere")
+        # The curve widths in this file divide by 1000, which only holds on a
+        # metre stage. Going through SceneUtils keeps the marker visible on a
+        # centimetre or millimetre stage too.
+        radius = SceneUtils.millimeters_to_stage_value(sphere_prim.radius)
+        sphere.CreateRadiusAttr(radius)
+        sphere.CreateExtentAttr([(-radius, -radius, -radius), (radius, radius, radius)])
+        sphere.CreateDisplayColorAttr([self.rgb_to_vec3f(sphere_prim.color)])
 
     def remove_markers(self, name: str):
         is_valid, error_msg = self.is_trajectory_valid(name)

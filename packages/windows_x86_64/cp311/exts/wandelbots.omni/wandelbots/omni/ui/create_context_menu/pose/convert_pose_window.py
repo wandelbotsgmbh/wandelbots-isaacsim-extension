@@ -400,7 +400,7 @@ class ConvertPoseWindow:
 
                 if template_path is None:
                     # First conversion builds the ghost from the tool meshes.
-                    result = ConvertPoseService.create_ghost_override(
+                    result = await ConvertPoseService.create_ghost_override(
                         stage, pose_path, tcp_prim, tool_prim
                     )
                     if result:

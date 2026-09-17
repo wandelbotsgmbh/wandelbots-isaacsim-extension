@@ -1,4 +1,44 @@
+import sys
+from pathlib import Path
+
+import carb.tokens
 import omni
+
+
+def get_extension_root() -> Path:
+    """Root folder of the wandelbots.omni extension.
+
+    Resolved via the extension token Kit registers per enabled extension,
+    with the extension manager as fallback. Only meaningful inside a
+    running Kit process.
+    """
+    resolved = carb.tokens.get_tokens_interface().resolve("${wandelbots.omni}")
+    if resolved and Path(resolved).is_dir():
+        return Path(resolved)
+
+    manager = omni.kit.app.get_app().get_extension_manager()
+    path = manager.get_extension_path_by_module("wandelbots.omni")
+    if path and Path(path).is_dir():
+        return Path(path)
+    raise RuntimeError("could not resolve the wandelbots.omni extension root")
+
+
+def get_kit_python_executable() -> str:
+    """Path of a plain Python interpreter matching the Kit runtime.
+
+    Prefer the interpreter bundled with Kit: sys.executable is not
+    guaranteed to be a Python binary of the right version in every launch
+    configuration, so binaries it starts may not load Kit-matched native
+    modules.
+    """
+    kit_root = Path(carb.tokens.get_tokens_interface().resolve("${kit}"))
+    for candidate in ("python/bin/python3", "python/python.exe"):
+        python_path = kit_root / candidate
+        if python_path.exists():
+            return str(python_path)
+    if Path(sys.executable).name.lower().startswith("python"):
+        return sys.executable
+    raise RuntimeError("no Python interpreter matching the Kit runtime found")
 
 
 def get_versions_of_enabled_extensions() -> dict[str, dict[str, str | bool]]:

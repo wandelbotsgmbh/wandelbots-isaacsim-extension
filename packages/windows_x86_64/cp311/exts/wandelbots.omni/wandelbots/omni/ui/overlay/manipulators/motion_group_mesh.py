@@ -60,7 +60,7 @@ class MotionGroupMesh:
         self._motion_group_description: wb_models.MotionGroupDescription | None = None
 
         self._stage_meters_per_unit = SceneUtils.get_stage_units()
-        self._unit_factor = self._stage_meters_per_unit / 1000.0  # mm to stage units
+        self._unit_factor = SceneUtils.millimeters_to_stage_value(1.0)
 
         stage = motion_group_prim.GetStage()
         reference_prim = get_link_0_from_motion_group_prim(motion_group_prim)

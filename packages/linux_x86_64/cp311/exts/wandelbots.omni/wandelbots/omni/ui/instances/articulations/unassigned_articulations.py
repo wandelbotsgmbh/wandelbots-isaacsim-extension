@@ -8,6 +8,7 @@ from pxr import Usd
 
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
 from wandelbots.omni.instances.models import NOVAInstance
+from wandelbots.omni.instances.stage_discovery import find_robot_prim
 from wandelbots.omni.manipulators.utils import get_scene_motion_group_prim_paths
 from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
@@ -96,8 +97,8 @@ class UnassignedArticulations(ui.VStack):
 
             # Discover robots via MotionGroupAPI or ArticulationRootAPI. The API may
             # live on a descendant (e.g. a root_joint carrying ArticulationRootAPI),
-            # so each hit is resolved up to the robot prim that holds the
-            # motion_group_name custom data used as the display name.
+            # so each hit is resolved up to the robot prim that holds the custom
+            # data the row is labelled and configured from.
             all_prim_paths = get_scene_motion_group_prim_paths(
                 include_prims_without_api=True
             )
@@ -108,7 +109,7 @@ class UnassignedArticulations(ui.VStack):
                 prim = stage.GetPrimAtPath(path)
                 if not prim.IsValid():
                     continue
-                display_prim = self._resolve_display_prim(prim)
+                display_prim = find_robot_prim(prim)
                 display_path = display_prim.GetPrimPath().pathString
                 if display_path in seen_paths:
                     continue
@@ -130,27 +131,9 @@ class UnassignedArticulations(ui.VStack):
             return []
 
     def _is_assigned_to_known_instance(self, config) -> bool:
-        # Assigned only when a known instance owns the connection AND still
-        # reports the cell/controller/motion group. Foreign hosts and
-        # server-side-deleted controllers fall through to the unassigned section
-        # so the prim can be re-assigned. Ownership goes through
+        # Assigned as soon as a known reachable instance owns the connection; a
+        # controller that instance no longer reports is handled in its own
+        # section (Create Virtual Controller). Foreign and unreachable hosts fall
+        # through so the prim can be re-assigned. Ownership goes through
         # owns_connection - the same check the header and the row use.
-        stream = config.motion_stream_configuration
-        for instance in self._instances:
-            if instance.owns_connection(config):
-                return instance.has_live_motion_group(
-                    stream.cell, stream.controller, stream.motion_group
-                )
-        return False
-
-    def _resolve_display_prim(self, prim: Usd.Prim) -> Usd.Prim:
-        # The motion_group_name custom data lives on the robot's root prim, while the
-        # discovered API may sit on a descendant (e.g. a root_joint). Walk up to the
-        # nearest ancestor carrying that custom data so the row is labelled and
-        # connected via the robot prim; fall back to the API prim if none is found.
-        current = prim
-        while current and current.IsValid():
-            if current.GetCustomData().get("motion_group_name"):
-                return current
-            current = current.GetParent()
-        return prim
+        return any(instance.owns_connection(config) for instance in self._instances)

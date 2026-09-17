@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 import carb
 import wandelbots_api_client.v2 as wb
+import wandelbots_api_client.v2.models as wb_models
 
 from wandelbots.omni.datatypes import WSPose
 from wandelbots.omni.manipulators import MotionStreamConfiguration
@@ -146,4 +147,33 @@ async def fetch_joint_configs_for_pose(
     return InverseKinematicsResult(
         joint_configs=sort_joint_configs_by_proximity(joints, preferred_joint_values),
         joint_limits=per_joint_limits,
+    )
+
+
+def build_collision_free_algorithm(
+    max_iterations: int, step_size: float | None = None
+) -> wb_models.CollisionFreeAlgorithm:
+    """RRT-Connect settings for collision-free planning and for skill export.
+
+    A *step_size* of None leaves the search to size its own steps. A value
+    fixes the step, and the superseded ``adaptive_step_size`` and
+    ``max_step_size`` are set to match it: the client serialises their
+    defaults either way, so setting ``step_size`` alone would send an adaptive
+    setting alongside the fixed one and leave the server free to pick either.
+    """
+    if step_size is None:
+        return wb_models.CollisionFreeAlgorithm(
+            wb_models.RRTConnectAlgorithm(
+                max_iterations=max_iterations,
+                algorithm_name="RRTConnectAlgorithm",
+            )
+        )
+    return wb_models.CollisionFreeAlgorithm(
+        wb_models.RRTConnectAlgorithm(
+            max_iterations=max_iterations,
+            algorithm_name="RRTConnectAlgorithm",
+            step_size=wb_models.RRTConnectAlgorithmStepSize(step_size),
+            adaptive_step_size=False,
+            max_step_size=step_size,
+        )
     )

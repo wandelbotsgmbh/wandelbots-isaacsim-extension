@@ -9,6 +9,7 @@ from omni.kit.async_engine import run_coroutine
 from omni.kit.window.filepicker import FilePickerDialog
 
 from wandelbots.omni.instances.events import (
+    push_ui_busy_changed,
     subscribe_to_motion_group_connection_changed,
 )
 from wandelbots.omni.instances.instances_service import NOVAInstancesService
@@ -28,7 +29,13 @@ from wandelbots.omni.ui.instances.models.motion_group_enabled_model import (
 from wandelbots.omni.ui.instances.articulations.motion_group_widget import (
     MotionGroupWidget,
 )
+from wandelbots.omni.ui.instances.articulations.virtual_controller_service import (
+    create_and_connect_virtual_controller,
+    notify_warning,
+    resolve_robot_configuration,
+)
 from wandelbots.omni.ui.widgets import CollapsibleSection
+from wandelbots.omni.ui.widgets.progress_status_bar import ProgressStatusBar
 from wandelbots.omni.ui.wb_theme import (
     BUTTON_HEIGHT,
     BUTTON_PRIMARY_STYLE,
@@ -68,6 +75,10 @@ class MotionGroupSection(ui.VStack):
         self._connect_btn_container: Optional[ui.VStack] = None
         self._download_btn_container: Optional[ui.VStack] = None
         self._switch_container: Optional[ui.VStack] = None
+        self._create_button: Optional[ui.Button] = None
+        self._progress_container: Optional[ui.VStack] = None
+        self._progress: Optional[ProgressStatusBar] = None
+        self._create_task = None
         self._connected_prim_path: Optional[str] = None
         # The connected prim, or the one this section offers to connect. Only
         # used to route global connection events.
@@ -130,6 +141,10 @@ class MotionGroupSection(ui.VStack):
                 matched = self._find_matching_articulation()
         connect_fn = self._make_connect_fn(matched) if matched else None
         self._referenced_prim_path = prim_path or matched
+        controller_missing = prim_path is not None and self._is_controller_missing()
+        self._create_button = None
+        self._progress_container = None
+        self._progress = None
 
         with self:
             self._section = CollapsibleSection(
@@ -137,8 +152,8 @@ class MotionGroupSection(ui.VStack):
                 collapsed=True,
                 title_color=NOVAColor.TEXT_PRIMARY_CONTRAST,
                 build_leading_fn=lambda sec, _self=self: _self._build_type_icon(),
-                build_header_fn=lambda sec, _prim=prim_path, _fn=connect_fn, _matched=matched, _foreign=foreign_host, _self=self: (
-                    _self._build_header(_prim, _fn, _matched, _foreign)
+                build_header_fn=lambda sec, _prim=prim_path, _fn=connect_fn, _matched=matched, _foreign=foreign_host, _missing=controller_missing, _self=self: (
+                    _self._build_header(_prim, _fn, _matched, _foreign, _missing)
                 ),
                 on_collapsed_changed=lambda collapsed, _self=self: (
                     _self._on_collapsed_changed(collapsed)
@@ -148,6 +163,8 @@ class MotionGroupSection(ui.VStack):
                 # Breathing room between the section header and the first
                 # (Articulation) row inside the motion group widget.
                 ui.Spacer(height=8)
+                if controller_missing:
+                    self._build_missing_controller_hint()
                 self._motion_group_widget = MotionGroupWidget(
                     instances_service=self._instances_service,
                     instance=self._instance,
@@ -155,6 +172,7 @@ class MotionGroupSection(ui.VStack):
                     motion_group=self._motion_group,
                     matched_prim_path=matched,
                     on_connection_changed=self._on_connection_changed,
+                    on_geometry_mismatch=self._on_geometry_mismatch,
                 )
 
     def _build_type_icon(self):
@@ -162,12 +180,18 @@ class MotionGroupSection(ui.VStack):
             self._instance, self._motion_group.motion_group_model_name
         )
 
+    def _on_geometry_mismatch(self, message: str):
+        """Mark the section itself, which is collapsed until someone opens it."""
+        if self._type_icon is not None:
+            self._type_icon.show_warning(message)
+
     def _build_header(
         self,
         prim_path: Optional[str],
         connect_fn: Optional[Callable],
         matched_prim: Optional[str] = None,
         foreign_host: str = "",
+        controller_missing: bool = False,
     ):
         if connect_fn:
             self._connect_btn_container = ui.VStack(width=0)
@@ -212,6 +236,10 @@ class MotionGroupSection(ui.VStack):
                 )
                 ui.Spacer()
 
+        if controller_missing:
+            self._build_create_controller_button()
+            return
+
         if prim_path:
             # Center the fixed-height switch vertically in the header row,
             # mirroring the connect button wrapper above. A bare Switch (fixed
@@ -246,6 +274,141 @@ class MotionGroupSection(ui.VStack):
                     ),
                 )
                 ui.Spacer()
+
+    def _is_controller_missing(self) -> bool:
+        # Reachable with its cells loaded, yet the stored controller is not among
+        # them: deleted server-side, or never created on this host.
+        return (
+            self._instance.is_reachable
+            and self._instance.cells is not None
+            and not self._instance.has_live_motion_group(
+                self._controller.cell_name,
+                self._controller.name,
+                self._motion_group.name,
+            )
+        )
+
+    def _build_create_controller_button(self):
+        with ui.VStack(width=0):
+            ui.Spacer()
+            self._create_button = ui.Button(
+                "Create Virtual Controller",
+                width=0,
+                height=BUTTON_HEIGHT,
+                style={**BUTTON_PRIMARY_STYLE, **TOOLTIP_RESET},
+                clicked_fn=lambda _self=self: _self._on_create_virtual_controller(),
+                tooltip_fn=lambda _self=self: build_tooltip(
+                    f"Controller '{_self._controller.name}' was not found on this "
+                    "instance.\nCreate it again and reconnect the articulation."
+                ),
+            )
+            ui.Spacer()
+
+    def _build_missing_controller_hint(self):
+        with ui.HStack(height=0):
+            ui.Spacer(width=15)
+            ui.Label(
+                f"Controller '{self._controller.name}' was not found on this "
+                "instance. Create it again or disconnect the articulation.",
+                width=ui.Fraction(1),
+                word_wrap=True,
+                style={"color": NOVAColor.WARNING_LIGHT.color},
+            )
+            ui.Spacer(width=10)
+        self._progress = ProgressStatusBar(
+            name=self._motion_group.motion_group_model_name
+        )
+        self._progress_container = ui.VStack(visible=False, height=0, spacing=4)
+        with self._progress_container:
+            ui.Spacer(height=4)
+            with ui.HStack(height=0):
+                ui.Spacer(width=15)
+                with ui.VStack(height=0, spacing=4):
+                    self._progress.build()
+                ui.Spacer(width=10)
+        ui.Spacer(height=8)
+
+    def _set_creating(self, creating: bool):
+        if self._create_button is not None:
+            self._create_button.enabled = not creating
+            self._create_button.text = (
+                "Creating..." if creating else "Create Virtual Controller"
+            )
+        if self._progress_container is not None:
+            self._progress_container.visible = creating
+        if self._progress is None:
+            return
+        if creating:
+            self._progress.show(0.0)
+            self._progress.set_hint("Creating controller...")
+        else:
+            self._progress.hide()
+
+    def _on_create_progress(self, value: float, text: str):
+        if self._progress is None:
+            return
+        self._progress.update(value)
+        if text:
+            self._progress.set_hint(text)
+
+    def _on_create_virtual_controller(self):
+        if self._create_task is not None:
+            return
+        self._create_task = run_coroutine(self._create_virtual_controller_async())
+
+    async def _create_virtual_controller_async(self):
+        push_ui_busy_changed(True, "Creating virtual controller in NOVA...")
+        self._set_creating(True)
+        created = False
+        try:
+            created = await self._create_and_connect()
+        finally:
+            self._create_task = None
+            push_ui_busy_changed(False)
+            self._set_creating(False)
+        if created and self._on_connection_changed:
+            self._on_connection_changed()
+
+    async def _create_and_connect(self) -> bool:
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(self._connected_prim_path) if stage else None
+        if prim is None or not prim.IsValid():
+            notify_warning("Selected motion group prim is no longer valid.")
+            return False
+        cell = self._cell_for_new_controller()
+        if cell is None:
+            notify_warning("No cells available on this instance.")
+            return False
+        model_name = self._motion_group.motion_group_model_name
+        configuration = await resolve_robot_configuration(
+            self._instance, prim, model_name
+        )
+        if configuration is None:
+            notify_warning(
+                f"Could not resolve the robot configuration for '{model_name}'. "
+                "Disconnect the articulation and assign it from the Unassigned "
+                "section."
+            )
+            return False
+        manufacturer_str, robot_configuration = configuration
+        return await create_and_connect_virtual_controller(
+            instances_service=self._instances_service,
+            instance=self._instance,
+            prim=prim,
+            cell=cell,
+            controller_name=self._controller.name,
+            robot_configuration=robot_configuration,
+            manufacturer_str=manufacturer_str,
+            define_mounting=True,
+            on_progress=self._on_create_progress,
+        )
+
+    def _cell_for_new_controller(self) -> Optional[str]:
+        # The stored cell when the instance still has it, else its first cell.
+        cell_names = [cell.name for cell in self._instance.cells or []]
+        if self._controller.cell_name in cell_names:
+            return self._controller.cell_name
+        return cell_names[0] if cell_names else None
 
     def _on_collapsed_changed(self, collapsed: bool):
         if self._connect_btn_container:
@@ -382,12 +545,13 @@ class MotionGroupSection(ui.VStack):
                 if self_ref._on_connection_changed:
                     self_ref._on_connection_changed()
 
+            # No use_external_joint_stream: a prim that is already configured,
+            # for instance against another host, keeps its joint stream source.
             self_ref._instances_service.create_motion_group_from_nova(
                 instance=self_ref._instance,
                 controller=self_ref._controller,
                 motion_group_name=self_ref._motion_group.name,
                 prim_path=prim_path,
-                use_external_joint_stream=False,
                 callback=on_complete,
             )
 

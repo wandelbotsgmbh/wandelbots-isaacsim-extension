@@ -40,11 +40,17 @@ sequenceDiagram
         Planner->>API: forward_kinematics
         API-->>Planner: tcp_poses
         Planner->>Widget: create trajectory visualization
+        Planner->>Widget: mark collision-free via points on the curve
         Planner->>API: store skill to NOVA
     else failure
-        Planner->>Events: plan_failed.emit(error)
+        Planner->>Planner: mark failing pose (planned = false)
+        Planner->>Events: plan_failed.emit(PlanFailure)
         Events->>Controller: _on_plan_failed()
         Controller->>Widget: controls.set_trajectory_planned(false), progress.hide()
+        Controller->>Widget: progress.set_hint(error), preview.show(red ghost at failed joints)
+        Planner->>API: forward_kinematics (partial trajectory)
+        API-->>Planner: tcp_poses
+        Planner->>Widget: create red partial trajectory visualization
     end
     end
 

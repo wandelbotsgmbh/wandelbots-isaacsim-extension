@@ -4,6 +4,8 @@ import carb
 
 
 def register_bundled_packages() -> None:
+    # Not get_extension_root(): that helper lives in a submodule this
+    # bootstrap step runs before, so it isn't importable yet.
     try:
         pre_bundle_path = Path(__file__).absolute().parents[1].joinpath("pip_prebundle")
         if not pre_bundle_path.exists():
