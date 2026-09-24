@@ -54,11 +54,13 @@ def form_row(
     tooltip: str | None = None,
     field_width: int = FORM_FIELD_WIDTH,
     height: int = BUTTON_HEIGHT,
+    gap: int = 0,
 ):
     """Build one form row; the ``with`` body populates the field column.
 
     The label stretches, pushing the field to a right margin that matches the
-    left inset, and carries the themed tooltip.
+    left inset, and carries the themed tooltip. ``gap`` keeps the field column
+    off the label; it defaults to none so existing forms keep their layout.
     """
     with ui.HStack(height=height, spacing=0):
         ui.Spacer(width=FORM_SIDE_MARGIN)
@@ -72,9 +74,20 @@ def form_row(
             label_kwargs["style"] = TOOLTIP_RESET
             label_kwargs["tooltip_fn"] = lambda text=tooltip: build_tooltip(text)
         ui.Label(label, **label_kwargs)
+        if gap:
+            ui.Spacer(width=gap)
         with ui.VStack(width=field_width):
             ui.Spacer()
             with ui.VStack(height=0):
                 yield
             ui.Spacer()
+        ui.Spacer(width=FORM_SIDE_MARGIN)
+
+
+def message_row(text: str, color: int, height: int = 0) -> None:
+    """One inset, word-wrapped line of feedback under a form: an error, a
+    hint or a note, in the given text color."""
+    with ui.HStack(height=0):
+        ui.Spacer(width=FORM_SIDE_MARGIN)
+        ui.Label(text, word_wrap=True, height=height, style={"color": color})
         ui.Spacer(width=FORM_SIDE_MARGIN)

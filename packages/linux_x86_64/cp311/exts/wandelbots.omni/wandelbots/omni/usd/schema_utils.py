@@ -20,7 +20,14 @@ class SchemaUtils:
     @staticmethod
     def find_motion_group_tcp(motion_group: Usd.Prim) -> Usd.Prim | None:
         """
-        Get the TCP prim path of a motion group.
+        Get the flange TCP prim of a motion group.
+
+        A motion group has exactly one flange TCP (zero tool offset), but once a
+        tool is attached it also has one or more tool TCPs (e.g. "tcp_klt_grip")
+        that also satisfy ``TcpUtils.is_tcp``. Prefer a prim literally named
+        "tcp_flange" — the naming convention used when TCPs are placed (see
+        cell_spawn_window.py) — over just the first tcp-tagged prim encountered,
+        which is ambiguous as soon as a tool is present.
         """
         if not motion_group.IsValid():
             return None
@@ -33,11 +40,16 @@ class SchemaUtils:
         # Walk the motion group's subtree only. Walking the whole stage and
         # filtering by path visits every prim in the scene on every call, and
         # the path test also matched siblings: /World/FooBar for /World/Foo.
+        first_tcp: Usd.Prim | None = None
         child_prim: Usd.Prim
         for child_prim in Usd.PrimRange(motion_group):
-            if TcpUtils.is_tcp(child_prim):
+            if not TcpUtils.is_tcp(child_prim):
+                continue
+            if child_prim.GetName() == "tcp_flange":
                 return child_prim
-        return None
+            if first_tcp is None:
+                first_tcp = child_prim
+        return first_tcp
 
     @staticmethod
     def find_parent_motion_group(child_prim: Usd.Prim) -> Usd.Prim | None:

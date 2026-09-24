@@ -14,12 +14,14 @@ class OgnContactGripper:
     def compute(db) -> bool:
         model: ContactGripperModel = db.per_instance_state
         stick = bool(db.inputs.stick)
+        fix_all = bool(db.inputs.fixAll)
 
         stick_changed = stick != model.prev_stick
         model.prev_stick = stick
-        if not stick_changed:
-            db.outputs.isAttached = model.is_attached
-            db.outputs.attachedPrimPath = model.attached_prim_path
+        # With Fix All the scan repeats on every execution while Fix is true,
+        # so prims that enter the volume later get attached as well.
+        if not stick_changed and not (stick and fix_all):
+            OgnContactGripper._write_state_outputs(db, model)
             return True
 
         stage = omni.usd.get_context().get_stage()
@@ -31,8 +33,7 @@ class OgnContactGripper:
         is_playing = timeline.is_playing() if timeline is not None else True
         if not is_playing:
             model.restore_all()
-            db.outputs.isAttached = False
-            db.outputs.attachedPrimPath = ""
+            OgnContactGripper._write_state_outputs(db, model)
             return True
 
         helper_paths = OgnContactGripper._extract_target_paths(db.inputs.helperPrim)
@@ -52,7 +53,7 @@ class OgnContactGripper:
         if not stick:
             model.helper_prim_path = helper_path
             event_released = model.release()
-        elif stick:
+        else:
             event_attached = model.attach(
                 helper_path=helper_path,
                 candidate_paths=OgnContactGripper._normalize_token_list(
@@ -61,12 +62,18 @@ class OgnContactGripper:
                 exclude_paths=OgnContactGripper._normalize_token_list(
                     db.inputs.excludePrimPaths
                 ),
+                attach_all=fix_all,
             )
 
-        db.outputs.isAttached = model.is_attached
-        db.outputs.attachedPrimPath = model.attached_prim_path
+        OgnContactGripper._write_state_outputs(db, model)
         OgnContactGripper._set_exec_outputs(db, event_attached, event_released)
         return True
+
+    @staticmethod
+    def _write_state_outputs(db, model: ContactGripperModel) -> None:
+        db.outputs.isAttached = model.is_attached
+        db.outputs.attachedPrimPath = model.attached_prim_path
+        db.outputs.attachedPrimPaths = model.attached_prim_paths
 
     @staticmethod
     def _set_exec_outputs(db, event_attached: bool, event_released: bool) -> None:

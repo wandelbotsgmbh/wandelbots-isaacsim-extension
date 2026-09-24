@@ -15,7 +15,7 @@ import wandelbots_api_client.v2 as wb
 from omni.kit.app import SettingChangeSubscription
 from omni.kit.async_engine import run_coroutine
 from omni.kit.viewport.window import ViewportWindow
-from pxr import Usd
+from pxr import Gf, Usd, UsdGeom, Vt
 
 import wandelbots.omni.ui.colors as color_utils
 import wandelbots.omni.ui.overlay as overlay
@@ -398,14 +398,26 @@ class GhostTeachingOverlay(ViewportOverlay):
             except Exception as e:
                 carb.log_verbose(f"Could not refresh motion group description: {e}")
 
+        # Always read the flange -> gripper-grip TCP relative pose fresh and send it
+        # as the IK tcp_offset, so IK is solved for the actual gripper TCP (never the
+        # bare flange). Falls back to the cached offset if it can't be resolved.
+        tcp_offset = (
+            GhostObjectUtils.get_ghost_object_tcp_offset(self._selected_ghost_object)
+            or self._tcp_offset
+        )
+
         ik_result = await fetch_joint_configs_for_pose(
             stream_config=self._stream_config,
             pose=pose,
-            tcp_offset=self._tcp_offset,
+            tcp_offset=tcp_offset,
             preferred_joint_values=preferred,
             collision_setups=self._collision_setups or None,
             description=description,
         )
+
+        # Colour the ghost object by reachability: green if the gripper TCP can reach
+        # this pose, red if not — updated live as the object is dragged.
+        self._set_ghost_reachability_color(reachable=len(ik_result.joint_configs) > 0)
 
         if len(ik_result.joint_configs) == 0:
             carb.log_warn(
@@ -446,6 +458,26 @@ class GhostTeachingOverlay(ViewportOverlay):
                     joint_limits=list(self._cached_joint_limits),
                 )
             )
+
+    # Reachability tint. Green when the gripper TCP can reach the current pose, red
+    # when it cannot. Applied as primvars:displayColor on every Gprim under the ghost
+    # object so it reads at a glance while dragging.
+    _REACHABLE_COLOR = Gf.Vec3f(0.15, 0.8, 0.25)
+    _UNREACHABLE_COLOR = Gf.Vec3f(0.9, 0.15, 0.15)
+
+    def _set_ghost_reachability_color(self, reachable: bool) -> None:
+        ghost_prim = self._selected_ghost_object
+        if not ghost_prim or not ghost_prim.IsValid():
+            return
+        color = self._REACHABLE_COLOR if reachable else self._UNREACHABLE_COLOR
+        try:
+            for prim in Usd.PrimRange(ghost_prim):
+                gprim = UsdGeom.Gprim(prim)
+                if not gprim:
+                    continue
+                gprim.GetDisplayColorAttr().Set(Vt.Vec3fArray([color]))
+        except Exception as e:
+            carb.log_verbose(f"Could not set ghost reachability color: {e}")
 
     def _on_ghost_prim_changed(self, path=None):
         if not path or PREFERRED_JOINT_VALUES_ATTR not in path.pathString:

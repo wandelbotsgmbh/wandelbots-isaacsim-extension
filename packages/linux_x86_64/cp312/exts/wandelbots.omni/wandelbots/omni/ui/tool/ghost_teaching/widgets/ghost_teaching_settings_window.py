@@ -335,19 +335,28 @@ class GhostTeachingSettingsWindow(ui.Window):
 
 
 def load_ghost_teaching_carb_settings() -> SettingsModel:
-    settings: carb.settings.ISettings = carb.settings.get_settings()
-
     settings_model = SettingsModel()
+    apply_ghost_teaching_carb_settings(settings_model)
+    return settings_model
+
+
+def apply_ghost_teaching_carb_settings(settings_model: SettingsModel) -> None:
+    """Copy what carb holds into an existing model.
+
+    Only the fields that differ change, and each change reaches the model's
+    property_changed_fn like an edit in the settings window would.
+    """
+    settings: carb.settings.ISettings = carb.settings.get_settings()
     if settings.get(CARB_STAY_OPEN) is not None:
-        settings_model.select_ghost_object_in_scene = settings.get_as_bool(
-            CARB_SELECT_GHOST_OBJECT_IN_SCENE
-        )
+        settings_model.stay_open = settings.get_as_bool(CARB_STAY_OPEN)
     if settings.get(CARB_OPEN_WITH_GHOST_OBJECT) is not None:
         settings_model.open_with_ghost_object = settings.get_as_bool(
             CARB_OPEN_WITH_GHOST_OBJECT
         )
     if settings.get(CARB_SELECT_GHOST_OBJECT_IN_SCENE) is not None:
-        settings_model.stay_open = settings.get_as_bool(CARB_STAY_OPEN)
+        settings_model.select_ghost_object_in_scene = settings.get_as_bool(
+            CARB_SELECT_GHOST_OBJECT_IN_SCENE
+        )
 
     if settings.get(CARB_MOTION_COMMAND) is not None:
         settings_model.motion_command = settings.get_as_string(CARB_MOTION_COMMAND)
@@ -361,7 +370,6 @@ def load_ghost_teaching_carb_settings() -> SettingsModel:
         settings_model.overlay_color = settings.get_as_string(CARB_OVERLAY_COLOR)
     if settings.get(CARB_MAX_JOINT_CONFIGS) is not None:
         settings_model.max_joint_configs = settings.get_as_int(CARB_MAX_JOINT_CONFIGS)
-    return settings_model
 
 
 def save_ghost_teaching_carb_settings(model: SettingsModel):

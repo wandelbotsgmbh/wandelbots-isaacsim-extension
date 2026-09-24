@@ -1,5 +1,47 @@
 # Changelog - Wandelbots NOVA x Nvidia Isaac Sim
 
+## 2.74.0 (2026-09-24)
+
+### Features
+
+* **preferences:** Add a Wandelbots NOVA page to the preferences window
+
+## 2.73.0 (2026-09-23)
+
+### Features
+
+* **camera:** Return depth with the camera intrinsics and a chosen unit
+
+## 2.72.0 (2026-09-23)
+
+### Features
+
+* Reachability Envelope tool
+
+## 2.71.0 (2026-09-23)
+
+### Features
+
+* Payload calculator
+
+## 2.70.1 (2026-09-21)
+
+### Bug Fixes
+
+* Close a connection that cannot be subscribed
+
+## 2.70.0 (2026-09-18)
+
+### Features
+
+* Add multiple prim pick and fix overlap error of ContactGripper OGN
+
+## 2.69.6 (2026-09-18)
+
+### Bug Fixes
+
+* **CSI-2837:** Align the CF step size row and show when it is adaptive
+
 ## 2.69.5 (2026-09-17)
 
 ### Bug Fixes

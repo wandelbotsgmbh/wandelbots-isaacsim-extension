@@ -19,6 +19,7 @@ except ImportError:
     Sdr = None
 
 PREVIEW_SHADER_NAME = "preview_Principled_BSDF"
+CARB_DEBUG_DUMP = "/exts/wandelbots.omni/mdl_to_usd_preview/debug_dump"
 
 # MDL input names that may carry the base/albedo colour, in priority order.
 COLOR_INPUTS = (
@@ -312,18 +313,14 @@ def mdl_source_info(material_prim: Usd.Prim) -> tuple[str, str]:
 def _debug_dump_enabled() -> bool:
     """Whether to log full per-material input/SDR diagnostics for this run.
 
-    Opt-in via the setting ``/exts/wandelbots.omni/mdl_to_usd_preview/debug_dump``
+    Opt-in via the setting ``CARB_DEBUG_DUMP``
     so a single conversion run reveals exactly what each MDL shader exposes,
     without spamming logs by default.
     """
     try:
         import carb.settings
 
-        return bool(
-            carb.settings.get_settings().get(
-                "/exts/wandelbots.omni/mdl_to_usd_preview/debug_dump"
-            )
-        )
+        return bool(carb.settings.get_settings().get(CARB_DEBUG_DUMP))
     except Exception:
         return False
 

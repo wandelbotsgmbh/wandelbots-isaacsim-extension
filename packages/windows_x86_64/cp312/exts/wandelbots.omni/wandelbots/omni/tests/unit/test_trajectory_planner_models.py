@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
+
 import omni.kit.test
 
+from wandelbots.omni.utils.kinematics import MIN_STEP_SIZE
 from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
-    CF_STEP_SIZE_MIN,
     PlannedTrajectoryConfig,
     PoseConfig,
     TrajectoryPlannerConfig,
@@ -162,7 +164,15 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
         self.assertEqual(config, restored)
 
     async def test_cf_step_size_defaults_to_leaving_it_to_the_algorithm(self):
-        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=None)
+        config = TrajectoryPlannerConfig(name="cf_skill")
+
+        self.assertIsNone(config.cf_step_size)
+
+    async def test_a_skill_saved_with_a_null_cf_step_size_still_loads(self):
+        """load_configs drops a skill whose entry fails to validate."""
+        entry = {"name": "cf_skill", "cf_step_size": None}
+
+        config = TrajectoryPlannerConfig(**entry)
 
         self.assertIsNone(config.cf_step_size)
 
@@ -171,16 +181,27 @@ class TestTrajectoryPlannerModels(omni.kit.test.AsyncTestCase):
 
         self.assertAlmostEqual(0.05, config.cf_step_size)
 
-    async def test_cf_step_size_zero_is_clamped_when_a_config_is_loaded(self):
+    async def test_cf_step_size_zero_is_floored_when_a_config_is_loaded(self):
         """A zero step would leave the search extending by nothing."""
         config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=0.0)
 
-        self.assertAlmostEqual(CF_STEP_SIZE_MIN, config.cf_step_size)
+        self.assertAlmostEqual(MIN_STEP_SIZE, config.cf_step_size)
 
-    async def test_cf_step_size_negative_is_clamped_when_a_config_is_loaded(self):
+    async def test_cf_step_size_negative_is_floored_when_a_config_is_loaded(self):
         config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=-1.0)
 
-        self.assertAlmostEqual(CF_STEP_SIZE_MIN, config.cf_step_size)
+        self.assertAlmostEqual(MIN_STEP_SIZE, config.cf_step_size)
+
+    async def test_cf_step_size_infinity_falls_back_to_adaptive(self):
+        """No search can step by infinity, so the planner sizes its own steps."""
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=math.inf)
+
+        self.assertIsNone(config.cf_step_size)
+
+    async def test_cf_step_size_nan_falls_back_to_adaptive(self):
+        config = TrajectoryPlannerConfig(name="cf_skill", cf_step_size=math.nan)
+
+        self.assertIsNone(config.cf_step_size)
 
     async def test_trajectory_planner_config_ignores_unknown_fields(self):
         data = {"name": "test", "unknown_field": "should_be_ignored"}

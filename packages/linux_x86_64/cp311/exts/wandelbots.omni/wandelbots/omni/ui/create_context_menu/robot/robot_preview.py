@@ -145,6 +145,7 @@ class RobotPreview:
                     dh_parameters=dh_parameters,
                     dh_unit_to_stage_unit_factor=unit_factor,
                     joint_values_rad=zero_joints,
+                    kinematic_chain_offset=kinematic_model.kinematic_chain_offset,
                 )
             ]
 

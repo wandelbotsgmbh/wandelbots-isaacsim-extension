@@ -8,15 +8,21 @@ from typing import Callable
 import omni.ui as ui
 
 from wandelbots.omni.ui.colors import NOVAColor
-from wandelbots.omni.ui.tool.trajectory_planner.trajectory_planner_store import (
-    CF_STEP_SIZE_MIN,
-)
-from wandelbots.omni.ui.wb_theme import FIELD_STYLE, TOOLTIP_RESET, build_tooltip
+from wandelbots.omni.utils.kinematics import clamp_step_size
+from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
-from wandelbots.omni.ui.widgets.form_row import form_row
-from wandelbots.omni.ui.widgets.styled_checkbox import styled_checkbox
 
 _LABEL_WIDTH = 170
+
+#: What the field shows, and accepts, for "let the algorithm decide".
+_ADAPTIVE_TEXT = "Auto"
+
+
+def _parsed_number(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 class SettingsSection:
@@ -55,9 +61,7 @@ class SettingsSection:
         self._on_setting_changed = on_setting_changed
         self._live_update_checkbox: ui.CheckBox | None = None
         self._move_to_start_checkbox: ui.CheckBox | None = None
-        self._cf_step_size_field: ui.FloatDrag | None = None
-        self._cf_step_size_override: ui.SimpleBoolModel | None = None
-        self._cf_step_size_model: ui.SimpleFloatModel | None = None
+        self._cf_step_size_field: ui.StringField | None = None
         self._global_settings_button: ui.Button | None = None
         self._collision_free: bool = False
         self._motion_group_limits: dict | None = None
@@ -271,63 +275,52 @@ class SettingsSection:
         self._notify(key, clamped)
 
     def _build_cf_step_size_row(self) -> None:
-        # A number field cannot show "no value", so the checkbox is what makes
-        # leaving the step size to the algorithm visible and reversible.
-        override_active = self.cf_step_size is not None
-        self._cf_step_size_override = ui.SimpleBoolModel(override_active)
-        self._cf_step_size_model = ui.SimpleFloatModel(
-            self.cf_step_size if override_active else CF_STEP_SIZE_MIN
-        )
-        with form_row(
-            "CF Step Size",
-            tooltip=(
-                "Largest step, in joint space, that collision-free planning "
-                "extends its search by. Smaller steps follow narrow passages "
-                "more closely and plan more slowly. Leave it unchecked to let "
-                "the algorithm pick the step size."
-            ),
-        ):
-            with ui.HStack(height=18, spacing=8):
-                styled_checkbox(model=self._cf_step_size_override, width=18, height=18)
-                self._cf_step_size_field = ui.FloatDrag(
-                    model=self._cf_step_size_model,
-                    min=CF_STEP_SIZE_MIN,
-                    step=0.01,
-                    height=18,
-                    enabled=override_active,
-                    style={**FIELD_STYLE, **TOOLTIP_RESET},
+        with ui.HStack(height=26, spacing=16):
+            ui.Spacer(width=5)
+            ui.Label(
+                "CF Step Size",
+                width=_LABEL_WIDTH,
+                alignment=ui.Alignment.LEFT_CENTER,
+                tooltip_fn=lambda: build_tooltip(
+                    "Largest step, in joint space, that collision-free planning "
+                    "extends its search by. Smaller steps follow narrow passages "
+                    "more closely and plan more slowly. Clear the field, or type "
+                    f"{_ADAPTIVE_TEXT}, to leave the step size to the algorithm."
+                ),
+                style=TOOLTIP_RESET,
+            )
+            # A number field cannot show "no value", so the step size is edited
+            # as text: that keeps adaptive and fixed apart on one control.
+            self._cf_step_size_field = ui.StringField(height=22)
+            self._cf_step_size_field.model.set_value(self._cf_step_size_text())
+            self._cf_step_size_field.model.add_end_edit_fn(
+                lambda m, ws=weakref.ref(self): (
+                    ws()._on_cf_step_size_edited(m.get_value_as_string())
+                    if ws()
+                    else None
                 )
-        self._cf_step_size_override.add_value_changed_fn(
-            lambda m, ws=weakref.ref(self): (
-                ws()._on_cf_step_size_override_changed(m.get_value_as_bool())
-                if ws()
-                else None
             )
-        )
-        self._cf_step_size_model.add_value_changed_fn(
-            lambda m, ws=weakref.ref(self): (
-                ws()._on_cf_step_size_changed(m.get_value_as_float()) if ws() else None
-            )
-        )
+            ui.Spacer(width=5)
 
-    def _on_cf_step_size_override_changed(self, enabled: bool) -> None:
-        self.cf_step_size = (
-            self._cf_step_size_model.get_value_as_float() if enabled else None
-        )
+    def _cf_step_size_text(self) -> str:
+        if self.cf_step_size is None:
+            return _ADAPTIVE_TEXT
+        return f"{self.cf_step_size:g}"
+
+    def _on_cf_step_size_edited(self, text: str) -> None:
+        entered = text.strip()
+        if not entered or entered.casefold() == _ADAPTIVE_TEXT.casefold():
+            self.cf_step_size = None
+        else:
+            step_size = clamp_step_size(_parsed_number(entered))
+            # Text that is not a step size the planner can use leaves the
+            # setting as it was, and the line below puts the old value back in
+            # the field.
+            if step_size is not None:
+                self.cf_step_size = step_size
         if self._cf_step_size_field is not None:
-            self._cf_step_size_field.enabled = enabled
+            self._cf_step_size_field.model.set_value(self._cf_step_size_text())
         self._notify("cf_step_size", self.cf_step_size)
-
-    def _on_cf_step_size_changed(self, value: float) -> None:
-        clamped = max(CF_STEP_SIZE_MIN, value)
-        if abs(clamped - value) > 1e-9:
-            # Writing the clamped value back re-enters here with it applied.
-            self._cf_step_size_model.set_value(clamped)
-            return
-        if not self._cf_step_size_override.get_value_as_bool():
-            return
-        self.cf_step_size = clamped
-        self._notify("cf_step_size", clamped)
 
     def _build_payload_name_row(self) -> None:
         with ui.HStack(height=26, spacing=16):

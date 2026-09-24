@@ -190,12 +190,52 @@ def dh_transform_matrix(
     )
 
 
+def kinematic_chain_offset_matrix(
+    kinematic_chain_offset,
+    translation_scale: float = 1.0,
+) -> np.ndarray | None:
+    """4x4 matrix for a NOVA ``Pose``-like kinematic_chain_offset (position in
+    mm, orientation as rotation vector in rad), or None when absent.
+
+    This is the fixed transform from the motion group's mount frame (the
+    motion-group prim / ``link_0``) to the start of the DH chain — see the NOVA
+    MotionGroupDescription doc: [world] -> mounting -> [base frame] ->
+    kinematic_chain_offset + DH chain -> ... For robots whose DH chain starts
+    at the mount (all standard 6-axis arms today) the field is null and this
+    returns None.
+    """
+    if kinematic_chain_offset is None:
+        return None
+    pos = list(getattr(kinematic_chain_offset, "position", None) or [0.0, 0.0, 0.0])
+    rv = np.asarray(
+        list(getattr(kinematic_chain_offset, "orientation", None) or [0.0, 0.0, 0.0]),
+        dtype=float,
+    )
+    T = np.eye(4)
+    angle = float(np.linalg.norm(rv))
+    if angle > 1e-12:
+        k = rv / angle
+        K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+        T[:3, :3] = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+    T[:3, 3] = np.asarray(pos, dtype=float) * translation_scale
+    return T
+
+
 def compute_forward_kinematics_chain(
     dh_parameters: list[wb.models.DHParameter],
     joint_values_rad: list[float],
     dh_unit_to_stage_unit_factor: float,
+    kinematic_chain_offset=None,
 ) -> list[np.ndarray]:
-    world_T = np.eye(4)
+    # The DH chain does NOT necessarily start at the motion-group prim: NOVA's
+    # kinematic_chain_offset (when present) is the fixed mount->DH-base
+    # transform (e.g. the Manus arms' shoulder sits 107.6 mm / 90 deg from the
+    # mount). Anchoring at identity for such robots misplaces every link_i and
+    # everything rendered in the "base frame" by exactly that offset.
+    base = kinematic_chain_offset_matrix(
+        kinematic_chain_offset, translation_scale=dh_unit_to_stage_unit_factor
+    )
+    world_T = base if base is not None else np.eye(4)
     results = [world_T.copy()]
 
     for i, dh_param in enumerate(dh_parameters):

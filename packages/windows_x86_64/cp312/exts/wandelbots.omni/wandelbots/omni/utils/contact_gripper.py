@@ -1,12 +1,13 @@
 import fnmatch
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import carb
 import omni.kit.app
 import omni.timeline
 import omni.usd
-from pxr import Gf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 _RECOVERY_KEY = "wandelbotsGripperRecovery"
 _RELEASE_GRACE_S = 0.2
@@ -17,25 +18,43 @@ _BOUNDS_PURPOSES = [
 ]
 
 
+def _current_time_code(stage: Usd.Stage) -> Usd.TimeCode:
+    """Time code the viewport shows right now.
+
+    Physics writes default values, animation writes time samples. Reading at
+    the current time covers both, reading at Default would test an animated
+    prim at its rest pose.
+    """
+    timeline = omni.timeline.get_timeline_interface()
+    if timeline is None:
+        return Usd.TimeCode.Default()
+    return Usd.TimeCode(timeline.get_current_time() * stage.GetTimeCodesPerSecond())
+
+
+@dataclass
+class _PendingRelease:
+    deadline: float
+    restore_kinematic_enabled: bool | None
+
+
 class ContactGripperModel:
     """Contact-gripper logic decoupled from any OmniGraph node.
 
     Call attach() to grab the first candidate prim inside the helper volume,
-    release() to let go, and restore_all() to reset all touched prims (e.g. on
-    simulation stop).  Register on_attached / on_released callbacks to react to
-    state changes from any consumer (UI, tests, …).
+    or every candidate with attach_all, release() to let go of all of them,
+    and restore_all() to reset all touched prims (e.g. on simulation stop).
+    Register on_attached / on_released callbacks to react to state changes
+    from any consumer (UI, tests, ...).
     """
 
     def __init__(self) -> None:
-        # attachment state
-        self.attached_prim_path: str = ""
-        self.attached_to_helper: Gf.Matrix4d = Gf.Matrix4d(1.0)
-        self.restore_kinematic_enabled: bool | None = None
+        # held prims in attach order, each with its offset to the helper
+        self.attached_offsets: dict[str, Gf.Matrix4d] = {}
+        self.restore_kinematic_by_path: dict[str, bool | None] = {}
 
-        # pending-release grace period
-        self.pending_release_prim_path: str = ""
-        self.pending_release_restore_kinematic_enabled: bool | None = None
-        self.pending_release_deadline: float = 0.0
+        # released prims waiting out the grace period before their rigid
+        # body state is restored
+        self.pending_releases: dict[str, _PendingRelease] = {}
 
         # per-prim recovery data
         self.original_local_transforms: dict[str, Gf.Matrix4d] = {}
@@ -63,7 +82,18 @@ class ContactGripperModel:
 
     @property
     def is_attached(self) -> bool:
-        return bool(self.attached_prim_path)
+        return bool(self.attached_offsets)
+
+    @property
+    def attached_prim_paths(self) -> list[str]:
+        return list(self.attached_offsets)
+
+    @property
+    def attached_prim_path(self) -> str:
+        """Path of the most recently attached prim, empty when nothing is held."""
+        if not self.attached_offsets:
+            return ""
+        return next(reversed(self.attached_offsets))
 
     # -------------------------------------------------------------------------
     # Public API
@@ -74,19 +104,22 @@ class ContactGripperModel:
         helper_path: str,
         candidate_paths: list[str],
         exclude_paths: list[str],
+        attach_all: bool = False,
     ) -> bool:
-        """Attach the first overlapping candidate prim to the helper volume.
+        """Attach candidate prims inside the helper volume.
 
-        Returns True if a prim was successfully attached. Fires on_attached.
+        Attaches the first overlapping candidate, or with attach_all every
+        overlapping candidate that is not held yet. Returns True if at least
+        one prim was attached. Fires on_attached once per prim.
         """
-        if self.attached_prim_path:
+        if self.attached_offsets and not attach_all:
             return False
 
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             return False
 
-        self._update_pending_release(stage)
+        self._update_pending_releases(stage)
 
         helper_prim = stage.GetPrimAtPath(helper_path)
         if not helper_prim.IsValid():
@@ -97,49 +130,55 @@ class ContactGripperModel:
 
         self.helper_prim_path = helper_path
 
-        candidate_prim = self._find_candidate_prim(
-            stage, helper_prim, candidate_paths, exclude_paths
+        candidate_prims = self._find_candidate_prims(
+            stage,
+            helper_prim,
+            candidate_paths,
+            exclude_paths,
+            limit=None if attach_all else 1,
         )
-        if candidate_prim is None:
-            return False
-
-        self._do_attach(stage, helper_prim, candidate_prim)
-        if self.on_attached:
-            self.on_attached(self.attached_prim_path)
-        return True
+        for candidate_prim in candidate_prims:
+            self._do_attach(stage, helper_prim, candidate_prim)
+            if self.on_attached:
+                self.on_attached(candidate_prim.GetPath().pathString)
+        return bool(candidate_prims)
 
     def release(self) -> bool:
-        """Release the currently attached prim.
+        """Release every attached prim.
 
-        Returns True if a prim was released. Fires on_released.
+        Returns True if at least one prim was released. Fires on_released once
+        per prim.
         """
-        if not self.attached_prim_path:
+        if not self.attached_offsets:
             return False
 
         stage = omni.usd.get_context().get_stage()
         if stage is None:
             return False
 
-        self._update_pending_release(stage)
+        self._update_pending_releases(stage)
 
         helper_prim = stage.GetPrimAtPath(self.helper_prim_path)
         if not helper_prim.IsValid():
             return False
 
-        attached_prim = stage.GetPrimAtPath(self.attached_prim_path)
-        if not attached_prim.IsValid():
-            carb.log_error(
-                f"Contact Gripper: attached prim no longer exists: {self.attached_prim_path}"
-            )
-            return False
+        released_paths = []
+        for prim_path, offset in list(self.attached_offsets.items()):
+            attached_prim = stage.GetPrimAtPath(prim_path)
+            if not attached_prim.IsValid():
+                carb.log_error(
+                    f"Contact Gripper: attached prim no longer exists: {prim_path}"
+                )
+                self._forget_prim(prim_path)
+                continue
+            self._snap_attached_prim(helper_prim, attached_prim, offset)
+            self._release_prim(stage, prim_path)
+            released_paths.append(prim_path)
 
-        self._snap_attached_prim(helper_prim, attached_prim, self.attached_to_helper)
-        released_path = self.attached_prim_path
-        self._clear_attachment_state(stage, restore_transform=False)
-
-        if self.on_released:
-            self.on_released(released_path)
-        return True
+        for prim_path in released_paths:
+            if self.on_released:
+                self.on_released(prim_path)
+        return bool(released_paths)
 
     def restore_all(self) -> None:
         """Restore all touched prims to their original state and clear all held state."""
@@ -198,10 +237,10 @@ class ContactGripperModel:
         if stage is None:
             return
 
-        self._update_pending_release(stage)
+        self._update_pending_releases(stage)
 
-        if not self.attached_prim_path or not self.helper_prim_path:
-            if not self.pending_release_prim_path:
+        if not self.attached_offsets or not self.helper_prim_path:
+            if not self.pending_releases:
                 self._stop_frame_updates()
             return
 
@@ -209,17 +248,15 @@ class ContactGripperModel:
         if not helper_prim.IsValid():
             return
 
-        attached_prim = stage.GetPrimAtPath(self.attached_prim_path)
-        if not attached_prim.IsValid():
-            carb.log_warn(
-                f"Contact Gripper: attached prim no longer exists: {self.attached_prim_path}"
-            )
-            self.attached_prim_path = ""
-            if not self.pending_release_prim_path:
-                self._stop_frame_updates()
-            return
-
-        self._snap_attached_prim(helper_prim, attached_prim, self.attached_to_helper)
+        for prim_path, offset in list(self.attached_offsets.items()):
+            attached_prim = stage.GetPrimAtPath(prim_path)
+            if not attached_prim.IsValid():
+                carb.log_warn(
+                    f"Contact Gripper: attached prim no longer exists: {prim_path}"
+                )
+                self._forget_prim(prim_path)
+                continue
+            self._snap_attached_prim(helper_prim, attached_prim, offset)
 
     # -------------------------------------------------------------------------
     # Attachment helpers
@@ -255,66 +292,43 @@ class ContactGripperModel:
 
         self._increment_active_holders(candidate_prim)
         self._cancel_pending_release(candidate_path)
-        self.attached_to_helper = self._compute_attach_offset(
-            helper_prim, candidate_prim
-        )
+        offset = self._compute_attach_offset(helper_prim, candidate_prim)
+        self.attached_offsets[candidate_path] = offset
         self._prepare_transform_control(candidate_prim)
         self.touched_prim_paths.add(candidate_path)
-        self.attached_prim_path = candidate_path
 
         if recovery_metadata is not None and "kinematic_enabled" in recovery_metadata:
-            self.restore_kinematic_enabled = bool(
-                recovery_metadata["kinematic_enabled"]
-            )
+            restore_kinematic_enabled = bool(recovery_metadata["kinematic_enabled"])
             self._set_kinematic_enabled(candidate_prim, True)
         else:
-            self.restore_kinematic_enabled = self._set_kinematic_while_held(
-                candidate_prim
-            )
+            restore_kinematic_enabled = self._set_kinematic_while_held(candidate_prim)
+        self.restore_kinematic_by_path[candidate_path] = restore_kinematic_enabled
 
         if candidate_path not in self.original_kinematic_enabled:
-            self.original_kinematic_enabled[candidate_path] = (
-                self.restore_kinematic_enabled
-            )
+            self.original_kinematic_enabled[candidate_path] = restore_kinematic_enabled
 
-        self._snap_attached_prim(helper_prim, candidate_prim, self.attached_to_helper)
+        self._snap_attached_prim(helper_prim, candidate_prim, offset)
         self._start_frame_updates()
 
-    def _clear_attachment_state(
-        self,
-        stage: Usd.Stage,
-        restore_transform: bool,
-    ) -> None:
-        if not self.attached_prim_path:
-            self.attached_prim_path = ""
-            self.attached_to_helper = Gf.Matrix4d(1.0)
-            self.restore_kinematic_enabled = None
+    def _release_prim(self, stage: Usd.Stage, prim_path: str) -> None:
+        restore_kinematic_enabled = self.restore_kinematic_by_path.get(prim_path)
+        self._forget_prim(prim_path)
+
+        released_prim = stage.GetPrimAtPath(prim_path)
+        if not released_prim.IsValid():
             return
+        remaining_holders = self._decrement_active_holders(released_prim)
+        if remaining_holders <= 0:
+            self._schedule_pending_release(released_prim, restore_kinematic_enabled)
 
-        released_prim = stage.GetPrimAtPath(self.attached_prim_path)
-        if released_prim.IsValid():
-            remaining_holders = self._decrement_active_holders(released_prim)
-            if restore_transform:
-                self._restore_original_transform_state(
-                    released_prim,
-                    self.original_xform_states.get(self.attached_prim_path),
-                    self.original_local_transforms.get(self.attached_prim_path),
-                )
-            elif remaining_holders <= 0:
-                self._schedule_pending_release(
-                    released_prim,
-                    self.restore_kinematic_enabled,
-                )
-
-        self.attached_prim_path = ""
-        self.attached_to_helper = Gf.Matrix4d(1.0)
-        self.restore_kinematic_enabled = None
+    def _forget_prim(self, prim_path: str) -> None:
+        self.attached_offsets.pop(prim_path, None)
+        self.restore_kinematic_by_path.pop(prim_path, None)
 
     def _restore_all_touched_objects(self, stage: Usd.Stage) -> None:
         self._stop_frame_updates()
 
-        if self.attached_prim_path:
-            self.touched_prim_paths.add(self.attached_prim_path)
+        self.touched_prim_paths.update(self.attached_offsets)
 
         for prim_path in list(self.touched_prim_paths):
             prim = stage.GetPrimAtPath(prim_path)
@@ -330,12 +344,9 @@ class ContactGripperModel:
             )
             self._clear_recovery_metadata(prim)
 
-        self.attached_prim_path = ""
-        self.attached_to_helper = Gf.Matrix4d(1.0)
-        self.restore_kinematic_enabled = None
-        self.pending_release_prim_path = ""
-        self.pending_release_restore_kinematic_enabled = None
-        self.pending_release_deadline = 0.0
+        self.attached_offsets.clear()
+        self.restore_kinematic_by_path.clear()
+        self.pending_releases.clear()
         self.touched_prim_paths.clear()
         self.original_local_transforms.clear()
         self.original_xform_states.clear()
@@ -348,80 +359,74 @@ class ContactGripperModel:
     def _schedule_pending_release(
         self,
         prim,
-        enabled: bool | None,
+        restore_kinematic_enabled: bool | None,
     ) -> None:
         if prim is None or not prim.IsValid():
             return
-        self.pending_release_prim_path = prim.GetPath().pathString
-        self.pending_release_restore_kinematic_enabled = enabled
-        self.pending_release_deadline = time.monotonic() + _RELEASE_GRACE_S
+        self.pending_releases[prim.GetPath().pathString] = _PendingRelease(
+            deadline=time.monotonic() + _RELEASE_GRACE_S,
+            restore_kinematic_enabled=restore_kinematic_enabled,
+        )
 
     def _cancel_pending_release(self, prim_path: str) -> None:
-        if self.pending_release_prim_path != prim_path:
-            return
-        self.pending_release_prim_path = ""
-        self.pending_release_restore_kinematic_enabled = None
-        self.pending_release_deadline = 0.0
+        self.pending_releases.pop(prim_path, None)
 
-    def _update_pending_release(self, stage: Usd.Stage) -> None:
-        if not self.pending_release_prim_path:
-            return
+    def _update_pending_releases(self, stage: Usd.Stage) -> None:
+        now = time.monotonic()
+        for prim_path, pending in list(self.pending_releases.items()):
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                self._cancel_pending_release(prim_path)
+                continue
 
-        prim = stage.GetPrimAtPath(self.pending_release_prim_path)
-        if not prim.IsValid():
-            self._cancel_pending_release(self.pending_release_prim_path)
-            return
+            metadata = self._get_recovery_metadata(prim)
+            active_holders = int(metadata.get("active_holders", 0)) if metadata else 0
+            if active_holders > 0:
+                self._cancel_pending_release(prim_path)
+                continue
 
-        metadata = self._get_recovery_metadata(prim)
-        active_holders = int(metadata.get("active_holders", 0)) if metadata else 0
-        if active_holders > 0:
-            self._cancel_pending_release(self.pending_release_prim_path)
-            return
+            if now < pending.deadline:
+                continue
 
-        if time.monotonic() < self.pending_release_deadline:
-            return
-
-        self._reset_rigid_body_after_release(
-            prim, self.pending_release_restore_kinematic_enabled
-        )
-        self._cancel_pending_release(self.pending_release_prim_path)
+            self._reset_rigid_body_after_release(
+                prim, pending.restore_kinematic_enabled
+            )
+            self._cancel_pending_release(prim_path)
 
     # -------------------------------------------------------------------------
     # Candidate selection
     # -------------------------------------------------------------------------
 
-    def _find_candidate_prim(
+    def _find_candidate_prims(
         self,
         stage: Usd.Stage,
         helper_prim,
         candidate_paths: list[str],
         exclude_paths: list[str],
-    ):
-        # Two caches for the whole scan, instead of a new one per prim, which
-        # caches nothing. The candidate cache answers "does this prim touch the
-        # helper", the pruning cache "can anything below this prim touch it".
-        candidate_bbox_cache = self._make_bbox_cache()
-        pruning_bbox_cache = self._make_pruning_bbox_cache()
+        limit: int | None,
+    ) -> list:
+        # One cache for the whole scan, instead of a new one per prim, which
+        # caches nothing.
+        bbox_cache = self._make_bbox_cache(stage)
 
-        helper_bounds = self._compute_world_aligned_bounds(
-            helper_prim, candidate_bbox_cache
-        )
+        helper_bounds = self._compute_world_aligned_bounds(helper_prim, bbox_cache)
         if helper_bounds.IsEmpty():
             carb.log_error(
                 "Contact Gripper: helper prim has no world bounds. Use a helper prim with "
-                f"visible geometry or bounded children: {helper_prim.GetPath().pathString}"
+                f"geometry or bounded children: {helper_prim.GetPath().pathString}"
             )
-            return None
+            return []
 
         helper_path = helper_prim.GetPath()
         exclude_patterns = self._normalize_patterns(exclude_paths)
         candidate_patterns = self._normalize_patterns(candidate_paths)
+        found = []
 
-        # The pruning bound covers a prim's whole subtree, so if it does not
-        # touch the helper, nothing inside it can either and the scan skips it,
-        # see _make_pruning_bbox_cache. Prims are still visited in the same
-        # order, so the same one gets returned. A subtree with no bound of its
-        # own, such as a Scope, is never skipped.
+        # A prim's bound covers its whole subtree, so if it does not touch the
+        # helper, nothing inside it can either and the scan skips it. Prims are
+        # still visited in the same order, so the same ones get returned. A
+        # subtree with no bound of its own, such as an empty Scope, is never
+        # skipped.
         it = iter(Usd.PrimRange.Stage(stage))
         for candidate_prim in it:
             candidate_path = candidate_prim.GetPath()
@@ -435,14 +440,27 @@ class ContactGripperModel:
             if candidate_path.HasPrefix(helper_path):
                 it.PruneChildren()
                 continue
+            # A held prim already follows the helper, and so does everything
+            # below it, so none of that may be attached a second time.
+            if candidate_path.pathString in self.attached_offsets:
+                it.PruneChildren()
+                continue
 
+            # An excluded prim takes everything below it along.
             if exclude_patterns and self._matches_patterns(
                 candidate_prim, exclude_patterns
             ):
+                it.PruneChildren()
+                continue
+
+            # An ancestor of a held prim would drag the held prim, and every
+            # sibling still lying elsewhere, along a second time. Its other
+            # children stay candidates, so the subtree is not pruned.
+            if self._holds_descendant_of(candidate_path):
                 continue
 
             subtree_bounds = self._compute_world_aligned_bounds(
-                candidate_prim, pruning_bbox_cache
+                candidate_prim, bbox_cache
             )
             if not subtree_bounds.IsEmpty() and not self._ranges_intersect(
                 helper_bounds, subtree_bounds
@@ -454,12 +472,24 @@ class ContactGripperModel:
                 candidate_prim, candidate_patterns
             ):
                 continue
-            if self._is_attachable_candidate(
-                helper_path, candidate_prim, helper_bounds, candidate_bbox_cache
+            if not self._is_attachable_candidate(
+                helper_path, candidate_prim, helper_bounds, bbox_cache
             ):
-                return candidate_prim
+                continue
 
-        return None
+            found.append(candidate_prim)
+            if limit is not None and len(found) >= limit:
+                break
+            # Descendants follow their parent already.
+            it.PruneChildren()
+
+        return found
+
+    def _holds_descendant_of(self, prim_path: Sdf.Path) -> bool:
+        return any(
+            Sdf.Path(held_path).HasPrefix(prim_path)
+            for held_path in self.attached_offsets
+        )
 
     @staticmethod
     def _normalize_patterns(filters: list[str]) -> list[str]:
@@ -508,35 +538,56 @@ class ContactGripperModel:
         ):
             return False
 
-        candidate_bounds = ContactGripperModel._compute_world_aligned_bounds(
-            candidate_prim, bbox_cache
+        return ContactGripperModel._geometry_touches(
+            candidate_prim, helper_bounds, bbox_cache
         )
-        if candidate_bounds.IsEmpty():
+
+    @staticmethod
+    def _geometry_touches(prim, helper_bounds, bbox_cache) -> bool:
+        """True when a geometry prim at or below the prim overlaps the helper.
+
+        A group's bound is the hull of everything below it, which can span the
+        helper with no geometry anywhere near it, so the hull alone does not
+        count. Hidden geometry below the prim does not count either; only the
+        prim itself may be hidden, so a hidden part named by a filter is still
+        found. Instance proxies are visited so an instanceable asset can be
+        attached by its root.
+        """
+        it = iter(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
+        for descendant in it:
+            if descendant != prim and ContactGripperModel._is_invisible(
+                descendant, bbox_cache.GetTime()
+            ):
+                it.PruneChildren()
+                continue
+            bounds = ContactGripperModel._compute_world_aligned_bounds(
+                descendant, bbox_cache
+            )
+            if bounds.IsEmpty() or not ContactGripperModel._ranges_intersect(
+                helper_bounds, bounds
+            ):
+                it.PruneChildren()
+                continue
+            if UsdGeom.Boundable(descendant):
+                return True
+        return False
+
+    @staticmethod
+    def _is_invisible(prim, time_code: Usd.TimeCode) -> bool:
+        imageable = UsdGeom.Imageable(prim)
+        if not imageable:
             return False
-
-        return ContactGripperModel._ranges_intersect(helper_bounds, candidate_bounds)
-
-    @staticmethod
-    def _make_bbox_cache() -> UsdGeom.BBoxCache:
-        # Extents hints stay off in both caches. A model prim reports its
-        # authored extentsHint as its bound, and an out-of-date hint can be
-        # smaller than the geometry below it, so the scan would skip prims it
-        # should have found.
-        return UsdGeom.BBoxCache(
-            Usd.TimeCode.Default(),
-            includedPurposes=_BOUNDS_PURPOSES,
-            useExtentsHint=False,
-        )
+        return imageable.ComputeVisibility(time_code) == UsdGeom.Tokens.invisible
 
     @staticmethod
-    def _make_pruning_bbox_cache() -> UsdGeom.BBoxCache:
-        # A bound leaves invisible descendants out, while an invisible prim
-        # asked on its own still reports its geometry, so pruning on a normal
-        # bound would skip prims the scan can attach to. Guide prims report an
-        # empty bound either way and are never candidates, so they need no
-        # such treatment.
+    def _make_bbox_cache(stage: Usd.Stage) -> UsdGeom.BBoxCache:
+        # Extents hints stay off. A model prim reports its authored extentsHint
+        # as its bound, and an out-of-date hint can be smaller than the
+        # geometry below it, so the scan would skip prims it should have found.
+        # Visibility is ignored so that a hidden part is still found and a
+        # hidden sensor volume still has a bound.
         return UsdGeom.BBoxCache(
-            Usd.TimeCode.Default(),
+            _current_time_code(stage),
             includedPurposes=_BOUNDS_PURPOSES,
             useExtentsHint=False,
             ignoreVisibility=True,
@@ -565,17 +616,19 @@ class ContactGripperModel:
 
     @staticmethod
     def _compute_attach_offset(helper_prim, attached_prim) -> Gf.Matrix4d:
-        helper_world = omni.usd.get_world_transform_matrix(helper_prim)
-        attached_world = omni.usd.get_world_transform_matrix(attached_prim)
+        time_code = _current_time_code(helper_prim.GetStage())
+        helper_world = omni.usd.get_world_transform_matrix(helper_prim, time_code)
+        attached_world = omni.usd.get_world_transform_matrix(attached_prim, time_code)
         return attached_world * helper_world.GetInverse()
 
     @staticmethod
     def _snap_attached_prim(
         helper_prim, attached_prim, attached_to_helper: Gf.Matrix4d
     ) -> None:
-        helper_world = omni.usd.get_world_transform_matrix(helper_prim)
+        time_code = _current_time_code(helper_prim.GetStage())
+        helper_world = omni.usd.get_world_transform_matrix(helper_prim, time_code)
         target_world = attached_to_helper * helper_world
-        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        xform_cache = UsdGeom.XformCache(time_code)
         current_local = xform_cache.GetLocalTransformation(attached_prim)
         if isinstance(current_local, tuple):
             current_local = current_local[0]
@@ -592,7 +645,7 @@ class ContactGripperModel:
 
     @staticmethod
     def _get_local_transformation(prim) -> Gf.Matrix4d | None:
-        xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        xform_cache = UsdGeom.XformCache(_current_time_code(prim.GetStage()))
         local_transform = xform_cache.GetLocalTransformation(prim)
         if isinstance(local_transform, tuple):
             local_transform = local_transform[0]
@@ -689,10 +742,18 @@ class ContactGripperModel:
 
         ops = []
         for op in ordered_ops:
+            attr = op.GetAttr()
             try:
-                value = op.Get()
+                default_value = attr.Get(Usd.TimeCode.Default())
             except Exception:
-                value = None
+                default_value = None
+            try:
+                time_samples = {
+                    sample_time: attr.Get(sample_time)
+                    for sample_time in attr.GetTimeSamples()
+                }
+            except Exception:
+                time_samples = {}
             op_name = str(op.GetName())
             name_parts = op_name.split(":")
             suffix = ":".join(name_parts[2:]) if len(name_parts) > 2 else ""
@@ -702,13 +763,19 @@ class ContactGripperModel:
                     "precision": op.GetPrecision(),
                     "suffix": suffix,
                     "is_inverse": op.IsInverseOp(),
-                    "value": value,
+                    "default_value": default_value,
+                    "time_samples": time_samples,
                 }
             )
         return {"reset_stack": reset_stack, "ops": ops}
 
     @staticmethod
     def _restore_xform_state(prim, xform_state: dict) -> None:
+        """Recreate each op with its original default value and time samples.
+
+        A one-shot Set() would flatten an animated (conveyor-driven) prim to
+        the single pose it had when grabbed.
+        """
         xformable = UsdGeom.Xformable(prim)
         if not xformable or xform_state is None:
             return
@@ -721,8 +788,12 @@ class ContactGripperModel:
                 opSuffix=op_state["suffix"],
                 isInverseOp=op_state["is_inverse"],
             )
-            if op_state["value"] is not None:
-                op.Set(op_state["value"])
+            attr = op.GetAttr()
+            if op_state["default_value"] is not None:
+                attr.Set(op_state["default_value"])
+            for sample_time, value in op_state["time_samples"].items():
+                if value is not None:
+                    attr.Set(value, sample_time)
             restored_ops.append(op)
         xformable.SetXformOpOrder(
             restored_ops, resetXformStack=xform_state["reset_stack"]

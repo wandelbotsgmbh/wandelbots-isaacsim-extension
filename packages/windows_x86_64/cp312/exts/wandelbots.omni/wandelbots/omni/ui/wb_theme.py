@@ -162,6 +162,14 @@ FIELD_STYLE = {
     **TOOLTIP_STYLE,
 }
 
+# A disabled button must not keep its enabled face - it would invite clicks
+# that do nothing. Both selectors are needed: the frame paints from "Button",
+# the caption from "Button.Label" (see the note above).
+BUTTON_DISABLED_STYLE = {
+    "Button:disabled": {"background_color": NOVAColor.DIVIDER.color},
+    "Button.Label:disabled": {"color": NOVAColor.TEXT_DISABLED.color},
+}
+
 # Default (secondary) button. The caption text is painted by the "Button.Label"
 # selector (Isaac Sim's global default style sets it via "Button.Label", so a
 # "color" under "Button" only colors the frame and is overridden for the label).
@@ -174,6 +182,7 @@ BUTTON_STYLE = {
     },
     "Button.Label": {"color": NOVAColor.TEXT_PRIMARY_CONTRAST.color},
     "Button:hovered": {"background_color": NOVAColor.SURFACE_OVERLAY_HOVER.color},
+    **BUTTON_DISABLED_STYLE,
     **TOOLTIP_STYLE,
 }
 
@@ -186,6 +195,7 @@ BUTTON_PRIMARY_STYLE = {
     },
     "Button.Label": {"color": NOVAColor.TEXT_PRIMARY_CONTRAST.color},
     "Button:hovered": {"background_color": NOVAColor.PRIMARY_DARK.color},
+    **BUTTON_DISABLED_STYLE,
     **TOOLTIP_STYLE,
 }
 

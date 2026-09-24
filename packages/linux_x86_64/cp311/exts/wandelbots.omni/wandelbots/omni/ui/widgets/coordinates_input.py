@@ -14,6 +14,8 @@ class CoordinateInputFieldModel:
     min: float = float("-inf")
     max: float = float("inf")
     step: float = 0.1
+    # Digits after the decimal point; None keeps the omni.ui default.
+    precision: int | None = None
 
 
 class CoordinatesInput:
@@ -62,6 +64,11 @@ class CoordinatesInput:
                             alignment=ui.Alignment.CENTER,
                         )
 
+                    precision_kwargs = (
+                        {}
+                        if field.precision is None
+                        else {"precision": field.precision}
+                    )
                     ui.FloatDrag(
                         model=field.model,
                         name=f"Field_{field.label}",
@@ -76,4 +83,5 @@ class CoordinatesInput:
                         tooltip_fn=lambda t=field.tooltip: build_tooltip(t),
                         enabled=not self._readonly,
                         style={"border_radius": 0, **TOOLTIP_RESET},
+                        **precision_kwargs,
                     )

@@ -104,7 +104,7 @@ _SETUP_PANE_MAX_PERCENT = 85.0
 CARB_REACHABILITY_PREVIEW_COLOR = (
     "/persistent/exts/wandelbots.omni/reachability/preview_color"
 )
-_DEFAULT_PREVIEW_COLOR = [0.4, 1.0, 0.4, 0.15]
+DEFAULT_PREVIEW_COLOR = [0.4, 1.0, 0.4, 0.15]
 
 
 def _extract_manufacturer(model_name: str) -> str:
@@ -1772,7 +1772,7 @@ class ReachabilityWindow:
         hex_color = settings.get_as_string(CARB_REACHABILITY_PREVIEW_COLOR)
         if hex_color:
             return hex_to_float_array(hex_color)
-        return list(_DEFAULT_PREVIEW_COLOR)
+        return list(DEFAULT_PREVIEW_COLOR)
 
     @staticmethod
     def _save_preview_color(color: list[float]) -> None:

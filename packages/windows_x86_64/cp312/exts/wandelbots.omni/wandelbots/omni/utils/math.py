@@ -222,6 +222,27 @@ def compose_rotvecs(rotvec1: list[float], rotvec2: list[float]) -> list[float]:
     return matrix_to_rotvec(R_composed)
 
 
+def rotvec_angle_between(rotvec1: list[float], rotvec2: list[float]) -> float:
+    """Angle in rad between two orientations given as rotation vectors.
+
+    The angle of the rotation that takes the first orientation to the second,
+    which is what "how far apart are these two orientations" means. Comparing
+    the vectors component by component does not answer that: the same
+    orientation has representations that differ by 2*pi in length.
+
+    Args:
+        rotvec1: First rotation vector [rx, ry, rz]
+        rotvec2: Second rotation vector [rx, ry, rz]
+
+    Returns:
+        Angle in radians, in [0, pi].
+    """
+    R1 = rotvec_to_matrix(*rotvec1)
+    R2 = rotvec_to_matrix(*rotvec2)
+    relative = matrix_to_rotvec(R1.T @ R2)
+    return float(np.linalg.norm(relative))
+
+
 def nova_pose_to_scene_matrix(pose: list[float], stage_meters_per_unit: float = 1.0):
     """Convert a Nova pose to omni.ui.scene.Matrix44.
 

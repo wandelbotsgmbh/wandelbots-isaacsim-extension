@@ -1,18 +1,18 @@
 """The RRT-Connect settings sent for collision-free planning.
 
-The API client still carries the superseded ``adaptive_step_size`` and
-``max_step_size`` fields and serialises their defaults whether or not they are
-set. Sending a fixed ``step_size`` on its own therefore puts an adaptive
-setting and a fixed one in the same request, which leaves the server free to
-pick either. These tests pin the payload instead of the constructor call, since
-that ambiguity is only visible once the model is serialised.
+These pin the serialised payload, not the constructor call: the client also
+emits the superseded adaptive fields, and only the payload shows whether they
+contradict the fixed step.
 """
 
 from __future__ import annotations
 
 import omni.kit.test
 
-from wandelbots.omni.utils.kinematics import build_collision_free_algorithm
+from wandelbots.omni.utils.kinematics import (
+    DEFAULT_STEP_SIZE,
+    build_collision_free_algorithm,
+)
 
 
 class TestCollisionFreeAlgorithm(omni.kit.test.AsyncTestCase):
@@ -21,6 +21,11 @@ class TestCollisionFreeAlgorithm(omni.kit.test.AsyncTestCase):
 
         self.assertNotIn("step_size", payload)
         self.assertTrue(payload["adaptive_step_size"])
+
+    async def test_the_field_starts_at_the_size_the_search_would_use(self):
+        payload = build_collision_free_algorithm(10000).to_dict()
+
+        self.assertAlmostEqual(DEFAULT_STEP_SIZE, payload["max_step_size"])
 
     async def test_a_step_size_is_not_contradicted_by_the_superseded_fields(self):
         payload = build_collision_free_algorithm(10000, 0.05).to_dict()

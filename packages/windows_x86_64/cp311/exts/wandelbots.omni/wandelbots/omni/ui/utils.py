@@ -12,6 +12,20 @@ def get_icon(icon_name: str) -> str:
     return path
 
 
+def copy_to_clipboard(text: str) -> None:
+    """Put ``text`` on the system clipboard, never raising into a click handler.
+
+    omni.kit.clipboard is imported lazily because it pulls in a Qt/platform
+    backend that is absent in headless test runs.
+    """
+    try:
+        import omni.kit.clipboard
+
+        omni.kit.clipboard.copy(text)
+    except Exception as e:
+        carb.log_warn(f"Copy to clipboard failed: {e}")
+
+
 # Global "UI busy" gate. Custom-handler widgets (the IconButton click, the
 # CollapsibleSection toggle) consult this to ignore input while a blocking
 # operation runs, because omni.ui's ``enabled`` does not reliably gate widgets

@@ -20,7 +20,7 @@ from wandelbots.omni.ui.widgets import (
     PrimPickerDialogProperties,
 )
 from wandelbots.omni.ui.utils import defer_call, weak_cb
-from wandelbots.omni.ui.widgets.form_row import form_row
+from wandelbots.omni.ui.widgets.form_row import form_row, message_row
 from wandelbots.omni.ui.widgets.instance_picker import InstancePicker
 from wandelbots.omni.ui.wb_theme import (
     TOOLTIP_RESET,
@@ -96,27 +96,19 @@ class CollisionLoadSetupForm:
 
                 instance = self._instance_picker.instance
                 if instance is None:
-                    with ui.HStack(height=0):
-                        ui.Spacer(width=FORM_SIDE_MARGIN)
-                        ui.Label(
-                            "Select a NOVA instance to load a collision setup.",
-                            word_wrap=True,
-                            height=40,
-                            style={"color": NOVAColor.TEXT_SECONDARY.color},
-                        )
-                        ui.Spacer(width=FORM_SIDE_MARGIN)
+                    message_row(
+                        "Select a NOVA instance to load a collision setup.",
+                        NOVAColor.TEXT_SECONDARY.color,
+                        height=40,
+                    )
                     return
 
                 if self._cell_id is None:
-                    with ui.HStack(height=0):
-                        ui.Spacer(width=FORM_SIDE_MARGIN)
-                        ui.Label(
-                            f"Instance '{instance.display_name}' has no cells available.",
-                            word_wrap=True,
-                            height=40,
-                            style={"color": NOVAColor.TEXT_SECONDARY.color},
-                        )
-                        ui.Spacer(width=FORM_SIDE_MARGIN)
+                    message_row(
+                        f"Instance '{instance.display_name}' has no cells available.",
+                        NOVAColor.TEXT_SECONDARY.color,
+                        height=40,
+                    )
                     return
 
                 with form_row(

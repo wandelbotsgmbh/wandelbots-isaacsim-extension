@@ -18,18 +18,10 @@ from wandelbots.omni.ui.wb_theme import (
 from wandelbots.omni.ui.tool.ghost_teaching.widgets.joint_config_selector import (
     JointConfigSelector,
 )
+from wandelbots.omni.ui.utils import copy_to_clipboard
 from wandelbots.omni.utils.kinematics import joint_config_signs
 
 _DETAIL_ROW_HEIGHT = 28
-
-
-def _copy_to_clipboard(text: str) -> None:
-    try:
-        import omni.kit.clipboard
-
-        omni.kit.clipboard.copy(text)
-    except Exception:
-        pass
 
 
 def build_tcp_detail(pose: WSPose, tcp_label: str) -> None:
@@ -75,7 +67,7 @@ def build_tcp_detail(pose: WSPose, tcp_label: str) -> None:
                 image_width=12,
                 image_height=12,
                 tooltip_fn=lambda: build_tooltip("Copy pose to clipboard"),
-                clicked_fn=lambda t=pose_text: _copy_to_clipboard(t),
+                clicked_fn=lambda t=pose_text: copy_to_clipboard(t),
                 style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
             )
 
@@ -129,7 +121,7 @@ def build_joint_config_detail(
                 image_width=12,
                 image_height=12,
                 tooltip_fn=lambda: build_tooltip("Copy joint config to clipboard"),
-                clicked_fn=lambda t=text: _copy_to_clipboard(t),
+                clicked_fn=lambda t=text: copy_to_clipboard(t),
                 style={**ICON_BTN_STYLE, **TOOLTIP_RESET},
             )
 

@@ -1,5 +1,6 @@
 import asyncio
 import carb.events
+import carb.settings
 from typing import Any, Callable, cast
 import weakref
 from attr import dataclass
@@ -17,6 +18,7 @@ from .widgets.ghost_object_selector import GhostObjectSelector
 from omni.kit.async_engine import run_coroutine
 import omni.kit.menu.utils
 from wandelbots.omni.utils.teaching import (
+    CARB_SETTINGS_PREFIX,
     GhostObjectUtils,
     GhostObject,
     make_ghost_tcp_matcher,
@@ -40,6 +42,7 @@ from wandelbots.omni.ui.colors import NOVAColor
 from .widgets.ghost_teaching_settings_window import (
     GhostTeachingSettingsWindow,
     SettingsModel,
+    apply_ghost_teaching_carb_settings,
     load_ghost_teaching_carb_settings,
     save_ghost_teaching_carb_settings,
 )
@@ -112,6 +115,20 @@ class GhostTeachingToolBar:
         self._settings_model.property_changed_fn = (
             lambda prop, old, new, obj=weakref.proxy(self): (
                 obj._on_settings_property_changed(prop, old, new)
+            )
+        )
+
+        # The Preferences page writes carb directly. Without this the next move
+        # would use the old model, and the next save would write it back.
+        # One flag for both directions: carb fires synchronously for every
+        # key a save writes, changed or not.
+        self._syncing_carb_settings = False
+        self._carb_settings_sub = (
+            carb.settings.get_settings().subscribe_to_tree_change_events(
+                CARB_SETTINGS_PREFIX,
+                lambda _tree, _changed, _event, weak_self=weakref.ref(self): (
+                    weak_self()._on_carb_settings_changed() if weak_self() else None
+                ),
             )
         )
 
@@ -863,6 +880,25 @@ class GhostTeachingToolBar:
         self._tool_bar.dock_in(viewport_window, ui.DockPosition.BOTTOM, 0.1)
         viewport_window.dock_tab_bar_visible = False
 
+    def _on_carb_settings_changed(self):
+        if self._syncing_carb_settings:
+            # Our own save is writing. Reading carb back now would revert the
+            # field the save has not reached yet.
+            return
+        self._syncing_carb_settings = True
+        try:
+            apply_ghost_teaching_carb_settings(self.settings)
+        finally:
+            self._syncing_carb_settings = False
+
+    def destroy(self):
+        self.hide()
+        if self._carb_settings_sub is not None:
+            carb.settings.get_settings().unsubscribe_to_change_events(
+                self._carb_settings_sub
+            )
+            self._carb_settings_sub = None
+
     def _on_settings_property_changed(self, property_name: str, old: Any, new: Any):
         carb.log_verbose(f"Settings changed: {property_name} from {old} to {new}")
         if "select_ghost_object_in_scene" == property_name:
@@ -872,7 +908,15 @@ class GhostTeachingToolBar:
                 )
         if property_name == "motion_command":
             self._deferred_build_ui()
-        save_ghost_teaching_carb_settings(self._settings_model)
+        # A change that came from carb is already there; saving the whole
+        # model now would overwrite fields carb has not been read for yet.
+        if self._syncing_carb_settings:
+            return
+        self._syncing_carb_settings = True
+        try:
+            save_ghost_teaching_carb_settings(self._settings_model)
+        finally:
+            self._syncing_carb_settings = False
 
     @property
     def visible(self):
@@ -896,7 +940,7 @@ class ToolBarSubscription:
     def __del__(self):
         # Need to explicitly hide the toolbar because the docking causes issues on deletion
         if self.toolbar:
-            self.toolbar.hide()
+            self.toolbar.destroy()
 
         # Dropping the menu items is not enough we need to explicitly remove them
         omni.kit.menu.utils.remove_menu_items(self.menu_subscriptions, WINDOW_MENU_ROOT)

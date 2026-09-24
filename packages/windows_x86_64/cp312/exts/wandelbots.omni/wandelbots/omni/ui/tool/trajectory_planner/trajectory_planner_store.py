@@ -6,10 +6,7 @@ import carb
 from pydantic import BaseModel, Field, field_validator
 
 from wandelbots.omni.utils.database import BaseStore
-
-#: Smallest step RRT-Connect can still extend its trees with; below this the
-#: search stops making progress. Shared with the settings section.
-CF_STEP_SIZE_MIN = 0.01
+from wandelbots.omni.utils.kinematics import clamp_step_size
 
 
 # Fields unique to BlendingPosition (BlendingAuto only ever has
@@ -104,10 +101,9 @@ class TrajectoryPlannerConfig(BaseModel):
     @classmethod
     def _clamp_cf_step_size(cls, value: float | None) -> float | None:
         # A config edited by hand or written by an older build can hold a value
-        # the settings field would never have allowed.
-        if value is not None and value < CF_STEP_SIZE_MIN:
-            return CF_STEP_SIZE_MIN
-        return value
+        # the settings field would never have allowed. A zero step in
+        # particular leaves the search extending by nothing.
+        return clamp_step_size(value)
 
     # Whether to run collision-free planning. Independent of collision_setup: a
     # collision scene can be active while normal (motion-type) planning is used.

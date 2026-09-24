@@ -10,6 +10,7 @@ from wandelbots.omni.utils.math import (
     pose_to_matrix,
     matrix_to_pose,
     compose_rotvecs,
+    rotvec_angle_between,
     nova_pose_to_scene_matrix,
 )
 import omni.ui.scene as sc
@@ -352,3 +353,38 @@ class TestMathUtils(omni.kit.test.AsyncTestCase):
         # Rotation 90 deg around Z
         self.assertAlmostEqual(result[0], 0.0, places=5)
         self.assertAlmostEqual(result[1], 1.0, places=5)
+
+
+class TestRotvecAngleBetween(omni.kit.test.AsyncTestCase):
+    """How far apart two orientations are, as the angle that separates them.
+
+    Subtracting the vectors does not answer this: the same orientation has
+    representations whose lengths differ by 2*pi, and around the wrap the
+    componentwise difference is huge while the orientations are identical.
+    """
+
+    async def test_the_same_orientation_is_zero(self):
+        self.assertAlmostEqual(
+            0.0, rotvec_angle_between([0.1, -0.2, 0.3], [0.1, -0.2, 0.3]), places=9
+        )
+
+    async def test_a_quarter_turn_about_z(self):
+        self.assertAlmostEqual(
+            math.pi / 2,
+            rotvec_angle_between([0, 0, 0], [0, 0, math.pi / 2]),
+            places=6,
+        )
+
+    async def test_it_does_not_depend_on_the_order(self):
+        a = [0.3, 0.0, 0.2]
+        b = [0.0, -0.4, 0.1]
+        self.assertAlmostEqual(
+            rotvec_angle_between(a, b), rotvec_angle_between(b, a), places=9
+        )
+
+    async def test_a_full_turn_is_the_same_orientation(self):
+        self.assertAlmostEqual(
+            0.0,
+            rotvec_angle_between([0, 0, 0], [0, 0, 2 * math.pi]),
+            places=6,
+        )

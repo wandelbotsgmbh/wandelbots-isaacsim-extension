@@ -559,10 +559,15 @@ class GhostObjectUtils:
                 f"Failed to find flange TCP for ghost object {ghost_prim.GetPath()} with TCP {tcp_prim.GetPath()}."
             )
             return None
-        return PrimUtils.get_relative_prim_pose(
+        offset = PrimUtils.get_relative_prim_pose(
             flange_tcp.GetPrimPath().pathString,
             tcp_prim.GetPrimPath().pathString,
         )
+        carb.log_info(
+            f"Ghost object {ghost_prim.GetPath()} TCP offset: flange={flange_tcp.GetPrimPath()}, "
+            f"tcp={tcp_prim.GetPath()}, offset={offset.pose if offset else None}"
+        )
+        return offset
 
     def create_ghost_object_pose_watcher(
         ghost_object_prim: Usd.Prim, pose_changed_fn: Callable[[Pose], None]

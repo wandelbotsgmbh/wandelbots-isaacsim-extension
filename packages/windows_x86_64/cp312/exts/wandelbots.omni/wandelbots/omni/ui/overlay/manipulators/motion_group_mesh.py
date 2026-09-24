@@ -165,6 +165,11 @@ class MotionGroupMesh:
                         dh_parameters=self._motion_group_description.dh_parameters,
                         dh_unit_to_stage_unit_factor=self._unit_factor,
                         joint_values_rad=self._joint_values,
+                        kinematic_chain_offset=getattr(
+                            self._motion_group_description,
+                            "kinematic_chain_offset",
+                            None,
+                        ),
                     )
                 ]
                 link_transform = self._motion_group_transform * fk_transforms[link_idx]
@@ -233,6 +238,9 @@ class MotionGroupMesh:
                 dh_parameters=self._motion_group_description.dh_parameters,
                 dh_unit_to_stage_unit_factor=self._unit_factor,
                 joint_values_rad=self._joint_values,
+                kinematic_chain_offset=getattr(
+                    self._motion_group_description, "kinematic_chain_offset", None
+                ),
             )
         ]
 

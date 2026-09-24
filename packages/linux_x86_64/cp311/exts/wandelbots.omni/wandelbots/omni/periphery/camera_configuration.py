@@ -1,5 +1,111 @@
+import io
 from typing import Literal, Optional, Annotated
+
+import numpy as np
+from PIL import Image
 from pydantic import BaseModel, Field, ConfigDict, model_validator
+
+#: The twelve edges of a box, as index pairs into the eight corners produced
+#: by `project_box_corners` (x minor, then y, then z).
+BOX_EDGES = (
+    (0, 1),
+    (0, 2),
+    (0, 4),
+    (1, 3),
+    (1, 5),
+    (2, 3),
+    (2, 6),
+    (3, 7),
+    (4, 5),
+    (4, 6),
+    (5, 7),
+    (6, 7),
+)
+
+
+def draw_wireframe(draw, corners: list[tuple[float, float]], colour) -> None:
+    """Draw the twelve edges of a projected box, or nothing.
+
+    `project_box_corners` answers an empty list for a box the camera cannot
+    see properly. Drawing has to accept that rather than index into it: an
+    IndexError here turns one awkward box into a 500 for the whole capture.
+    """
+    if not corners:
+        return
+    for first, second in BOX_EDGES:
+        draw.line([corners[first], corners[second]], fill=colour, width=2)
+
+
+def project_box_corners(
+    bbox: tuple[float, float, float, float, float, float],
+    local_to_world,
+    view,
+    projection,
+    resolution: tuple[int, int],
+) -> list[tuple[float, float]]:
+    """The eight corners of a 3D box, as pixel coordinates.
+
+    `bbox` is the axis-aligned extent in the object's own frame and
+    `local_to_world` places it, both in stage units - the same units the view
+    matrix works in. Returns an empty list when any corner falls behind the
+    camera: dividing by a negative w mirrors the box back into frame, which
+    draws a convincing but wrong wireframe.
+
+    Kept here rather than beside the drawing code so the arithmetic can be
+    tested without Kit.
+    """
+    x_min, y_min, z_min, x_max, y_max, z_max = bbox
+    corners = [
+        np.array([x, y, z, 1.0])
+        for x in (x_min, x_max)
+        for y in (y_min, y_max)
+        for z in (z_min, z_max)
+    ]
+    # Row-vector convention: USD puts the translation in the last ROW, so a
+    # point multiplies from the left.
+    world = [corner @ np.asarray(local_to_world) for corner in corners]
+    camera = [point @ np.asarray(view) for point in world]
+    clip = [point @ np.asarray(projection) for point in camera]
+
+    if any(point[3] <= 0 for point in clip):
+        return []
+
+    width, height = resolution
+    points = []
+    for point in clip:
+        ndc = point[:3] / point[3]
+        points.append(((ndc[0] + 1) * width / 2, (1 - ndc[1]) * height / 2))
+    return points
+
+
+#: The formats a capture can be returned in, besides "json". PNG is lossless
+#: and is what every existing caller gets; jpeg is a fraction of the size on a
+#: rendered frame, which matters when the capture is polled rather than taken
+#: once.
+IMAGE_RESULT_TYPES = ("rgb_png", "jpeg")
+
+ImageResultType = Literal["rgb_png", "jpeg"]
+
+_MEDIA_TYPES = {"rgb_png": "image/png", "jpeg": "image/jpeg"}
+
+
+def encode_image(image: Image.Image, result_type: str) -> tuple[bytes, str]:
+    """Encode a captured frame, returning the bytes and their media type.
+
+    Kept here rather than in the router so it can be tested without Kit.
+    """
+    if result_type not in _MEDIA_TYPES:
+        raise ValueError(
+            f"{result_type!r} is not an image format; expected one of {IMAGE_RESULT_TYPES}"
+        )
+    buffer = io.BytesIO()
+    if result_type == "jpeg":
+        # The annotators hand back RGBA and jpeg has nowhere to put the alpha
+        # channel, so it is dropped rather than letting PIL raise.
+        image.convert("RGB").save(buffer, format="JPEG", quality=90)
+    else:
+        image.save(buffer, format="PNG")
+    return buffer.getvalue(), _MEDIA_TYPES[result_type]
 
 
 # ------------------------- datatypes for camera -------------------------
@@ -103,6 +209,39 @@ class VirtualCameraConfiguration(BaseModel):
         ...,
         description="Camera parameters for the configurable camera. If None is given, then default parameters from the scene are used",
     )
+
+
+# Depth is the only value here that carries a length unit; the intrinsics are
+# pixels either way. Naming the unit in the request and echoing it in the answer
+# keeps the next caller who wants metres from needing a new contract.
+DepthUnit = Literal["mm", "m"]
+DEPTH_UNIT_FROM_MILLIMETRES: dict[str, float] = {"mm": 1.0, "m": 0.001}
+
+
+# Both dimensions are pinned, so a generated client gets a 3x3 matrix rather
+# than three rows of arbitrary length.
+IntrinsicsRow = Annotated[list[float], Field(min_length=3, max_length=3)]
+IntrinsicsMatrix = Annotated[list[IntrinsicsRow], Field(min_length=3, max_length=3)]
+
+
+class DepthCaptureResult(BaseModel):
+    depth: list[list[float]] = Field(
+        ...,
+        description="Per-pixel Euclidean range (distance from the camera to the "
+        "surface along the viewing ray), in the unit named by `unit`. Pixels "
+        "without geometry (infinite range) are returned as 0.0.",
+    )
+    camera_intrinsics: IntrinsicsMatrix = Field(
+        ...,
+        description="3x3 camera intrinsics (K) matrix [[fx, 0, cx], [0, fy, cy], "
+        "[0, 0, 1]] in pixels, computed for the requested capture resolution.",
+    )
+    unit: DepthUnit = Field(
+        "mm",
+        description="Length unit the depth values are expressed in.",
+    )
+
+    model_config = ConfigDict(title="Depth Capture Result")
 
 
 class PointCloud(BaseModel):

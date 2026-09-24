@@ -825,14 +825,23 @@ class ReachabilityService:
         stream_config = config.motion_stream_configuration
         api_client = stream_config.get_api_client()
 
-        description = await asyncio.wait_for(
-            wb_v2.MotionGroupApi(api_client).get_motion_group_description(
-                cell=stream_config.cell,
-                controller=stream_config.controller,
-                motion_group=stream_config.motion_group,
-            ),
-            timeout=5.0,
-        )
+        try:
+            description = await asyncio.wait_for(
+                wb_v2.MotionGroupApi(api_client).get_motion_group_description(
+                    cell=stream_config.cell,
+                    controller=stream_config.controller,
+                    motion_group=stream_config.motion_group,
+                ),
+                timeout=5.0,
+            )
+        except Exception:
+            # Close the client on failure — the session object that would
+            # normally own (and later close) it is never created on this path.
+            try:
+                await api_client.close()
+            except Exception:
+                pass
+            raise
         model_name = description.motion_group_model
 
         joint_position_limits = None

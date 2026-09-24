@@ -6,7 +6,9 @@ from wandelbots.omni.ui.colors import NOVAColor
 from wandelbots.omni.ui.wb_theme import TOOLTIP_RESET, build_tooltip
 from wandelbots.omni.ui.utils import get_icon, is_ui_busy
 
-_SIZE = 20
+# Edge length of the chip. Public so a row can leave a matching gap where a
+# chip would sit, keeping stacked rows the same width.
+ICON_BUTTON_SIZE = 20
 _ICON_SIZE = 16
 
 # Chip look via a scoped "Button" selector so the translucent fill stays on the
@@ -20,10 +22,10 @@ _CHIP_STYLE = {
         "border_color": NOVAColor.SURFACE_OVERLAY_HOVER.color,
         "border_width": 0,
         "border_radius": 4,
-        # Pin padding so the button's natural size is EXACTLY _SIZE (16px image +
+        # Pin padding so the button's natural size is EXACTLY ICON_BUTTON_SIZE (16px image +
         # 2px each side). Default button padding would overflow the 20px box and,
         # since omni.ui treats row height as preferred, stretch the whole header.
-        "padding": (_SIZE - _ICON_SIZE) // 2,
+        "padding": (ICON_BUTTON_SIZE - _ICON_SIZE) // 2,
         "margin": 0,
     },
     "Button.Image": {"color": 0x8FFFFFFF},
@@ -49,8 +51,8 @@ def IconButton(
     The button handles clicks, tooltip and hover directly, which is reliable in
     this build (an alpha-0 overlay button stacked in a ``ui.ZStack`` is not).
     """
-    kwargs.setdefault("width", _SIZE)
-    kwargs.setdefault("height", _SIZE)
+    kwargs.setdefault("width", ICON_BUTTON_SIZE)
+    kwargs.setdefault("height", ICON_BUTTON_SIZE)
 
     button_kwargs = {
         "text": "",

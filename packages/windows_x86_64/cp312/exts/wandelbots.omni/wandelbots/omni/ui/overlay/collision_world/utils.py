@@ -2,6 +2,7 @@ from wandelbots.omni.core.collision.utils import CARB_SETTINGS_PREFIX
 import carb.settings
 
 CARB_OVERLAY_COLOR = f"{CARB_SETTINGS_PREFIX}/overlay_color"
+DEFAULT_OVERLAY_COLOR = "#A936DA16"
 
 
 def get_overlay_color(settings: carb.settings.ISettings | None = None) -> str:
@@ -9,7 +10,7 @@ def get_overlay_color(settings: carb.settings.ISettings | None = None) -> str:
         settings = carb.settings.get_settings()
     setting_color = settings.get_as_string(CARB_OVERLAY_COLOR)
     if not setting_color or setting_color == "":
-        return "#A936DA16"
+        return DEFAULT_OVERLAY_COLOR
     return setting_color
 
 

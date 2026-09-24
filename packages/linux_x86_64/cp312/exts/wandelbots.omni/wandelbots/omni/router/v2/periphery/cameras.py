@@ -5,11 +5,15 @@ from fastapi import Response, status, Query, Body, Depends
 
 from pydantic import RootModel
 from wandelbots.omni.periphery.camera_configuration import (
+    DepthCaptureResult,
+    DepthUnit,
     PointCloud,
     BoundingBox2D,
     BoundingBox3D,
     SemanticSegmentationData,
     InstanceSegmentationData,
+    ImageResultType,
+    encode_image,
 )
 
 from fastapi import APIRouter
@@ -19,10 +23,10 @@ from wandelbots.omni.periphery import (
     get_camera_capture_service,
 )
 import omni.kit.viewport.utility
-import io
 from PIL import Image
 
 import isaacsim.core.utils.stage as stage_utils
+from pxr import UsdGeom
 
 cameras_router = APIRouter(prefix="/periphery/cameras", tags=["Periphery (Camera)"])
 
@@ -31,11 +35,35 @@ CameraCaptureServiceDep = Annotated[
 ]
 
 ImageCaptureResultOption = Annotated[
-    Literal["json", "rgb_png"],
+    Literal["json", "rgb_png", "jpeg"],
     Query(
         ...,
-        description="Format which will be used to represent the captured data",
+        description=(
+            "Format which will be used to represent the captured data. "
+            "'json' carries the measurements; 'rgb_png' and 'jpeg' are "
+            "renderings to look at, and jpeg is lossy."
+        ),
     ),
+]
+
+#: Added to a route that already answered json, so it defaults to json: an
+#: existing caller must not have to learn a new query parameter.
+OptionalImageCaptureResultOption = Annotated[
+    Literal["json", "rgb_png", "jpeg"],
+    Query(
+        description=(
+            "Format which will be used to represent the captured data. "
+            "'json' carries the measurements; 'rgb_png' and 'jpeg' draw them "
+            "onto the captured frame."
+        ),
+    ),
+]
+
+#: For captures that have no json form: a colour frame as JSON would be a
+#: megabytes-long array of pixels with no consumer.
+ImageOnlyResultOption = Annotated[
+    ImageResultType,
+    Query(description="Image format the frame is returned in."),
 ]
 
 
@@ -53,21 +81,45 @@ class ImageResolution:
         return self.width, self.height
 
 
-def to_png_response(image: Image) -> Response:
-    image_bytes = io.BytesIO()
-    image.save(image_bytes, format="PNG")
-    return Response(content=image_bytes.getvalue(), media_type="image/png")
+def to_image_response(image: Image, result_type: str = "rgb_png") -> Response:
+    payload, media_type = encode_image(image, result_type)
+    return Response(content=payload, media_type=media_type)
 
 
 async def find_camera_or_raise(
-    camera_prim_path: str = Query(..., description="Path of camera prim"),
+    camera_prim_path: str | None = Query(
+        None,
+        description=(
+            "Path of camera prim. Leave it out to capture through the active "
+            "viewport camera."
+        ),
+    ),
 ) -> str:
+    """The camera to capture through, defaulting to the active viewport one.
+
+    A caller that just wants a picture of what the scene is showing should not
+    have to look up a prim path first - the viewport already knows which camera
+    that is. An explicit path still wins, and is still checked against the
+    stage.
     """
-    Fetches the camera defined
-    """
+    if not camera_prim_path:
+        viewport = omni.kit.viewport.utility.get_active_viewport()
+        if viewport is None:
+            raise HTTPException(
+                404,
+                "No camera_prim_path given and no active viewport to take one from",
+            )
+        camera_prim_path = viewport.camera_path.pathString
+
     stage = stage_utils.get_current_stage()
-    if not stage.GetPrimAtPath(camera_prim_path).IsValid():
+    prim = stage.GetPrimAtPath(camera_prim_path)
+    if not prim.IsValid():
         raise HTTPException(404, f"{camera_prim_path} not found in stage")
+    # Existing but not a camera is its own mistake: the capture would otherwise
+    # fail much later, inside the renderer, naming neither the path nor what
+    # was wrong with it.
+    if not UsdGeom.Camera(prim):
+        raise HTTPException(404, f"{camera_prim_path} is not a camera prim")
     return camera_prim_path
 
 
@@ -165,7 +217,8 @@ async def set_active_camera(
         200: {
             "description": "Successfully fetched color image from camera",
             "content": {
-                "image/png": {"schema": {"type": "string", "format": "binary"}}
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {"description": "Camera not configured"},
@@ -176,15 +229,20 @@ async def capture_color_image(
     camera_path: CameraPath,
     camera_service: CameraCaptureServiceDep,
     resolution: ImageResolution = Depends(),
+    result_type: ImageOnlyResultOption = "rgb_png",
 ) -> Response:
     """
     Retrieves the raw RGB color image from the camera's point of view.
 
-    - Returns a PNG image captured from the current camera.
+    - Returns the frame as PNG (lossless, the default) or as jpeg, which is a
+      fraction of the size when the camera is polled rather than sampled once.
+    - There is no json form: a colour frame as an array of pixels would be
+      megabytes with nothing to read it.
     """
     try:
-        return to_png_response(
-            await camera_service.get_color_image(camera_path, resolution.tuple)
+        return to_image_response(
+            await camera_service.get_color_image(camera_path, resolution.tuple),
+            result_type,
         )
 
     except Exception as e:
@@ -202,6 +260,7 @@ async def capture_color_image(
             "description": "Successfully fetched normals data",
             "content": {
                 "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {"description": "Camera not configured"},
@@ -216,12 +275,17 @@ async def capture_normals_image(
 ) -> list[list[list[float]]]:
     """
     Retrieves surface normal data from the camera's captured image.
+
+    - Pixels without geometry carry no normal and are returned as 0.0 in the
+      json format, since JSON cannot represent the non-finite value the
+      annotator puts there.
     """
     try:
         if result_type == "json":
             return await camera_service.get_normals(camera_path, resolution.tuple)
-        return to_png_response(
-            await camera_service.get_normals_image(camera_path, resolution.tuple)
+        return to_image_response(
+            await camera_service.get_normals_image(camera_path, resolution.tuple),
+            result_type,
         )
 
     except Exception as e:
@@ -238,7 +302,9 @@ async def capture_normals_image(
         200: {
             "description": "Successfully fetched depth data",
             "content": {
+                "application/json": {},
                 "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {"description": "Camera not configured"},
@@ -250,22 +316,45 @@ async def capture_depth_image(
     camera_path: CameraPath,
     camera_service: CameraCaptureServiceDep,
     resolution: ImageResolution = Depends(),
-    near: float = Query(1e-5, description="Near clipping plane value."),
-    far: float = Query(100.0, description="Far clipping plane value."),
-) -> list[list[float]]:
+    near: float | None = Query(
+        None,
+        description=(
+            "Near end of the PNG colour ramp, in stage units. Leave it out to "
+            "fit the ramp to the frame."
+        ),
+    ),
+    far: float | None = Query(
+        None,
+        description=(
+            "Far end of the PNG colour ramp, in stage units. Leave it out to "
+            "fit the ramp to the frame."
+        ),
+    ),
+    unit: DepthUnit = Query(
+        "mm", description="Length unit for the returned depth values."
+    ),
+) -> DepthCaptureResult:
     """
     Retrieves depth (distance) data from the captured image.
 
-    - Pixels without geometry (infinite distance) are returned as 0.0 in the json format.
+    - In the json format, returns the per-pixel Euclidean range in the
+      requested `unit` (pixels without geometry are returned as 0.0), the unit
+      it is expressed in, and the camera intrinsics in pixels for the requested
+      resolution, so callers can convert the range to planar depth themselves.
+    - In the rgb_png format, returns a colorized visualization instead; a PNG
+      carries neither intrinsics nor a unit.
     """
     try:
         if result_type == "json":
-            return await camera_service.get_distance(camera_path, resolution.tuple)
+            return await camera_service.get_depth_capture(
+                camera_path, resolution.tuple, unit
+            )
 
-        return to_png_response(
+        return to_image_response(
             await camera_service.get_distance_image(
                 camera_path, resolution.tuple, near, far
-            )
+            ),
+            result_type,
         )
 
     except Exception as e:
@@ -301,6 +390,8 @@ async def capture_pointcloud(
 
     - Resulting data format depends on stage units (e.g., mm, cm, m).
     - `downscale_factor` determines compression level: 1.0 = full data, <1.0 = compressed.
+    - Points and normals that came out non-finite are returned as zero vectors,
+      since JSON cannot represent them.
     """
     try:
         return await camera_service.get_pointcloud(
@@ -328,6 +419,7 @@ async def capture_pointcloud(
             "content": {
                 "application/json": {},
                 "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {
@@ -361,13 +453,14 @@ async def capture_boundingbox_2d(
                 resolution=resolution.tuple,
             )
 
-        return to_png_response(
+        return to_image_response(
             await camera_service.get_bounding_boxes_image(
                 camera_path,
                 box_type="2D",
                 labels=object_class,
                 resolution=resolution.tuple,
-            )
+            ),
+            result_type,
         )
 
     except Exception as e:
@@ -384,7 +477,11 @@ async def capture_boundingbox_2d(
     responses={
         200: {
             "description": "Successfully fetched 3D bounding box data",
-            "content": {"application/json": {}},
+            "content": {
+                "application/json": {},
+                "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+            },
         },
         404: {"description": "Camera not configured"},
         500: {"description": "Could not fetch 3D bounding box data"},
@@ -398,10 +495,14 @@ async def capture_boundingbox_3d(
         description="Classes of objects to include in the 3D bounding box output. If not specified, returns all labeled instances.",
     ),
     resolution: ImageResolution = Depends(),
+    result_type: OptionalImageCaptureResultOption = "json",
 ) -> list[BoundingBox3D]:
     """
     Retrieves 3D bounding box data for specified object classes from the scene.
     Use the `set_semantic_label` endpoint to assign labels to scene entities.
+
+    - The json format carries the box extents and the transform that places
+      them; the image formats draw the wireframes onto the captured frame.
     """
     try:
         object_class = object_class or ["all"]
@@ -411,6 +512,16 @@ async def capture_boundingbox_3d(
             labels=object_class,
             resolution=resolution.tuple,
         )
+        if result_type != "json":
+            return to_image_response(
+                await camera_service.get_bounding_boxes_image(
+                    camera_path,
+                    box_type="3D",
+                    labels=object_class,
+                    resolution=resolution.tuple,
+                ),
+                result_type,
+            )
         return bbox_3ds
     except Exception as e:
         raise HTTPException(
@@ -428,6 +539,7 @@ async def capture_boundingbox_3d(
             "content": {
                 "application/json": {},
                 "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {"description": "Camera not configured"},
@@ -458,13 +570,14 @@ async def capture_instance_segmentation(
                 labels=object_class,
             )
 
-        return to_png_response(
+        return to_image_response(
             await camera_service.get_segmentation_image(
                 camera_path,
                 resolution.tuple,
                 segmentation_type="instance",
                 labels=object_class,
-            )
+            ),
+            result_type,
         )
 
     except Exception as e:
@@ -482,6 +595,7 @@ async def capture_instance_segmentation(
             "description": "Successfully fetched semantic segmentation data",
             "content": {
                 "image/png": {"schema": {"type": "string", "format": "binary"}},
+                "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
             },
         },
         404: {"description": "Camera not configured"},
@@ -515,13 +629,14 @@ async def capture_semantic_segmentation(
                 labels=object_class,
             )
 
-        return to_png_response(
+        return to_image_response(
             await camera_service.get_segmentation_image(
                 camera_path,
                 resolution.tuple,
                 segmentation_type="semantic",
                 labels=object_class,
-            )
+            ),
+            result_type,
         )
     except Exception as e:
         raise HTTPException(

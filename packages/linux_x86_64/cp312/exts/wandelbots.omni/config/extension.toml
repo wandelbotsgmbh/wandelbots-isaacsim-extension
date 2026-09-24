@@ -5,7 +5,7 @@ order = 1000      # Make sure all .dlls are loaded before this extension
 [package]
 target.python = ["cp312"]
 target.platform = ["linux-x86_64"]
-version = "2.69.5"
+version = "2.74.0"
 category = "Simulation"
 title = "Wandelbots NOVA"
 description = "Simulate your robotics cell running on Wandelbots NOVA."
@@ -69,10 +69,15 @@ writeTarget.python = true
 "omni.kit.async_engine" = {}
 "omni.kit.viewport.utility" = {}
 "omni.kit.viewport.window" = {}
+# GPU forward-kinematics sweep for the reachability envelope (numpy fallback
+# when Warp or a CUDA device is missing).
+"omni.warp.core" = {}
 "omni.kit.widget.stage" = {}
 "omni.kit.window.filepicker" = {}
 "omni.kit.window.popup_dialog" = {}
 "omni.kit.window.property" = {}
+# The Preferences page is registered into this window.
+"omni.kit.window.preferences" = {}
 
 [settings]
 # External joint stream ("Sync with simulation"): reply with the measured
@@ -84,7 +89,6 @@ exts."omni.services.transport.server.http".ssl.ssl_cert_reqs = 1     #CERT_OPTIO
 exts."omni.services.transport.server.http".ssl.ssl_ciphers = "TLSv1"
 exts."omni.services.transport.server.http".ssl.ssl_keyfile = ""
 exts."omni.services.transport.server.http".ssl.ssl_certfile = ""
-
 
 # Uncomment this line to define the port for the APIs
 # - HTTP has default port 8211 but can be 8011 when 8211 is not available
@@ -112,3 +116,9 @@ timeout = 3600
 [[test]]
 name = "unit"
 pythonTests.include = ["wandelbots.omni.tests.unit.*"]
+# Kit fails a test run on any logged error. The subscription tests drive the
+# real failure path on purpose, so the one message their fake raises is
+# excluded; anything else logged as an error still fails the run.
+stdoutFailPatterns.exclude = [
+    "*Failed to subscribe to fleet.>: subscribe refused*",
+]

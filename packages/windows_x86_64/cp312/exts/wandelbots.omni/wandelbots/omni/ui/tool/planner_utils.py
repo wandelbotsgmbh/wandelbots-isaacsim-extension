@@ -176,6 +176,7 @@ async def plan_motion_group_move_to(
     global_limits: wb_models.LimitSet,
     motion_commands: list[MotionCommand],
     cycle_time: int = 8,
+    mounting_override: wb_models.Pose | None = None,
 ) -> wb_models.JointTrajectory:
     carb.log_verbose("Planning path...")
 
@@ -195,6 +196,11 @@ async def plan_motion_group_move_to(
             tcp_offset=tcp_offset.pose,
             cycle_time=cycle_time,
             global_limits=global_limits,
+            mounting=(
+                mounting_override
+                if mounting_override is not None
+                else motion_group_description.mounting
+            ),
         )
         carb.log_info(f"Planning from {start_joints} to ...")
         for motion_command in motion_commands:
@@ -503,6 +509,63 @@ async def plan_trajectory(
 
         planning_api = wb.TrajectoryPlanningApi(api_client)
         return await _call_plan_trajectory(planning_api, cell, request)
+
+
+async def get_current_joint_position(
+    api_configuration: ApiConfiguration,
+    cell: str,
+    controller: str,
+    motion_group: str,
+) -> list[float]:
+    """Where the robot stands right now, in joint space."""
+    async with get_api_client_from_config(api_configuration) as api_client:
+        state = await wb.MotionGroupApi(api_client).get_current_motion_group_state(
+            cell=cell,
+            controller=controller,
+            motion_group=motion_group,
+        )
+        return list(state.joint_position)
+
+
+async def check_plannable_from_current_state(
+    api_configuration: ApiConfiguration,
+    cell: str,
+    controller: str,
+    motion_group: str,
+    target_joint_position: list[float],
+    tcp_name: str | None = None,
+) -> PlanResult:
+    """Ask NOVA whether a point-to-point move to the target can be planned.
+
+    A joint PTP to an already solved configuration, so a failure is about the
+    move itself - the joint limits or the velocity/acceleration profile - and
+    not about a path the caller never asked for. A cartesian probe can fail on
+    the way while the target is perfectly fine, which would be a misleading
+    answer to "can the robot go here".
+
+    Collision setups are not attached: plan-trajectory ignores them, so this is
+    a kinematic check, not a collision check.
+    """
+    start_joint_position = await get_current_joint_position(
+        api_configuration, cell, controller, motion_group
+    )
+    command = wb_models.MotionCommand(
+        path=wb_models.MotionCommandPath(
+            wb_models.PathJointPTP(
+                target_joint_position=target_joint_position,
+                path_definition_name="PathJointPTP",
+            )
+        )
+    )
+    return await plan_trajectory(
+        api_configuration,
+        cell=cell,
+        controller=controller,
+        motion_group=motion_group,
+        motion_commands=[command],
+        start_joint_position=start_joint_position,
+        tcp_name=tcp_name,
+    )
 
 
 @dataclass(frozen=True)

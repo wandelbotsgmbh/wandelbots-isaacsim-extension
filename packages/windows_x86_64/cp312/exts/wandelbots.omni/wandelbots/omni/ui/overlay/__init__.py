@@ -14,6 +14,10 @@ from .robot_overlay.robot_overlay import (
     RobotOverlay,
     ROBOT_OVERLAY_NAME,
 )
+from .reachability_envelope.reachability_envelope_overlay import (
+    ReachabilityEnvelopeOverlay,
+    REACHABILITY_ENVELOPE_OVERLAY_NAME,
+)
 
 __all__ = [
     "get_overlay_registry",
@@ -24,4 +28,6 @@ __all__ = [
     "CollisionWorldOverlay",
     "RobotOverlay",
     "ROBOT_OVERLAY_NAME",
+    "ReachabilityEnvelopeOverlay",
+    "REACHABILITY_ENVELOPE_OVERLAY_NAME",
 ]

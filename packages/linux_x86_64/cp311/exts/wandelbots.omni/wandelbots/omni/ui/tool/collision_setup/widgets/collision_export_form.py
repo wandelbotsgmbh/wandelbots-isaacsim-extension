@@ -27,7 +27,7 @@ from wandelbots.omni.ui.widgets import (
 )
 from wandelbots.omni.ui.utils import defer_call, weak_cb
 from wandelbots.omni.ui.widgets.collapsible_section import CollapsibleSection
-from wandelbots.omni.ui.widgets.form_row import form_row
+from wandelbots.omni.ui.widgets.form_row import form_row, message_row
 from wandelbots.omni.ui.widgets.instance_picker import InstancePicker
 from wandelbots.omni.ui.widgets.styled_checkbox import styled_checkbox
 from wandelbots.omni.ui.wb_theme import (
@@ -186,14 +186,7 @@ class CollisionExportForm:
 
     def _build_input_error_labels(self):
         for error in self._input_errors:
-            with ui.HStack(height=0):
-                ui.Spacer(width=FORM_SIDE_MARGIN)
-                ui.Label(
-                    error,
-                    word_wrap=True,
-                    style={"color": NOVAColor.ERROR_MAIN.color},
-                )
-                ui.Spacer(width=FORM_SIDE_MARGIN)
+            message_row(error, NOVAColor.ERROR_MAIN.color)
 
     def _build_action_row(self):
         if self.exporting:

@@ -3,7 +3,7 @@
     "info": {
         "title": "Wandelbots NOVA - Isaac Sim Extension API",
         "description": "This extension enables seamless connection between NVIDIA Isaac Sim\u2122 and Wandelbots NOVA. Wandelbots NOVA simplifies the programming of industrial robots and cobots from multiple brands, allowing users to easily configure various robot models and teach them through an intuitive interface or by leveraging their preferred programming languages via APIs. Start programming your favorite robot brands like ABB, FANUC, KUKA, Staeubli, Techman, Universal Robots and Yaskawa in an Omniverse simulation scene, benefitting from its realistic behaviour.\n\nThe API provides comprehensive capabilities including:\n- **Stage Management**: Load, save, and manipulate USD stages\n- **Prims & Scene Graph**: Create and modify scene primitives and hierarchies\n- **Cameras**: Configure virtual cameras and viewports for visualization\n- **Motion Groups**: Define and control robot motion groups and kinematics\n- **Teaching & Trajectory**: Record, playback, and execute robot trajectories\n- **Collision Detection**: Manage collision worlds and colliders for safe path planning\n- **Nucleus Integration**: Access Omniverse Nucleus storage and collaboration features\n- **UI Control**: Interact with the Isaac Sim user interface programmatically",
-        "version": "2.69.5"
+        "version": "2.74.0"
     },
     "paths": {
         "/stage/scene": {
@@ -396,6 +396,51 @@
                     },
                     "500": {
                         "description": "Internal server error: Unable to set pose for the prim"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/prims/poses/create": {
+            "post": {
+                "tags": [
+                    "Prims"
+                ],
+                "summary": "Create Pose",
+                "description": "Creates a standalone pose prim (Pose_XX, with the trajectory gizmo and\n``wandelbots.type = POSE`` custom data) under ``parent_path`` and places it at\nthe given WS pose. Reuses the shared Create Pose logic; not tied to ghost\nteaching.",
+                "operationId": "create_pose",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CreatePoseRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Pose prim created successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/CreatePoseResponse"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Unable to create pose prim"
                     },
                     "422": {
                         "description": "Validation Error",
@@ -1117,19 +1162,42 @@
                     "Periphery (Camera)"
                 ],
                 "summary": "Capture Color Image",
-                "description": "Retrieves the raw RGB color image from the camera's point of view.\n\n- Returns a PNG image captured from the current camera.",
+                "description": "Retrieves the raw RGB color image from the camera's point of view.\n\n- Returns the frame as PNG (lossless, the default) or as jpeg, which is a\n  fraction of the size when the camera is polled rather than sampled once.\n- There is no json form: a colour frame as an array of pixels would be\n  megabytes with nothing to read it.",
                 "operationId": "capture_color_image",
                 "parameters": [
                     {
+                        "name": "result_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "rgb_png",
+                                "jpeg"
+                            ],
+                            "type": "string",
+                            "description": "Image format the frame is returned in.",
+                            "default": "rgb_png",
+                            "title": "Result Type"
+                        },
+                        "description": "Image format the frame is returned in."
+                    },
+                    {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1165,6 +1233,12 @@
                                     "type": "string",
                                     "format": "binary"
                                 }
+                            },
+                            "image/jpeg": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
                             }
                         }
                     },
@@ -1193,7 +1267,7 @@
                     "Periphery (Camera)"
                 ],
                 "summary": "Capture Normals Image",
-                "description": "Retrieves surface normal data from the camera's captured image.",
+                "description": "Retrieves surface normal data from the camera's captured image.\n\n- Pixels without geometry carry no normal and are returned as 0.0 in the\n  json format, since JSON cannot represent the non-finite value the\n  annotator puts there.",
                 "operationId": "capture_normals_image",
                 "parameters": [
                     {
@@ -1203,24 +1277,32 @@
                         "schema": {
                             "enum": [
                                 "json",
-                                "rgb_png"
+                                "rgb_png",
+                                "jpeg"
                             ],
                             "type": "string",
-                            "description": "Format which will be used to represent the captured data",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy.",
                             "title": "Result Type"
                         },
-                        "description": "Format which will be used to represent the captured data"
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy."
                     },
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1271,6 +1353,12 @@
                                     "type": "string",
                                     "format": "binary"
                                 }
+                            },
+                            "image/jpeg": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
                             }
                         }
                     },
@@ -1299,7 +1387,7 @@
                     "Periphery (Camera)"
                 ],
                 "summary": "Capture Depth Image",
-                "description": "Retrieves depth (distance) data from the captured image.\n\n- Pixels without geometry (infinite distance) are returned as 0.0 in the json format.",
+                "description": "Retrieves depth (distance) data from the captured image.\n\n- In the json format, returns the per-pixel Euclidean range in the\n  requested `unit` (pixels without geometry are returned as 0.0), the unit\n  it is expressed in, and the camera intrinsics in pixels for the requested\n  resolution, so callers can convert the range to planar depth themselves.\n- In the rgb_png format, returns a colorized visualization instead; a PNG\n  carries neither intrinsics nor a unit.",
                 "operationId": "capture_depth_image",
                 "parameters": [
                     {
@@ -1309,48 +1397,84 @@
                         "schema": {
                             "enum": [
                                 "json",
-                                "rgb_png"
+                                "rgb_png",
+                                "jpeg"
                             ],
                             "type": "string",
-                            "description": "Format which will be used to represent the captured data",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy.",
                             "title": "Result Type"
                         },
-                        "description": "Format which will be used to represent the captured data"
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy."
                     },
                     {
                         "name": "near",
                         "in": "query",
                         "required": false,
                         "schema": {
-                            "type": "number",
-                            "description": "Near clipping plane value.",
-                            "default": 1e-05,
+                            "anyOf": [
+                                {
+                                    "type": "number"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Near end of the PNG colour ramp, in stage units. Leave it out to fit the ramp to the frame.",
                             "title": "Near"
                         },
-                        "description": "Near clipping plane value."
+                        "description": "Near end of the PNG colour ramp, in stage units. Leave it out to fit the ramp to the frame."
                     },
                     {
                         "name": "far",
                         "in": "query",
                         "required": false,
                         "schema": {
-                            "type": "number",
-                            "description": "Far clipping plane value.",
-                            "default": 100.0,
+                            "anyOf": [
+                                {
+                                    "type": "number"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Far end of the PNG colour ramp, in stage units. Leave it out to fit the ramp to the frame.",
                             "title": "Far"
                         },
-                        "description": "Far clipping plane value."
+                        "description": "Far end of the PNG colour ramp, in stage units. Leave it out to fit the ramp to the frame."
+                    },
+                    {
+                        "name": "unit",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "mm",
+                                "m"
+                            ],
+                            "type": "string",
+                            "description": "Length unit for the returned depth values.",
+                            "default": "mm",
+                            "title": "Unit"
+                        },
+                        "description": "Length unit for the returned depth values."
                     },
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1383,17 +1507,16 @@
                         "content": {
                             "application/json": {
                                 "schema": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "number"
-                                        }
-                                    },
-                                    "title": "Response Capture Depth Image"
+                                    "$ref": "#/components/schemas/DepthCaptureResult"
                                 }
                             },
                             "image/png": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            },
+                            "image/jpeg": {
                                 "schema": {
                                     "type": "string",
                                     "format": "binary"
@@ -1426,7 +1549,7 @@
                     "Periphery (Camera)"
                 ],
                 "summary": "Capture Pointcloud",
-                "description": "Retrieves a point cloud from the camera's captured image.\n\n- Resulting data format depends on stage units (e.g., mm, cm, m).\n- `downscale_factor` determines compression level: 1.0 = full data, <1.0 = compressed.",
+                "description": "Retrieves a point cloud from the camera's captured image.\n\n- Resulting data format depends on stage units (e.g., mm, cm, m).\n- `downscale_factor` determines compression level: 1.0 = full data, <1.0 = compressed.\n- Points and normals that came out non-finite are returned as zero vectors,\n  since JSON cannot represent them.",
                 "operationId": "capture_pointcloud",
                 "parameters": [
                     {
@@ -1444,13 +1567,20 @@
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1516,13 +1646,14 @@
                         "schema": {
                             "enum": [
                                 "json",
-                                "rgb_png"
+                                "rgb_png",
+                                "jpeg"
                             ],
                             "type": "string",
-                            "description": "Format which will be used to represent the captured data",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy.",
                             "title": "Result Type"
                         },
-                        "description": "Format which will be used to represent the captured data"
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy."
                     },
                     {
                         "name": "object_class",
@@ -1541,13 +1672,20 @@
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1592,6 +1730,12 @@
                                     "type": "string",
                                     "format": "binary"
                                 }
+                            },
+                            "image/jpeg": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
                             }
                         }
                     },
@@ -1620,7 +1764,7 @@
                     "Periphery (Camera)"
                 ],
                 "summary": "Capture Boundingbox 3D",
-                "description": "Retrieves 3D bounding box data for specified object classes from the scene.\nUse the `set_semantic_label` endpoint to assign labels to scene entities.",
+                "description": "Retrieves 3D bounding box data for specified object classes from the scene.\nUse the `set_semantic_label` endpoint to assign labels to scene entities.\n\n- The json format carries the box extents and the transform that places\n  them; the image formats draw the wireframes onto the captured frame.",
                 "operationId": "capture_boundingbox_3d",
                 "parameters": [
                     {
@@ -1638,15 +1782,39 @@
                         "description": "Classes of objects to include in the 3D bounding box output. If not specified, returns all labeled instances."
                     },
                     {
+                        "name": "result_type",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "enum": [
+                                "json",
+                                "rgb_png",
+                                "jpeg"
+                            ],
+                            "type": "string",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' draw them onto the captured frame.",
+                            "default": "json",
+                            "title": "Result Type"
+                        },
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' draw them onto the captured frame."
+                    },
+                    {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1684,6 +1852,18 @@
                                         "$ref": "#/components/schemas/BoundingBox3D"
                                     },
                                     "title": "Response Capture Boundingbox 3D"
+                                }
+                            },
+                            "image/png": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            },
+                            "image/jpeg": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
                                 }
                             }
                         }
@@ -1723,13 +1903,14 @@
                         "schema": {
                             "enum": [
                                 "json",
-                                "rgb_png"
+                                "rgb_png",
+                                "jpeg"
                             ],
                             "type": "string",
-                            "description": "Format which will be used to represent the captured data",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy.",
                             "title": "Result Type"
                         },
-                        "description": "Format which will be used to represent the captured data"
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy."
                     },
                     {
                         "name": "object_class",
@@ -1748,13 +1929,20 @@
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1791,6 +1979,12 @@
                                 }
                             },
                             "image/png": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            },
+                            "image/jpeg": {
                                 "schema": {
                                     "type": "string",
                                     "format": "binary"
@@ -1833,13 +2027,14 @@
                         "schema": {
                             "enum": [
                                 "json",
-                                "rgb_png"
+                                "rgb_png",
+                                "jpeg"
                             ],
                             "type": "string",
-                            "description": "Format which will be used to represent the captured data",
+                            "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy.",
                             "title": "Result Type"
                         },
-                        "description": "Format which will be used to represent the captured data"
+                        "description": "Format which will be used to represent the captured data. 'json' carries the measurements; 'rgb_png' and 'jpeg' are renderings to look at, and jpeg is lossy."
                     },
                     {
                         "name": "object_class",
@@ -1858,13 +2053,20 @@
                     {
                         "name": "camera_prim_path",
                         "in": "query",
-                        "required": true,
+                        "required": false,
                         "schema": {
-                            "type": "string",
-                            "description": "Path of camera prim",
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "description": "Path of camera prim. Leave it out to capture through the active viewport camera.",
                             "title": "Camera Prim Path"
                         },
-                        "description": "Path of camera prim"
+                        "description": "Path of camera prim. Leave it out to capture through the active viewport camera."
                     },
                     {
                         "name": "width",
@@ -1901,6 +2103,12 @@
                                 }
                             },
                             "image/png": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            },
+                            "image/jpeg": {
                                 "schema": {
                                     "type": "string",
                                     "format": "binary"
@@ -3661,6 +3869,39 @@
                 ],
                 "title": "CreateGhostObject"
             },
+            "CreatePoseRequest": {
+                "properties": {
+                    "parent_path": {
+                        "type": "string",
+                        "title": "Parent Path",
+                        "description": "Parent prim path under which the pose prim is created",
+                        "default": "/World/poses"
+                    },
+                    "pose": {
+                        "$ref": "#/components/schemas/WSPose",
+                        "description": "Pose to place the created prim at, WS 6D (mm, radians)"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "pose"
+                ],
+                "title": "CreatePoseRequest"
+            },
+            "CreatePoseResponse": {
+                "properties": {
+                    "prim_path": {
+                        "type": "string",
+                        "title": "Prim Path",
+                        "description": "Prim path of the created pose"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "prim_path"
+                ],
+                "title": "CreatePoseResponse"
+            },
             "CustomPrim": {
                 "properties": {
                     "type": {
@@ -3725,6 +3966,52 @@
                     "height"
                 ],
                 "title": "Cylinder"
+            },
+            "DepthCaptureResult": {
+                "properties": {
+                    "depth": {
+                        "items": {
+                            "items": {
+                                "type": "number"
+                            },
+                            "type": "array"
+                        },
+                        "type": "array",
+                        "title": "Depth",
+                        "description": "Per-pixel Euclidean range (distance from the camera to the surface along the viewing ray), in the unit named by `unit`. Pixels without geometry (infinite range) are returned as 0.0."
+                    },
+                    "camera_intrinsics": {
+                        "items": {
+                            "items": {
+                                "type": "number"
+                            },
+                            "type": "array",
+                            "maxItems": 3,
+                            "minItems": 3
+                        },
+                        "type": "array",
+                        "maxItems": 3,
+                        "minItems": 3,
+                        "title": "Camera Intrinsics",
+                        "description": "3x3 camera intrinsics (K) matrix [[fx, 0, cx], [0, fy, cy], [0, 0, 1]] in pixels, computed for the requested capture resolution."
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": [
+                            "mm",
+                            "m"
+                        ],
+                        "title": "Unit",
+                        "description": "Length unit the depth values are expressed in.",
+                        "default": "mm"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "depth",
+                    "camera_intrinsics"
+                ],
+                "title": "Depth Capture Result"
             },
             "EntraIDCredentials": {
                 "properties": {

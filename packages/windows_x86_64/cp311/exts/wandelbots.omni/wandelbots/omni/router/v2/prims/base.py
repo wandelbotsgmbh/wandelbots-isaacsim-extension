@@ -100,6 +100,55 @@ async def update_pose(
         raise HTTPException(500, f"Unable to set pose for the prim: {e}")
 
 
+class CreatePoseRequest(BaseModel):
+    parent_path: str = Field(
+        "/World/poses",
+        description="Parent prim path under which the pose prim is created",
+    )
+    pose: WSPose = Field(
+        ...,
+        description="Pose to place the created prim at, WS 6D (mm, radians)",
+    )
+
+
+class CreatePoseResponse(BaseModel):
+    prim_path: str = Field(..., description="Prim path of the created pose")
+
+
+@prims_router.post(
+    path="/poses/create",
+    status_code=status.HTTP_201_CREATED,
+    operation_id="create_pose",
+    response_model=CreatePoseResponse,
+    responses={
+        201: {"description": "Pose prim created successfully"},
+        500: {"description": "Unable to create pose prim"},
+    },
+)
+async def create_pose(body: CreatePoseRequest) -> CreatePoseResponse:
+    """
+    Creates a standalone pose prim (Pose_XX, with the trajectory gizmo and
+    ``wandelbots.type = POSE`` custom data) under ``parent_path`` and places it at
+    the given WS pose. Reuses the shared Create Pose logic; not tied to ghost
+    teaching.
+    """
+    # Imported lazily so the router module has no import-time dependency on the UI
+    # tool package.
+    from wandelbots.omni.ui.tool.trajectory_planner.pose_utils import create_pose_prim
+
+    try:
+        stage = omni.usd.get_context().get_stage()
+        prim_path = create_pose_prim(stage, parent_path=body.parent_path)
+        if not prim_path:
+            raise HTTPException(500, "Could not create pose prim")
+        PrimUtils.set_prim_pose(prim_path=prim_path, input_pose=body.pose)
+        return CreatePoseResponse(prim_path=prim_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Unable to create pose prim: {e}")
+
+
 @prims_router.get(
     path="/poses/relative",
     operation_id="get_relative_pose",

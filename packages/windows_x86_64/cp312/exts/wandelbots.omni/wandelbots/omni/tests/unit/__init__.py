@@ -5,8 +5,28 @@ from .test_joint_index_order import (
     TestJointIndicesInMotionGroupOrder,
     TestJointPositionsInMotionGroupOrder,
 )
+from .test_settings_catalog import (
+    TestClassifySetting,
+    TestCollectForeignSettings,
+    TestCollectSettings,
+    TestDuplicateKeys,
+    TestSettingConstraints,
+    TestFlattenSettings,
+    TestGroupByExtension,
+    TestGroupTitle,
+    TestIsHexColor,
+    TestIsSecret,
+    TestReadableWords,
+    TestSplitExtensionPath,
+)
+from .test_ghost_teaching_settings import (
+    TestApplyGhostTeachingCarbSettings,
+    TestGhostTeachingToolBarFollowsCarb,
+    TestRegisterSettingDefaults,
+)
 from .test_prim_utils import TestPrimUtils
-from .test_math_utils import TestMathUtils
+from .test_math_utils import TestMathUtils, TestRotvecAngleBetween
+from .test_base_pose_to_world import TestBasePoseToWorld
 from .test_stage_discovery import (
     TestStageDiscovery,
     TestStageDiscoveryHostNormalization,
@@ -15,7 +35,11 @@ from .test_stage_discovery import (
 )
 from .test_authored_geometry import TestExpandColliderPrims
 from .test_connection_ownership import TestNormalizeHost, TestOwnsConnection
-from .test_contact_gripper import TestContactGripperCandidateScan
+from .test_contact_gripper import (
+    TestContactGripperAttachAll,
+    TestContactGripperCandidateScan,
+    TestContactGripperOverlapRules,
+)
 from .test_collider_shells import TestColliderShells
 from .test_collision_free_algorithm import TestCollisionFreeAlgorithm
 from .test_collision_export_service import (
@@ -65,6 +89,37 @@ from .test_trajectory_planner_orchestrator_helpers import (
     TestNovaConfigPayload,
 )
 from .test_reachability_service import TestCheckSingleModelCollisionGrouping
+from .test_envelope_service import (
+    TestComputeEnvelope,
+    TestComputeOrientedEnvelope,
+    TestEnvelopeRequestFrame,
+    TestFirstReachablePoint,
+    TestGradeMargins,
+    TestIkProbeEncoding,
+    TestSampleJointSpace,
+    TestVoxelize,
+)
+from .test_envelope_orientation import TestRotvecMatches
+from .test_envelope_point_size import TestVoxelPointPixels
+from .test_envelope_visibility import (
+    TestEnvelopeDensity,
+    TestEnvelopeMounting,
+    TestEnvelopeReset,
+    TestEnvelopeVisibilitySwitches,
+)
+from .test_reachability_envelope_window import (
+    TestAdoptedTcpIndex,
+    TestPoseVectorsMatch,
+    TestTcpIndexFor,
+)
+from .test_reachability_envelope_indicators import (
+    TestEnvelopeIsWanted,
+    TestFormatTcpPose,
+    TestMotionChip,
+    TestStateChip,
+    TestTransformAttribute,
+    TestXformOpCarriesRotation,
+)
 from .test_trajectory_planner_ik_service import TestIKService, TestIKResult
 from .test_trajectory_planner_planning_service import (
     TestParsePlanTrajectoryError,
@@ -83,9 +138,13 @@ from .test_planning_orchestrator import (
     TestFailedPoseIndex,
     TestMarkPlanningFailure,
 )
+from .test_encode_image import TestEncodeImage
+from .test_project_box_corners import TestDrawWireframe, TestProjectBoxCorners
 from .test_camera_capture_service import (
     TestCameraCaptureDataHandling,
+    TestColorize3DBoundingBoxes,
     TestCameraCaptureRetry,
+    TestDepthColourRamp,
 )
 from .test_ik_manager import TestIKManager
 from .test_nucleus_service import (
@@ -93,6 +152,18 @@ from .test_nucleus_service import (
     TestNucleusServerRoundTrip,
 )
 from .test_pose_model import TestPoseItem, TestPoseModel
+from .test_move_to_diagnostics import (
+    TestTargetJointPosition,
+    TestTargetTcpPose,
+    TestTcpReached,
+    TestTcpResiduals,
+    TestMaxJointResidual,
+    TestSceneFollowed,
+)
+from .test_pose_selection_resolution import (
+    TestResolvePosePrimPath,
+    TestDeepestPoseAncestor,
+)
 from .test_ghost_mesh_cache import (
     TestGhostMeshCache,
     TestGhostMeshRepair,
@@ -130,14 +201,50 @@ from .test_stage_resync_cache import (
     TestArticulationCacheResync,
     TestMotionGroupArticulationResync,
 )
+from .test_payload_properties import (
+    TestCombineBodies,
+    TestBodyInFrame,
+    TestPlausibilityWarnings,
+    TestComputeStagePayloadProperties,
+)
+from .test_payload_store import TestPayloadStore
+from .test_payload_calculator_window import (
+    TestDefaultReferencePrim,
+    TestStaleResultsAreDropped,
+    TestPayloadCalculatorWindow,
+    TestPayloadValueRows,
+)
+from .test_nats_subscription_cleanup import (
+    TestConnectReleasesUnusableConnections,
+    TestDisconnectReleasesEverything,
+    TestReconnectingClientsAreClosed,
+)
 
 
 __all__ = [
+    "TestConnectReleasesUnusableConnections",
+    "TestDisconnectReleasesEverything",
+    "TestReconnectingClientsAreClosed",
     "TestAuthoredArticulationRoot",
     "TestJointIndicesInMotionGroupOrder",
     "TestJointPositionsInMotionGroupOrder",
     "TestStopTimelineWithTheStreams",
     "TestPrimUtils",
+    "TestClassifySetting",
+    "TestDuplicateKeys",
+    "TestSettingConstraints",
+    "TestCollectForeignSettings",
+    "TestCollectSettings",
+    "TestFlattenSettings",
+    "TestIsSecret",
+    "TestGroupByExtension",
+    "TestGroupTitle",
+    "TestIsHexColor",
+    "TestSplitExtensionPath",
+    "TestReadableWords",
+    "TestApplyGhostTeachingCarbSettings",
+    "TestGhostTeachingToolBarFollowsCarb",
+    "TestRegisterSettingDefaults",
     "TestCollapsibleSection",
     "TestCollectAllGroups",
     "TestPresetConfiguration",
@@ -155,13 +262,17 @@ __all__ = [
     "TestReadChain",
     "TestReadFlangeFrame",
     "TestMathUtils",
+    "TestRotvecAngleBetween",
+    "TestBasePoseToWorld",
     "TestStageDiscovery",
     "TestStageDiscoveryHostNormalization",
     "TestRobotPrimResolution",
     "TestStalePrimPaths",
     "TestNormalizeHost",
     "TestOwnsConnection",
+    "TestContactGripperAttachAll",
     "TestContactGripperCandidateScan",
+    "TestContactGripperOverlapRules",
     "TestExpandColliderPrims",
     "TestColliderShells",
     "TestCollisionFreeAlgorithm",
@@ -195,6 +306,20 @@ __all__ = [
     "TestSpeedsToColors",
     "TestNovaConfigPayload",
     "TestCheckSingleModelCollisionGrouping",
+    "TestComputeEnvelope",
+    "TestComputeOrientedEnvelope",
+    "TestEnvelopeRequestFrame",
+    "TestFirstReachablePoint",
+    "TestGradeMargins",
+    "TestIkProbeEncoding",
+    "TestSampleJointSpace",
+    "TestVoxelize",
+    "TestEnvelopeIsWanted",
+    "TestFormatTcpPose",
+    "TestMotionChip",
+    "TestStateChip",
+    "TestTransformAttribute",
+    "TestXformOpCarriesRotation",
     "TestIKService",
     "TestIKResult",
     "TestParsePlanTrajectoryError",
@@ -211,12 +336,34 @@ __all__ = [
     "TestFailedPoseIndex",
     "TestMarkPlanningFailure",
     "TestCameraCaptureDataHandling",
+    "TestColorize3DBoundingBoxes",
     "TestCameraCaptureRetry",
+    "TestDepthColourRamp",
+    "TestEncodeImage",
+    "TestDrawWireframe",
+    "TestProjectBoxCorners",
     "TestIKManager",
     "TestAddNucleusServerWiring",
     "TestNucleusServerRoundTrip",
     "TestPoseItem",
     "TestPoseModel",
+    "TestRotvecMatches",
+    "TestEnvelopeVisibilitySwitches",
+    "TestEnvelopeReset",
+    "TestEnvelopeMounting",
+    "TestEnvelopeDensity",
+    "TestVoxelPointPixels",
+    "TestPoseVectorsMatch",
+    "TestTcpIndexFor",
+    "TestAdoptedTcpIndex",
+    "TestTargetJointPosition",
+    "TestTargetTcpPose",
+    "TestTcpReached",
+    "TestTcpResiduals",
+    "TestMaxJointResidual",
+    "TestSceneFollowed",
+    "TestResolvePosePrimPath",
+    "TestDeepestPoseAncestor",
     "TestGhostMeshCache",
     "TestGhostMeshRepair",
     "TestGhostMeshBuild",
@@ -230,4 +377,13 @@ __all__ = [
     "TestPoseXformOpFilter",
     "TestArticulationCacheResync",
     "TestMotionGroupArticulationResync",
+    "TestCombineBodies",
+    "TestBodyInFrame",
+    "TestPlausibilityWarnings",
+    "TestComputeStagePayloadProperties",
+    "TestPayloadStore",
+    "TestDefaultReferencePrim",
+    "TestStaleResultsAreDropped",
+    "TestPayloadCalculatorWindow",
+    "TestPayloadValueRows",
 ]

@@ -1,15 +1,11 @@
 r"""Support for simplified access to data on nodes of type wandelbots.omni.OgnContactGripper
 
- __   ___ .  .  ___  __       ___  ___  __      __   __   __   ___
-/ _` |__  |\ | |__  |__)  /\   |  |__  |  \    /  ` /  \ |  \ |__
-\__| |___ | \| |___ |  \ /--\  |  |___ |__/    \__, \__/ |__/ |___
+GENERATED CODE. DO NOT MODIFY.
 
- __   __     .  .  __  ___     .  .  __   __     ___
-|  \ /  \    |\ | /  \  |      |\/| /  \ |  \ | |__  \ /
-|__/ \__/    | \| \__/  |      |  | \__/ |__/ | |     |
-
-Attach the first overlapping prim to a helper volume on a single trigger. While stick is true the node keeps snapping the
-object to the helper internally. Trigger again with stick false to release.
+Attach prims overlapping a helper volume and keep them snapped to it. A prim overlaps when geometry at or below it touches
+the world bounds of the sensor. With Fix true the node attaches the first overlapping candidate once. With Fix All it attaches
+every overlapping candidate on each execution, so prims that enter the volume later follow as well. Trigger with Fix false
+to release all of them.
 """
 
 import numpy
@@ -18,8 +14,9 @@ import traceback
 import usdrt
 
 import omni.graph.core as og
-import omni.graph.core._omni_graph_core as _og
+_og = og._omni_graph_core
 import omni.graph.tools.ogn as ogn
+
 
 
 
@@ -34,18 +31,20 @@ class OgnContactGripperDatabase(og.Database):
             inputs.candidatePrimPaths
             inputs.excludePrimPaths
             inputs.execIn
+            inputs.fixAll
             inputs.helperPrim
             inputs.stick
         Outputs:
             outputs.attachedPrimPath
+            outputs.attachedPrimPaths
             outputs.execAttached
             outputs.execReleased
             outputs.isAttached
     """
 
     # Imprint the generator and target ABI versions in the file for JIT generation
-    GENERATOR_VERSION = (1, 79, 2)
-    TARGET_VERSION = (2, 184, 5)
+    GENERATOR_VERSION = (1, 81, 0)
+    TARGET_VERSION = (3, 1, 2)
 
     # This is an internal object that provides per-class storage of a per-node data dictionary
     PER_NODE_DATA = {}
@@ -56,15 +55,17 @@ class OgnContactGripperDatabase(og.Database):
     #     Is_Required, DefaultValue, Is_Deprecated, DeprecationMsg
     # You should not need to access any of this data directly, use the defined database interfaces
     INTERFACE = og.Database._get_interface([
-        ('inputs:candidatePrimPaths', 'token[]', 0, 'Candidate Prim Paths', 'Optional list of prim paths or wildcard filters that may be attached, for example /World/Boxes/* or pallet-with-boxes/*. If empty, the whole stage is scanned.', {ogn.MetadataKeys.DEFAULT: '[]'}, True, [], False, ''),
-        ('inputs:excludePrimPaths', 'token[]', 0, 'Exclude Prim Paths', 'Optional list of prim paths or wildcard filters that must never be attached, for example /World/Robot/* or gripper/*. Exclusions win over candidate filters.', {ogn.MetadataKeys.DEFAULT: '[]'}, True, [], False, ''),
+        ('inputs:candidatePrimPaths', 'token[]', 0, 'Candidate Prim Paths', 'Optional list of prim paths or wildcard filters that may be attached. A filter matches the whole path with shell wildcards, and * also crosses /, so /World/Boxes/* matches everything below /World/Boxes. A filter without a leading / matches at any depth, for example pallet-with-boxes/*. A matching group prim is attached as a whole, so let the filter name the part prims. If empty, the whole stage is scanned.', {ogn.MetadataKeys.DEFAULT: '[]'}, True, [], False, ''),
+        ('inputs:excludePrimPaths', 'token[]', 0, 'Exclude Prim Paths', 'Optional list of prim paths or wildcard filters that must never be attached, for example /World/Robot or gripper/*. An excluded prim excludes everything below it. Exclusions win over candidate filters.', {ogn.MetadataKeys.DEFAULT: '[]'}, True, [], False, ''),
         ('inputs:execIn', 'execution', 0, None, 'Trigger once to evaluate the stick input. The node keeps snapping internally until stick becomes false.', {ogn.MetadataKeys.DEFAULT: '0'}, True, 0, False, ''),
+        ('inputs:fixAll', 'bool', 0, 'Fix All', 'Attach every candidate prim overlapping the sensor instead of only the first, and repeat the scan on every execution while Fix is true. Each execution scans the stage, so in a large stage drive execIn from an event rather than from every frame.', {ogn.MetadataKeys.DEFAULT: 'false'}, True, False, False, ''),
         ('inputs:helperPrim', 'target', 0, 'Sensor Prim', 'Prim whose world-space bounds define the sticky volume.', {}, True, None, False, ''),
-        ('inputs:stick', 'bool', 0, 'Fix', 'Hold true to attach and keep holding the first overlapping prim. Set false to release it.', {ogn.MetadataKeys.DEFAULT: 'false'}, True, False, False, ''),
-        ('outputs:attachedPrimPath', 'token', 0, 'Attached Prim Path', 'Path of the currently attached prim.', {ogn.MetadataKeys.DEFAULT: '""'}, True, "", False, ''),
-        ('outputs:execAttached', 'execution', 0, None, 'Execution trigger output fired only when a new prim is attached.', {}, True, None, False, ''),
-        ('outputs:execReleased', 'execution', 0, None, 'Execution trigger output fired only when the current prim is released.', {}, True, None, False, ''),
-        ('outputs:isAttached', 'bool', 0, 'Is Attached', 'True when a prim is currently attached.', {ogn.MetadataKeys.DEFAULT: 'false'}, True, False, False, ''),
+        ('inputs:stick', 'bool', 0, 'Fix', 'Hold true to attach and keep holding the overlapping prims. Set false to release them.', {ogn.MetadataKeys.DEFAULT: 'false'}, True, False, False, ''),
+        ('outputs:attachedPrimPath', 'token', 0, 'Attached Prim Path', 'Path of the most recently attached prim, empty when nothing is attached.', {ogn.MetadataKeys.DEFAULT: '""'}, True, "", False, ''),
+        ('outputs:attachedPrimPaths', 'token[]', 0, 'Attached Prim Paths', 'Paths of all currently attached prims, in the order they were attached.', {ogn.MetadataKeys.DEFAULT: '[]'}, True, [], False, ''),
+        ('outputs:execAttached', 'execution', 0, None, 'Execution trigger output fired when at least one new prim is attached.', {}, True, None, False, ''),
+        ('outputs:execReleased', 'execution', 0, None, 'Execution trigger output fired when the attached prims are released.', {}, True, None, False, ''),
+        ('outputs:isAttached', 'bool', 0, 'Is Attached', 'True when at least one prim is currently attached.', {ogn.MetadataKeys.DEFAULT: 'false'}, True, False, False, ''),
     ])
 
     @classmethod
@@ -78,14 +79,14 @@ class OgnContactGripperDatabase(og.Database):
         return role_data
 
     class ValuesForInputs(og.DynamicAttributeAccess):
-        LOCAL_PROPERTY_NAMES = {"execIn", "stick", "_setting_locked", "_batchedReadAttributes", "_batchedReadValues"}
+        LOCAL_PROPERTY_NAMES = {"execIn", "fixAll", "stick", "_setting_locked", "_batchedReadAttributes", "_batchedReadValues"}
         """Helper class that creates natural hierarchical access to input attributes"""
         def __init__(self, node: og.Node, attributes, dynamic_attributes: og.DynamicAttributeInterface):
             """Initialize simplified access for the attribute data"""
             context = node.get_graph().get_default_graph_context()
             super().__init__(context, node, attributes, dynamic_attributes)
-            self._batchedReadAttributes = [self._attributes.execIn, self._attributes.stick]
-            self._batchedReadValues = [0, False]
+            self._batchedReadAttributes = [self._attributes.execIn, self._attributes.fixAll, self._attributes.stick]
+            self._batchedReadValues = [0, False, False]
 
         @property
         def candidatePrimPaths(self):
@@ -135,12 +136,20 @@ class OgnContactGripperDatabase(og.Database):
             self._batchedReadValues[0] = value
 
         @property
-        def stick(self):
+        def fixAll(self):
             return self._batchedReadValues[1]
+
+        @fixAll.setter
+        def fixAll(self, value):
+            self._batchedReadValues[1] = value
+
+        @property
+        def stick(self):
+            return self._batchedReadValues[2]
 
         @stick.setter
         def stick(self, value):
-            self._batchedReadValues[1] = value
+            self._batchedReadValues[2] = value
 
         def __getattr__(self, item: str):
             if item in self.LOCAL_PROPERTY_NAMES:
@@ -167,7 +176,19 @@ class OgnContactGripperDatabase(og.Database):
             """Initialize simplified access for the attribute data"""
             context = node.get_graph().get_default_graph_context()
             super().__init__(context, node, attributes, dynamic_attributes)
+            self.attachedPrimPaths_size = 0
             self._batchedWriteValues = { }
+
+        @property
+        def attachedPrimPaths(self):
+            data_view = og.AttributeValueHelper(self._attributes.attachedPrimPaths)
+            return data_view.get(reserved_element_count=self.attachedPrimPaths_size)
+
+        @attachedPrimPaths.setter
+        def attachedPrimPaths(self, value):
+            data_view = og.AttributeValueHelper(self._attributes.attachedPrimPaths)
+            data_view.set(value)
+            self.attachedPrimPaths_size = data_view.get_array_size()
 
         @property
         def attachedPrimPath(self):
@@ -354,7 +375,7 @@ class OgnContactGripperDatabase(og.Database):
                 node_type.set_metadata(ogn.MetadataKeys.UI_NAME, "Contact Gripper")
                 node_type.set_metadata(ogn.MetadataKeys.CATEGORIES, "Wandelbots NOVA")
                 node_type.set_metadata(ogn.MetadataKeys.CATEGORY_DESCRIPTIONS, "Wandelbots NOVA,Wandelbots NOVA")
-                node_type.set_metadata(ogn.MetadataKeys.DESCRIPTION, "Attach the first overlapping prim to a helper volume on a single trigger. While stick is true the node keeps snapping the object to the helper internally. Trigger again with stick false to release.")
+                node_type.set_metadata(ogn.MetadataKeys.DESCRIPTION, "Attach prims overlapping a helper volume and keep them snapped to it. A prim overlaps when geometry at or below it touches the world bounds of the sensor. With Fix true the node attaches the first overlapping candidate once. With Fix All it attaches every overlapping candidate on each execution, so prims that enter the volume later follow as well. Trigger with Fix false to release all of them.")
                 node_type.set_metadata(ogn.MetadataKeys.LANGUAGE, "Python")
                 OgnContactGripperDatabase.INTERFACE.add_to_node_type(node_type)
                 node_type.set_has_state(True)
@@ -370,7 +391,7 @@ class OgnContactGripperDatabase(og.Database):
     @staticmethod
     def register(node_type_class):
         OgnContactGripperDatabase.NODE_TYPE_CLASS = node_type_class
-        og.register_node_type(OgnContactGripperDatabase.abi, 1)
+        og.register_node_type(OgnContactGripperDatabase.abi, 2)
 
     @staticmethod
     def deregister():

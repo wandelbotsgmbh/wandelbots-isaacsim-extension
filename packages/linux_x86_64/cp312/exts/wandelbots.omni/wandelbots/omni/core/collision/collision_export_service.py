@@ -604,7 +604,7 @@ class CollisionExportService:
 
     async def _get_motion_group_dh_param_and_joint_position(
         self, motion_stream_config: MotionStreamConfiguration
-    ) -> tuple[list[wb.models.DHParameter], list[float]]:
+    ) -> tuple[list[wb.models.DHParameter], list[float], wb.models.Pose | None]:
         async with motion_stream_config.get_api_client() as api:
             motion_group_description: wb.models.MotionGroupDescription = (
                 await wb.MotionGroupApi(api).get_motion_group_description(
@@ -625,6 +625,7 @@ class CollisionExportService:
             return (
                 motion_group_description.dh_parameters,
                 motion_group_state.joint_position,
+                getattr(motion_group_description, "kinematic_chain_offset", None),
             )
 
     async def _collect_link_extras(
@@ -802,6 +803,7 @@ class CollisionExportService:
         (
             dh_parameters,
             current_joint_values,
+            kinematic_chain_offset,
         ) = await self._get_motion_group_dh_param_and_joint_position(
             motion_stream_config
         )
@@ -810,6 +812,7 @@ class CollisionExportService:
             dh_parameters=dh_parameters,
             dh_unit_to_stage_unit_factor=1,
             joint_values_rad=current_joint_values,
+            kinematic_chain_offset=kinematic_chain_offset,
         )
 
     @staticmethod

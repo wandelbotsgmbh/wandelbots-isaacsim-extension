@@ -1,4 +1,4 @@
-#!C:\ci\1\omniservice\_build\target-deps\python\python.exe
+#!C:\ci\2\omniservice\_build\target-deps\python\python.exe
 
 try:
     import trimesh

@@ -129,7 +129,9 @@ class ReachabilityPreview:
 
         # Use cached kinematic + collision data if available
         if model_name in self._model_cache:
-            dh_parameters, collision_model = self._model_cache[model_name]
+            dh_parameters, collision_model, kinematic_chain_offset = self._model_cache[
+                model_name
+            ]
         else:
             api_client = self._resolve_api_client(instance, motion_group_prim)
             if api_client is None:
@@ -144,6 +146,9 @@ class ReachabilityPreview:
                     timeout=2.0,
                 )
                 dh_parameters = kinematic_model.dh_parameters
+                kinematic_chain_offset = getattr(
+                    kinematic_model, "kinematic_chain_offset", None
+                )
 
                 collision_model: list[
                     dict[str, wb_v2_models.Collider]
@@ -154,7 +159,11 @@ class ReachabilityPreview:
                     timeout=2.0,
                 )
 
-                self._model_cache[model_name] = (dh_parameters, collision_model)
+                self._model_cache[model_name] = (
+                    dh_parameters,
+                    collision_model,
+                    kinematic_chain_offset,
+                )
             except Exception as exc:
                 carb.log_warn(f"Failed to fetch model data for preview: {exc}")
                 return
@@ -164,7 +173,14 @@ class ReachabilityPreview:
                 except Exception as exc:
                     carb.log_warn(f"Error closing preview API client: {exc}")
 
-        self._build_meshes(result, dh_parameters, collision_model, mounting_pose, color)
+        self._build_meshes(
+            result,
+            dh_parameters,
+            collision_model,
+            mounting_pose,
+            color,
+            kinematic_chain_offset=kinematic_chain_offset,
+        )
 
     def _build_meshes(
         self,
@@ -173,6 +189,7 @@ class ReachabilityPreview:
         collision_model,
         mounting_pose: Optional[list[float]],
         color: list[float] | None = None,
+        kinematic_chain_offset=None,
     ) -> None:
         """Build the scene meshes from cached model data."""
         if not self._scene_view:
@@ -219,6 +236,7 @@ class ReachabilityPreview:
                         unit_factor,
                         mesh_color,
                         result.tool_mesh_vertices,
+                        kinematic_chain_offset=kinematic_chain_offset,
                     )
                     self._meshes_per_pose.append(pose_meshes)
 
@@ -242,6 +260,7 @@ class ReachabilityPreview:
         unit_factor: float,
         mesh_color: list[float],
         tool_mesh_vertices: Optional[list[tuple[float, float, float]]] = None,
+        kinematic_chain_offset=None,
     ) -> list[ManipulatorMesh]:
         """Build and return meshes for one pose. Must be called within a scene context."""
         if not joint_values:
@@ -253,6 +272,7 @@ class ReachabilityPreview:
                 dh_parameters=dh_parameters,
                 dh_unit_to_stage_unit_factor=unit_factor,
                 joint_values_rad=joint_values,
+                kinematic_chain_offset=kinematic_chain_offset,
             )
         ]
         for link_index, link in enumerate(collision_model):
@@ -333,7 +353,9 @@ class ReachabilityPreview:
                 offset_pose, stage_units
             )
         mesh_color = self._last_color if self._last_color else [0.4, 1.0, 0.4, 0.15]
-        dh_parameters, collision_model = self._model_cache[model_name]
+        dh_parameters, collision_model, kinematic_chain_offset = self._model_cache[
+            model_name
+        ]
         with self._scene_view.scene:
             self._meshes_per_pose[pose_index] = self._build_single_pose_meshes(
                 joint_values,
@@ -344,6 +366,7 @@ class ReachabilityPreview:
                 unit_factor,
                 mesh_color,
                 self._last_result.tool_mesh_vertices if self._last_result else None,
+                kinematic_chain_offset=kinematic_chain_offset,
             )
 
     def update_color(self, color: list[float]) -> None:
@@ -355,13 +378,16 @@ class ReachabilityPreview:
         if model_name not in self._model_cache:
             return
         self._clear_meshes()
-        dh_parameters, collision_model = self._model_cache[model_name]
+        dh_parameters, collision_model, kinematic_chain_offset = self._model_cache[
+            model_name
+        ]
         self._build_meshes(
             self._last_result,
             dh_parameters,
             collision_model,
             self._last_mounting_pose,
             color,
+            kinematic_chain_offset=kinematic_chain_offset,
         )
 
     def _clear_meshes(self) -> None:

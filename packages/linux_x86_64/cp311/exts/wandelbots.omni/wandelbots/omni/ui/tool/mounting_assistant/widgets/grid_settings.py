@@ -12,7 +12,7 @@ from .input_row import LABEL_WIDTH, build_input_row
 
 _DEFAULT_SPACING_MM = 200.0
 _DEFAULT_RANGE_MM = 600.0
-_DEFAULT_OVERLAY_COLOR = [0.15, 0.65, 0.60, 0.25]
+DEFAULT_OVERLAY_COLOR = [0.15, 0.65, 0.60, 0.25]
 
 
 class GridSettings(ui.VStack):
@@ -36,7 +36,7 @@ class GridSettings(ui.VStack):
         self._overlay_color: list[float] = (
             list(initial_overlay_color)
             if initial_overlay_color
-            else list(_DEFAULT_OVERLAY_COLOR)
+            else list(DEFAULT_OVERLAY_COLOR)
         )
         self._overlay_color_widget: ui.ColorWidget | None = None
 

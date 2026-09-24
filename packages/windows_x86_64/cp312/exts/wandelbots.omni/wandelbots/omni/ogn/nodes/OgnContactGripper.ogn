@@ -1,7 +1,7 @@
 {
     "OgnContactGripper": {
-        "version": 1,
-        "description": "Attach the first overlapping prim to a helper volume on a single trigger. While stick is true the node keeps snapping the object to the helper internally. Trigger again with stick false to release.",
+        "version": 2,
+        "description": "Attach prims overlapping a helper volume and keep them snapped to it. A prim overlaps when geometry at or below it touches the world bounds of the sensor. With Fix true the node attaches the first overlapping candidate once. With Fix All it attaches every overlapping candidate on each execution, so prims that enter the volume later follow as well. Trigger with Fix false to release all of them.",
         "language": "Python",
         "categories": {
             "Wandelbots NOVA": "Wandelbots NOVA"
@@ -27,15 +27,23 @@
             },
             "stick": {
                 "type": "bool",
-                "description": "Hold true to attach and keep holding the first overlapping prim. Set false to release it.",
+                "description": "Hold true to attach and keep holding the overlapping prims. Set false to release them.",
                 "metadata": {
                     "uiName": "Fix"
                 },
                 "default": false
             },
+            "fixAll": {
+                "type": "bool",
+                "description": "Attach every candidate prim overlapping the sensor instead of only the first, and repeat the scan on every execution while Fix is true. Each execution scans the stage, so in a large stage drive execIn from an event rather than from every frame.",
+                "metadata": {
+                    "uiName": "Fix All"
+                },
+                "default": false
+            },
             "candidatePrimPaths": {
                 "type": "token[]",
-                "description": "Optional list of prim paths or wildcard filters that may be attached, for example /World/Boxes/* or pallet-with-boxes/*. If empty, the whole stage is scanned.",
+                "description": "Optional list of prim paths or wildcard filters that may be attached. A filter matches the whole path with shell wildcards, and * also crosses /, so /World/Boxes/* matches everything below /World/Boxes. A filter without a leading / matches at any depth, for example pallet-with-boxes/*. A matching group prim is attached as a whole, so let the filter name the part prims. If empty, the whole stage is scanned.",
                 "metadata": {
                     "uiName": "Candidate Prim Paths"
                 },
@@ -43,7 +51,7 @@
             },
             "excludePrimPaths": {
                 "type": "token[]",
-                "description": "Optional list of prim paths or wildcard filters that must never be attached, for example /World/Robot/* or gripper/*. Exclusions win over candidate filters.",
+                "description": "Optional list of prim paths or wildcard filters that must never be attached, for example /World/Robot or gripper/*. An excluded prim excludes everything below it. Exclusions win over candidate filters.",
                 "metadata": {
                     "uiName": "Exclude Prim Paths"
                 },
@@ -53,15 +61,15 @@
         "outputs": {
             "execAttached": {
                 "type": "execution",
-                "description": "Execution trigger output fired only when a new prim is attached."
+                "description": "Execution trigger output fired when at least one new prim is attached."
             },
             "execReleased": {
                 "type": "execution",
-                "description": "Execution trigger output fired only when the current prim is released."
+                "description": "Execution trigger output fired when the attached prims are released."
             },
             "isAttached": {
                 "type": "bool",
-                "description": "True when a prim is currently attached.",
+                "description": "True when at least one prim is currently attached.",
                 "metadata": {
                     "uiName": "Is Attached"
                 },
@@ -69,11 +77,19 @@
             },
             "attachedPrimPath": {
                 "type": "token",
-                "description": "Path of the currently attached prim.",
+                "description": "Path of the most recently attached prim, empty when nothing is attached.",
                 "metadata": {
                     "uiName": "Attached Prim Path"
                 },
                 "default": ""
+            },
+            "attachedPrimPaths": {
+                "type": "token[]",
+                "description": "Paths of all currently attached prims, in the order they were attached.",
+                "metadata": {
+                    "uiName": "Attached Prim Paths"
+                },
+                "default": []
             }
         }
     }

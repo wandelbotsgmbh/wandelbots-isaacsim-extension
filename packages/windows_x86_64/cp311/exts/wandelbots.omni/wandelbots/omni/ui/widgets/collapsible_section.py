@@ -255,19 +255,22 @@ class CollapsibleSection(ui.VStack):
                             # Indent the body one INDENT_STEP past the header so a
                             # nested section's card sits inset from its parent,
                             # making the hierarchy depth read visually. The inset
-                            # accumulates naturally per nesting level.
-                            left_inset = pad + INDENT_STEP
+                            # accumulates naturally per nesting level, and it is
+                            # the same on both sides so the body keeps a margin
+                            # to the card's right border as well.
+                            side_inset = pad + INDENT_STEP
                             if pad:
                                 ui.Spacer(height=pad)
                                 with ui.HStack(spacing=0):
-                                    ui.Spacer(width=left_inset)
+                                    ui.Spacer(width=side_inset)
                                     self._body = ui.VStack(spacing=0)
-                                    ui.Spacer(width=pad)
+                                    ui.Spacer(width=side_inset)
                                 ui.Spacer(height=pad)
                             else:
                                 with ui.HStack(spacing=0):
                                     ui.Spacer(width=INDENT_STEP)
                                     self._body = ui.VStack(spacing=0)
+                                    ui.Spacer(width=INDENT_STEP)
                 if margin:
                     ui.Spacer(width=margin)
             if margin:

@@ -20,11 +20,18 @@ from wandelbots.omni.ui.tool.trajectory_planner import (
     register_trajectory_planner_window,
 )
 from wandelbots.omni.ui.tool.collider_list import register_collider_list_window
+from wandelbots.omni.ui.tool.reachability_envelope import (
+    register_reachability_envelope_window,
+)
+from wandelbots.omni.ui.tool.payload_calculator import (
+    register_payload_calculator_window,
+)
 
 
 def register_tools():
     return [
         register_collision_setup_window(),
+        register_payload_calculator_window(),
         register_ghost_teaching_tool_bar(),
         register_animation_recorder_window(),
         register_reachability_window(),
@@ -32,4 +39,5 @@ def register_tools():
         register_camera_near_clip_check(),
         register_trajectory_planner_window(),
         register_collider_list_window(),
+        register_reachability_envelope_window(),
     ]

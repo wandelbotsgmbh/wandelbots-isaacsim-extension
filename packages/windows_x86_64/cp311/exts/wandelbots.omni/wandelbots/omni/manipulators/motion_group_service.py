@@ -1,4 +1,5 @@
 import asyncio
+import time
 from copy import deepcopy
 import traceback
 
@@ -20,6 +21,14 @@ from .motion_stream_configuration import MotionStreamConfiguration
 from .motion_stream_connector import MotionStreamConnector
 from .utils import get_scene_motion_group_prim_paths
 
+# How long to wait for the PLAY-triggered start_streams to bring a motion group
+# up: it probes every configured host over the network (multi-second timeout per
+# host) before any stream opens.
+_STREAM_READY_TIMEOUT_S = 12.0
+# Follow-up window after rebuilding a single stream - no host probing involved,
+# so this only covers the state request plus the websocket handshake.
+_STREAM_RESTART_TIMEOUT_S = 5.0
+
 
 class MotionGroupService:
     def __init__(self):
@@ -28,6 +37,9 @@ class MotionGroupService:
         self.timeline = omni.timeline.get_timeline_interface()
         self._streams: dict[str, MotionStreamConnector] = {}
         self._apply_update_sub: carb.events.ISubscription | None = None
+        # A start_streams pass is probing hosts / opening streams right now.
+        # ensure_stream_live waits for it instead of starting a second one.
+        self._streams_starting = False
 
     def _on_update(self, _event) -> None:
         # Coalesced joint application: the websocket receive handlers only store
@@ -87,6 +99,147 @@ class MotionGroupService:
         self, motion_group_prim_path: str
     ) -> MotionStreamConnector | None:
         return self._streams.get(motion_group_prim_path, None)
+
+    @staticmethod
+    def _stream_identity(configuration: MotionStreamConfiguration) -> tuple:
+        """What makes two stream configurations the same robot connection."""
+        return (
+            configuration.host,
+            configuration.cell,
+            configuration.controller,
+            configuration.motion_group,
+        )
+
+    def _find_stream_connector(
+        self, configuration: MotionStreamConfiguration
+    ) -> MotionStreamConnector | None:
+        """Connector serving *configuration*, whether it is live yet or not."""
+        identity = self._stream_identity(configuration)
+        for connector in self._streams.values():
+            if self._stream_identity(connector.configuration) == identity:
+                return connector
+        return None
+
+    def _find_streamable_prim_path(
+        self, configuration: MotionStreamConfiguration
+    ) -> str | None:
+        """Stage motion group that *configuration* would stream from.
+
+        Same eligibility as ``_collect_streamable_configurations``: matched by
+        connection identity, enabled for simulation, and fully assigned. None
+        means nothing in this scene ever streams that connection (a real
+        controller, or a robot deliberately not simulated).
+        """
+        identity = self._stream_identity(configuration)
+        for motion_group_prim_path in self.get_all_motion_group_prim_paths():
+            try:
+                candidate = self.get_motion_group_configuration(motion_group_prim_path)
+            except Exception:
+                continue
+            if candidate is None or not candidate.enabled:
+                continue
+            candidate_stream = candidate.motion_stream_configuration
+            if not candidate_stream.is_connectable:
+                continue
+            if self._stream_identity(candidate_stream) == identity:
+                return motion_group_prim_path
+        return None
+
+    def is_stream_live(self, configuration: MotionStreamConfiguration) -> bool:
+        """Whether joint state is flowing for *configuration*'s motion group."""
+        connector = self._find_stream_connector(configuration)
+        return connector is not None and connector.is_live
+
+    def has_streamable_motion_group(
+        self, configuration: MotionStreamConfiguration
+    ) -> bool:
+        """Whether a robot in the scene is set up to follow *configuration*.
+
+        False for a real controller or a robot not enabled for simulation -
+        those never stream, so a missing stream is not a problem to report.
+        """
+        return self._find_streamable_prim_path(configuration) is not None
+
+    async def ensure_stream_live(
+        self,
+        configuration: MotionStreamConfiguration,
+        timeout_s: float = _STREAM_READY_TIMEOUT_S,
+    ) -> bool:
+        """Wait until *configuration*'s motion stream carries joint state.
+
+        Streams are only built on the timeline PLAY event, and ``start_streams``
+        probes every host over the network first, so for several seconds after
+        play there is no live connection yet. Anything that drives the robot
+        through the backend (trajectory execution) started in that window moves
+        the robot in NOVA while the articulation in the scene is not listening
+        yet - which is why such a move used to need a stop/play cycle to show
+        up. Awaiting this first makes the move land in the scene as well.
+
+        Returns False when no stream can be established (timeline stopped, not
+        simulated, host unreachable): that is informational, callers are free to
+        proceed - a real controller has no stream to wait for in the first
+        place, and those cases return without waiting.
+        """
+        if self.is_stream_live(configuration):
+            return True
+        if self.timeline.is_stopped():
+            # Streams exist only while the timeline runs, and playing is the
+            # caller's decision - _start_stream refuses a stopped timeline.
+            return False
+        motion_group_prim_path = self._find_streamable_prim_path(configuration)
+        if motion_group_prim_path is None:
+            carb.log_info(
+                f"No simulated motion group streams {configuration.cell}/"
+                f"{configuration.controller}/{configuration.motion_group} - "
+                f"nothing to wait for."
+            )
+            return False
+        # Only wait when something is actually on its way: a start_streams pass
+        # in flight (it probes every host before opening anything), or a
+        # connector that exists and is still connecting.
+        if self._streams_starting or self._find_stream_connector(configuration):
+            if await self._wait_for_live_stream(configuration, timeout_s):
+                return True
+            if self.timeline.is_stopped():
+                return False
+        # PLAY never brought this one up (host was unreachable back then, or the
+        # motion group was assigned afterwards). Rebuild THIS stream only:
+        # start_streams() recreates every other robot's stream as a side effect.
+        if not await self._restart_stream(motion_group_prim_path):
+            return False
+        return await self._wait_for_live_stream(
+            configuration, _STREAM_RESTART_TIMEOUT_S
+        )
+
+    async def _wait_for_live_stream(
+        self, configuration: MotionStreamConfiguration, timeout_s: float
+    ) -> bool:
+        """Poll per frame - the stream comes up from tasks driven by the app loop."""
+        app = omni.kit.app.get_app()
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            await app.next_update_async()
+            if self.is_stream_live(configuration):
+                return True
+            if self.timeline.is_stopped():
+                return False
+        return False
+
+    async def _restart_stream(self, motion_group_prim_path: str) -> bool:
+        async with self.stream_action_lock:
+            try:
+                await self._remove_stream(motion_group_prim_path)
+                stream = await self._create_stream(
+                    motion_group_prim_path, check_connection=False
+                )
+                await self._start_stream(stream)
+            except Exception as ex:
+                carb.log_warn(
+                    f"Could not start the motion stream for "
+                    f"{motion_group_prim_path}: {ex}"
+                )
+                return False
+        return True
 
     async def create_motion_group(self, configuration: MotionGroupConfiguration):
         async with self.motion_group_lock:
@@ -229,6 +382,13 @@ class MotionGroupService:
         return reachable
 
     async def start_streams(self):
+        self._streams_starting = True
+        try:
+            await self._start_streams()
+        finally:
+            self._streams_starting = False
+
+    async def _start_streams(self):
         async with self.stream_action_lock:
             candidates = self._collect_streamable_configurations()
             for motion_group_prim_path in await self._probe_connections(candidates):

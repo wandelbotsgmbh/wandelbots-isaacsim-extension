@@ -44,6 +44,49 @@ _DIRECT_PHYSICS_WRITE_UNAVAILABLE = object()
 _PHYSICS_FEEDBACK_SETTING = "/exts/wandelbots.omni/externalJointStream/physicsFeedback"
 
 
+def apply_joint_positions(
+    motion_group: MotionGroup,
+    joint_positions: list[float],
+    joint_indices: list[int] | None = None,
+) -> bool:
+    """Drive a motion group's Isaac articulation to the given joint targets.
+
+    Mirrors ``MotionStreamConnector.apply_joints`` (prismatic joints scaled mm ->
+    stage units; merged-articulation joint indices honoured) but is standalone so
+    tools like the IK Playground can apply a solved configuration directly via
+    dynamic control — for controllers with no virtual-controller backend (e.g. a
+    real/non-NOVA-simulated controller), trajectory execution isn't available, so
+    this is the only way to reflect a solved pose on the in-scene robot. Requires
+    the timeline to be playing and the articulation to be valid/initialised (the
+    physics view only exists while playing). Returns True on a successful apply.
+    """
+    articulation = motion_group.articulation
+    if articulation is None or not articulation.is_valid():
+        carb.log_error(f"Invalid articulation for {motion_group.identifier}")
+        return False
+
+    positions = list(joint_positions)
+    dh_parameters = motion_group.motion_group_dh_parameters
+    if any(dh.type == JointTypeEnum.PRISMATIC_JOINT for dh in dh_parameters):
+        stage = omni.usd.get_context().get_stage()
+        meters_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
+        mm_to_stage_units = 0.001 / meters_per_unit
+        for i, dh in enumerate(dh_parameters):
+            if i < len(positions) and dh.type == JointTypeEnum.PRISMATIC_JOINT:
+                positions[i] *= mm_to_stage_units
+
+    positions_array = torch.tensor(positions, dtype=torch.float32)
+    if joint_indices is not None:
+        indices_array = torch.tensor(joint_indices, dtype=torch.long)
+    else:
+        indices_array = torch.tensor(range(len(positions)), dtype=torch.long)
+
+    articulation.apply_action(
+        ArticulationAction(joint_positions=positions_array, joint_indices=indices_array)
+    )
+    return True
+
+
 class MotionStreamConnector:
     def __init__(self, motion_group: MotionGroup):
         self.motion_group = motion_group
@@ -112,6 +155,22 @@ class MotionStreamConnector:
     @property
     def is_external_joint_stream(self) -> bool:
         return self.configuration.use_external_joint_stream
+
+    @property
+    def is_live(self) -> bool:
+        """Whether joint state is actually flowing for this motion group.
+
+        ``stream.streaming`` only says the websocket task was created - the
+        connect itself, and the state message that follows it, take longer.
+        ``_last_joints`` is set from the first parsed message, so this is the
+        point from which driving the robot through the backend also moves the
+        articulation in the scene.
+        """
+        return (
+            self.stream is not None
+            and self.stream.streaming
+            and self._last_joints is not None
+        )
 
     @property
     def _websocket_uri(self):

@@ -33,6 +33,10 @@ from wandelbots.omni.utils.base import get_current_version
 from wandelbots.omni.utils.teaching import GhostObjectUtils
 from wandelbots.omni.ui.utils import make_menu_item_description
 from wandelbots.omni.constants import CONNECTED_INSTANCES_MENU_LABEL
+from wandelbots.omni.ui.preferences import (
+    register_preferences_page,
+    register_setting_defaults,
+)
 from wandelbots.omni.instances.events import subscribe_to_open_instances_panel
 import wandelbots.omni.router.v2.base as v2
 import omni.kit.app
@@ -103,6 +107,11 @@ class OmniService(omni.ext.IExt):
 
         self.register_snippets(ext_id)
         self._tools_subscription = wandelbots.omni.ui.tool.register_tools()
+        # Materialize the setting defaults first: the page can only list keys
+        # that exist in carb, and a tool writes its own only once it saves.
+        register_setting_defaults()
+        # A page in Kit's own Preferences window: see preferences_page.
+        self._preferences_subscription = register_preferences_page()
         self._load_overlays()
 
         self._asset_browser_manager = WandelbotsAssetBrowserManager()
@@ -216,6 +225,7 @@ class OmniService(omni.ext.IExt):
 
         self.schema_extension = None
         self._tools_subscription = None
+        self._preferences_subscription = None
         self._asset_browser_manager = None
         self._open_instances_panel_sub = None
         if self._overlay_registry:
@@ -387,6 +397,13 @@ class OmniService(omni.ext.IExt):
         self._overlay_registry.register_overlay(
             overlay.ROBOT_OVERLAY_NAME,
             overlay.RobotOverlay(name="wandelbots.omni.ui.robot_overlay"),
+        )
+        self._envelope_overlay = overlay.ReachabilityEnvelopeOverlay(
+            name="wandelbots.omni.ui.reachability_envelope_overlay"
+        )
+        self._overlay_registry.register_overlay(
+            overlay.REACHABILITY_ENVELOPE_OVERLAY_NAME,
+            self._envelope_overlay,
         )
 
     def _deregister_bundled_packages(self) -> None:

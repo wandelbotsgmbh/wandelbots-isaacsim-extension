@@ -59,7 +59,7 @@ _WINDOW_MENU_ROOT = "Tools"
 CARB_MOUNTING_OVERLAY_COLOR = (
     "/persistent/exts/wandelbots.omni/mounting_assistant/overlay_color"
 )
-_DEFAULT_OVERLAY_COLOR = [0.15, 0.65, 0.60, 0.25]
+DEFAULT_OVERLAY_COLOR = [0.15, 0.65, 0.60, 0.25]
 
 
 class MountingAssistantWindow:
@@ -411,7 +411,7 @@ class MountingAssistantWindow:
         hex_color = settings.get_as_string(CARB_MOUNTING_OVERLAY_COLOR)
         if hex_color:
             return hex_to_float_array(hex_color)
-        return list(_DEFAULT_OVERLAY_COLOR)
+        return list(DEFAULT_OVERLAY_COLOR)
 
     @staticmethod
     def _save_overlay_color(color: list[float]) -> None:

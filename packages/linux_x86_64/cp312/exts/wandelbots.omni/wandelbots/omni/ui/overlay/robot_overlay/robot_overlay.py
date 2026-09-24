@@ -152,6 +152,9 @@ class RobotOverlay(ViewportOverlay):
                 dh_parameters=dh_parameters,
                 dh_unit_to_stage_unit_factor=unit_factor,
                 joint_values_rad=joint_positions,
+                kinematic_chain_offset=getattr(
+                    mesh.motion_group_description, "kinematic_chain_offset", None
+                ),
             )
         ]
 

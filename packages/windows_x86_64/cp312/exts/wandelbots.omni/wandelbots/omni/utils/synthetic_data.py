@@ -16,11 +16,17 @@ except ImportError:
     _HAS_DEPRECATED_SEMANTICS = False
 
 from wandelbots.omni.utils.prims import PrimUtils
+from wandelbots.omni.utils.scene import SceneUtils
 from wandelbots.omni.utils.math import pose_to_matrix
 from omni.replicator.core.scripts.writers_default.tools import data_to_colour
 from PIL import Image, ImageDraw
 
-from wandelbots.omni.periphery.camera_configuration import BoundingBox2D, BoundingBox3D
+from wandelbots.omni.periphery.camera_configuration import (
+    BoundingBox2D,
+    BoundingBox3D,
+    draw_wireframe,
+    project_box_corners,
+)
 
 
 class SyntheticDataUtils:
@@ -48,68 +54,63 @@ class SyntheticDataUtils:
         image: Image,
         bbox_3ds: list[BoundingBox3D],
     ) -> Image:
-        from pxr import Usd, UsdGeom, Gf
+        """Draw the wireframe of every 3D box onto the captured frame.
 
-        camera: Gf.Camera = UsdGeom.Camera(
-            stage_utils.get_current_stage(), camera_path
-        ).GetCamera(Usd.TimeCode.Default())
-        width, height = resolution
-        camera_matrix = camera.get_intrinsics_matrix()
-        transformation_matrix = camera.get_view_matrix_ros()
-        projection_matrix = np.vstack(
-            [
-                np.matmul(camera_matrix, transformation_matrix[:3, :]),
-                np.array([0, 0, 0, 1]),
-            ]
+        The boxes arrive in millimetres, which is what the API answers with;
+        the view matrix works in stage units, so extent and translation are
+        converted back here rather than projecting millimetres through a
+        stage-unit camera.
+        """
+        from pxr import Usd, UsdGeom
+
+        # Imported here because camera_capture_service imports this module.
+        from wandelbots.omni.periphery.camera_capture_service import (
+            NoCameraAtPathError,
         )
 
-        cam_view_transform = np.array(transformation_matrix.tolist()).reshape((4, 4))
-        cam_view_transform = cam_view_transform.T
-        cam_projection_transform = np.array(projection_matrix).reshape((4, 4))
-        cam_projection_transform = cam_projection_transform.T
+        width, height = resolution
+        prim = UsdGeom.Camera(
+            stage_utils.get_current_stage().GetPrimAtPath(camera_path)
+        )
+        if not prim:
+            raise NoCameraAtPathError(f"No camera prim at {camera_path}")
 
-        colors = {
-            bbox.semantic_id: data_to_colour(bbox.semantic_id) for bbox in bbox_3ds
-        }
+        gf_camera = prim.GetCamera(Usd.TimeCode.Default())
+        # The authored vertical aperture belongs to the camera's own
+        # resolution. Pairing it with a different requested one would stretch
+        # the wireframe away from the object it is drawn around; Isaac Sim
+        # renders square pixels, so the aperture follows the requested aspect.
+        gf_camera.verticalAperture = gf_camera.horizontalAperture * height / width
+
+        frustum = gf_camera.frustum
+        # USD's own matrices, in the row-vector convention project_box_corners
+        # multiplies with.
+        view = np.array(frustum.ComputeViewMatrix(), dtype=float).reshape((4, 4))
+        projection = np.array(frustum.ComputeProjectionMatrix(), dtype=float).reshape(
+            (4, 4)
+        )
+
+        draw = ImageDraw.Draw(image)
         for bbox_data in bbox_3ds:
-            s_id = bbox_data.semantic_id
-            x_min, y_min, z_min, x_max, y_max, z_max = bbox_data.bbox
-            local_to_world_transform = np.array(bbox_data.transform).T
-            vertices_local = [
-                np.array([x_min, y_min, z_min, 1]),
-                np.array([x_min, y_min, z_max, 1]),
-                np.array([x_min, y_max, z_min, 1]),
-                np.array([x_min, y_max, z_max, 1]),
-                np.array([x_max, y_min, z_min, 1]),
-                np.array([x_max, y_min, z_max, 1]),
-                np.array([x_max, y_max, z_min, 1]),
-                np.array([x_max, y_max, z_max, 1]),
+            colour = data_to_colour(bbox_data.semantic_id)
+            local_to_world = np.array(bbox_data.transform, dtype=float)
+            local_to_world[3, :3] = [
+                SceneUtils.millimeters_to_stage_value(v) for v in local_to_world[3, :3]
             ]
+            corners = project_box_corners(
+                bbox=tuple(
+                    SceneUtils.millimeters_to_stage_value(v) for v in bbox_data.bbox
+                ),
+                local_to_world=local_to_world,
+                view=view,
+                projection=projection,
+                resolution=resolution,
+            )
+            # Empty when the box straddles the camera plane: a mirrored
+            # wireframe looks convincing and is wrong, so it is skipped.
+            draw_wireframe(draw, corners, colour)
 
-            image_points = []
-            for vertex in vertices_local:
-                world_homogeneous = np.dot(local_to_world_transform, vertex)
-                camera_homogeneous = np.dot(cam_view_transform, world_homogeneous)
-                clip_space = np.dot(cam_projection_transform, camera_homogeneous)
-                ndc = clip_space[:3] / clip_space[3]
-                screen_point = ((ndc[0] + 1) * width / 2, (1 - ndc[1]) * height / 2)
-                image_points.append(screen_point)
-
-            draw = ImageDraw.Draw(image)
-            draw.line([image_points[0], image_points[1]], fill=colors[s_id], width=2)
-            draw.line([image_points[0], image_points[2]], fill=colors[s_id], width=2)
-            draw.line([image_points[0], image_points[4]], fill=colors[s_id], width=2)
-            draw.line([image_points[1], image_points[3]], fill=colors[s_id], width=2)
-            draw.line([image_points[1], image_points[5]], fill=colors[s_id], width=2)
-            draw.line([image_points[2], image_points[3]], fill=colors[s_id], width=2)
-            draw.line([image_points[2], image_points[6]], fill=colors[s_id], width=2)
-            draw.line([image_points[3], image_points[7]], fill=colors[s_id], width=2)
-            draw.line([image_points[4], image_points[5]], fill=colors[s_id], width=2)
-            draw.line([image_points[4], image_points[6]], fill=colors[s_id], width=2)
-            draw.line([image_points[5], image_points[7]], fill=colors[s_id], width=2)
-            draw.line([image_points[6], image_points[7]], fill=colors[s_id], width=2)
-
-            return image
+        return image
 
     @staticmethod
     def colorize_2d_bounding_boxes(image: Image, bbox_2ds: BoundingBox2D) -> Image:

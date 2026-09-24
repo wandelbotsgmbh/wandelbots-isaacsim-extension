@@ -281,6 +281,10 @@ class NatsSubscriptionService:
                 carb.log_verbose(f"Already connected to NATS for {self.context_name}")
                 return True
 
+            # A connection without a subscription would be overwritten below,
+            # and nats-py keeps reconnecting to a client nobody holds.
+            await self._close_connection()
+
             try:
                 # Create callbacks
                 async def disconnected_cb():
@@ -309,6 +313,13 @@ class NatsSubscriptionService:
 
                 # Subscribe to subject
                 await self._subscribe()
+                if not self.subscription:
+                    # _subscribe logs and leaves the subscription unset. The
+                    # connection is live, so closing it is what stops the
+                    # reconnect loop.
+                    await self._close_connection()
+                    return False
+
                 self._should_be_connected = True
                 return True
 
@@ -316,7 +327,7 @@ class NatsSubscriptionService:
                 carb.log_error(
                     f"Failed to connect to NATS for {self.context_name}: {ex}"
                 )
-                self.connection = None
+                await self._close_connection()
                 return False
 
     async def _subscribe(self):
@@ -378,26 +389,31 @@ class NatsSubscriptionService:
                 f"Error in message handler for {self.context_name}: {ex}", exc_info=True
             )
 
+    async def _close_connection(self):
+        """Release the subscription and the connection. The caller holds the lock."""
+        if self.subscription:
+            try:
+                await self.subscription.unsubscribe()
+            except Exception as ex:
+                carb.log_warn(f"Error unsubscribing from NATS: {ex}")
+            self.subscription = None
+
+        if self.connection:
+            try:
+                # Unconditionally: nats-py reports is_connected False while it
+                # retries in the background, and that is the client that has to
+                # be closed. close() on an already closed client is a no-op.
+                await self.connection.close()
+            except Exception as ex:
+                carb.log_warn(f"Error closing NATS connection: {ex}")
+            self.connection = None
+
     async def disconnect(self):
         """Disconnect from NATS and clean up resources."""
         async with self._lock:
             self._should_be_connected = False
             carb.log_verbose(f"Disconnecting from NATS for {self.context_name}")
-
-            if self.subscription:
-                try:
-                    await self.subscription.unsubscribe()
-                except Exception as ex:
-                    carb.log_warn(f"Error unsubscribing from NATS: {ex}")
-                self.subscription = None
-
-            if self.connection:
-                try:
-                    if self.connection.is_connected:
-                        await self.connection.close()
-                except Exception as ex:
-                    carb.log_warn(f"Error closing NATS connection: {ex}")
-                self.connection = None
+            await self._close_connection()
 
     @property
     def is_connected(self) -> bool:

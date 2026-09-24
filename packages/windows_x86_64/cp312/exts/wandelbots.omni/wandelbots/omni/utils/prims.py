@@ -401,6 +401,23 @@ def is_pose_xform_op(path: Sdf.Path) -> bool:
     return path.name.startswith("xformOp:") or path.name == "xformOpOrder"
 
 
+def xform_op_carries_rotation(path: Sdf.Path) -> bool:
+    """Whether a changed xform op can have turned the prim.
+
+    ``xformOp:transform`` is a full matrix, so it carries a rotation as much as
+    a translation; the same goes for a reordered op stack. Matching only
+    ``orient`` and ``rotate*`` left a prim posed through a matrix looking as if
+    it had merely been moved.
+    """
+    if not is_pose_xform_op(path):
+        return False
+    name = path.name
+    if name == "xformOpOrder":
+        return True
+    op = name.split(":", 1)[1].split(":", 1)[0]
+    return op in ("orient", "transform") or op.startswith("rotate")
+
+
 class PrimPoseWatcher:
     def __init__(
         self,
